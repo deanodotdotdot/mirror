@@ -173,7 +173,9 @@ class Config:
           previous = current
       await asyncio.sleep(interval)
 
-  def set_extension(self, key: str, enabled: bool) -> None:
+  def set_extension(
+    self, key: str, enabled: bool, *, consent_revision: str | None = None
+  ) -> None:
     """Update one choice without losing other settings or another CLI's changes."""
 
     def change(settings: dict[str, object]) -> None:
@@ -183,7 +185,10 @@ class Config:
       )
       entry = extensions.get(key)
       value = cast(dict[str, object], entry) if isinstance(entry, dict) else {}
-      extensions[key] = {**value, 'enabled': enabled}
+      value = {**value, 'enabled': enabled}
+      if consent_revision is not None:
+        value['consent_revision'] = consent_revision
+      extensions[key] = value
       settings['extensions'] = extensions
 
     self.update(change)

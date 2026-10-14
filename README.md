@@ -1,37 +1,60 @@
 # Mirror
 
-A coding-agent runtime and terminal client.
+Mirror is a coding agent for your terminal. It can read and edit files, run
+commands, and work on parallel tasks in separate repository worktrees.
 
-- [`mirror-agent`](mirror-agent/README.md): Rust runtime and HTTP server.
-- [`mirror-cli`](mirror-cli/README.md): Python terminal client and extensions.
-- [`protocols/mirror_agent`](protocols/mirror_agent): shared protobuf schemas.
-- [`mirror-agent-py`](mirror-agent-py/README.md): Python bindings for embedding.
+## Run from source
 
-## Build and run
-
-Install Rust/Cargo, protoc, Python 3.12+, uv and ripgrep, then run:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), Rust/Cargo,
+a C compiler, `protoc`, and ripgrep (`rg`). uv can download Python 3.12 or later.
 
 ```bash
-cargo build --locked -p mirror-agent --bin mirror-agent
-MIRROR_RUST_WORKER="$PWD/target/debug/mirror-agent" \
-  uv run --locked --project mirror-cli mirror --help
+git clone https://github.com/reflection-oss/mirror.git
+cd mirror
+./mirror-cli/mirror-dev
 ```
 
-See the [CLI guide](mirror-cli/README.md) for provider and model configuration.
-The PyPI project named `mirror` is unrelated; install this project from source.
-Protocol bindings are generated during the build. Keep the workspace components
-and protocol directory together.
+Sign in when prompted, then give Mirror a task. See the
+[CLI guide](mirror-cli/README.md#providers-and-models) for other providers and
+custom model endpoints.
 
-Tools run with your account's permissions. Mirror is not a sandbox; use an
-isolated environment for untrusted projects or agent-controlled execution.
+- `mirror-dev` builds the Rust agent and runs the CLI from your checkout.
+- The first run downloads dependencies and compiles the agent; allow a few minutes.
+- Rerun after editing. It does not replace an installed `mirror` or check for updates.
+- Keep the full checkout: the agent, CLI, and protocol definitions build together.
 
-## Test
+To work in another project, launch the same script from that project's directory:
+
+```bash
+cd /path/to/your/project
+/path/to/mirror/mirror-cli/mirror-dev
+```
+
+To try the interface without model credentials or a Rust build:
+
+```bash
+./mirror-cli/mirror-dev --showcase
+```
+
+Send a message to play a synthetic conversation. No model calls or real tools run.
+
+The PyPI package named `mirror` is unrelated; do not install it.
+By default, tools run with your account's permissions. Manual approval is not a
+sandbox; see [local data and safety](mirror-cli/README.md#local-data-and-safety).
+
+## Development
+
+- [CLI usage and configuration](mirror-cli/README.md)
+- [Editing, testing, and building from source](mirror-cli/docs/building.md)
+- [Rust agent](mirror-agent/README.md) · [Python embedding](mirror-agent-py/README.md)
 
 ```bash
 bash ci.sh
 cargo test --locked -p mirror-agent -p mirror-protocol
 cargo check --locked -p mirror-agent-python
 ```
+
+The Rust checkpoint tests also require Jujutsu (`jj`) on `PATH`.
 
 ## License
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from prompt_toolkit import keys
-from prompt_toolkit.input import defaults
+import pytest
+from prompt_toolkit import application, buffer, keys, layout
+from prompt_toolkit.input import base as input_base
+from prompt_toolkit.input import defaults, vt100_parser
+from prompt_toolkit.output import base as output_base
 
-from mirror.cli import extended_keys
+from mirror.cli import actions, extended_keys, keymap
 
 
 def test_install_is_idempotent() -> None:
@@ -38,6 +41,35 @@ def test_csi_u_escape_aliases_parse_as_escape() -> None:
     keys.Keys.Escape,
     keys.Keys.Escape,
   ]
+
+
+@pytest.mark.parametrize('escape', ['\x1b[27u', '\x1b[27;1u'])
+@pytest.mark.asyncio
+async def test_encoded_escape_interrupts_before_queued_text(
+  escape: str,
+) -> None:
+  extended_keys.install()
+  dispatched: list[actions.Action] = []
+  mapping = keymap.Keymap(
+    lambda: [(keymap.Binding(('escape',), actions.InterruptRequested()),)],
+    dispatched.append,
+    dismiss=lambda: None,
+  )
+  composer = buffer.Buffer()
+  app = application.Application[None](
+    layout=layout.Layout(layout.Window(layout.BufferControl(composer))),
+    key_bindings=mapping.bindings,
+    input=input_base.DummyInput(),
+    output=output_base.DummyOutput(),
+  )
+  parser = vt100_parser.Vt100Parser(app.key_processor.feed)
+  with application.set_app(app):
+    parser.feed(escape + 'hello')
+    app.key_processor.process_keys()
+    assert dispatched == [actions.InterruptRequested()]
+    assert composer.text == 'hello'
+    assert app.key_processor.key_buffer == []
+    await app.cancel_and_wait_for_background_tasks()
 
 
 def test_modify_other_keys_aliases_match_mirror_keybindings() -> None:

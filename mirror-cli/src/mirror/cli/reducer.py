@@ -337,6 +337,16 @@ def _reduce(
       return state, (
         effects.RefreshCompletion(),
       ) if state.composer.text else ()
+    case _actions.ExtensionConsentResolved(key, revision):
+      selector = state.selector.selector
+      if (
+        selector is not None
+        and isinstance(selector.cancel_action, _actions.ExtensionConsent)
+        and selector.cancel_action.key == key
+        and selector.cancel_action.revision == revision
+      ):
+        return _reduce(state, _actions.ClearSelector())
+      return state, ()
     case _actions.ShowExtensions():
       return state, (effects.ShowExtensions(),)
     case (
@@ -610,6 +620,7 @@ def _reduce(
         busy=True,
         status='thinking…',
         work_started=observed_at,
+        completed_duration=None,
         spinner_color=spinner_color,
       )
       return _with_activity(state, activity), ()
@@ -618,10 +629,15 @@ def _reduce(
       activity = dataclasses.replace(
         state.activity,
         busy=True,
+        completed_duration=None,
         status=state.activity.status
         if state.activity.busy and state.activity.status
         else 'thinking…',
-        work_started=state.activity.work_started or observed_at,
+        work_started=(
+          state.activity.work_started
+          if state.activity.work_started is not None
+          else observed_at
+        ),
       )
       return dataclasses.replace(state, turn=turn, activity=activity), ()
     case _actions.WorkerLoadingStarted():
@@ -631,6 +647,7 @@ def _reduce(
         status='restoring conversation…'
         if state.session.restore_pending
         else 'loading…',
+        completed_duration=None,
       )
       return _with_activity(state, activity), ()
     case _actions.WorkerLoadingFinished():
@@ -1002,7 +1019,7 @@ def _reduce(
     case _actions.CompactionFinished():
       turn = dataclasses.replace(state.turn, compaction_started=None)
       return dataclasses.replace(state, turn=turn), ()
-    case _actions.TurnFinished():
+    case _actions.TurnFinished(duration):
       turn = dataclasses.replace(
         state.turn,
         compaction_started=None,
@@ -1021,7 +1038,12 @@ def _reduce(
         status=('thinking…' if busy else '')
         if state.activity.status == 'interrupting…'
         else state.activity.status,
-        work_started=state.activity.work_started if busy else None,
+        work_started=None,
+        completed_duration=(
+          duration
+          if duration is not None
+          else state.activity.completed_duration
+        ),
       )
       return dataclasses.replace(
         state,
@@ -1040,6 +1062,7 @@ def _reduce(
         state.activity,
         busy=True,
         status='loading conversation…',
+        completed_duration=None,
       )
       return dataclasses.replace(
         state,
@@ -1060,6 +1083,7 @@ def _reduce(
       activity = dataclasses.replace(
         state.activity,
         foreground_tasks=frozenset(),
+        completed_duration=None,
       )
       updated = dataclasses.replace(
         state,

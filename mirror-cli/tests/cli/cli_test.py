@@ -37,6 +37,7 @@ import pytest
 import pytest_asyncio
 from freezegun import api as freezegun_api
 from google.protobuf import empty_pb2
+from mirror.cli.extensions.tokyonight import extension as tokyonight
 from mirror.protocol import (
   agent_pb2,
   agent_pb2_grpc,
@@ -112,7 +113,6 @@ from mirror.cli.extensions.external_editor import (
 )
 from mirror.cli.extensions.themes import extension as themes_extension
 from mirror.cli.extensions.tips import extension as tips_extension
-from mirror.cli.extensions.tokyonight import extension as tokyonight
 from mirror.cli.extensions.user_extensions import extension as _user_extension
 from mirror.cli.extensions.view_mode import extension as _view_mode
 from mirror.cli.extensions.vim import extension as vim_extension
@@ -345,7 +345,7 @@ def test_api_key_alone_never_selects_a_backend(
   args = cli_main._parse_args()
 
   assert args.api == 'reflection'
-  assert args.model == 'Beam-501B-A23B'
+  assert args.model == 'Beam-1.0-501B-A23B'
 
 
 # A stand-in AgentRPC worker that echoes each instruction as an assistant turn.
@@ -4436,7 +4436,7 @@ async def test_activity_resumes_after_assistant_message_before_turn_finishes(
 
     repl._handle_message(_turn_completed())
     assert not repl._state.activity.busy
-    assert _render_activity(repl) == []
+    assert 'Worked for' in _fragments_text(_render_activity(repl))
   finally:
     await repl.close()
 
@@ -4468,7 +4468,7 @@ async def test_activity_resumes_when_reasoning_follows_streamed_content(
     )
     repl._handle_message(_turn_completed())
     assert not repl._state.activity.busy
-    assert _render_activity(repl) == []
+    assert 'Worked for' in _fragments_text(_render_activity(repl))
   finally:
     await repl.close()
 
@@ -5316,6 +5316,8 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
     await registry.register(tips_extension.TipsExtension(), None)
     manager = user_extensions.UserExtensions(registry, tmp_path / 'extensions')
     repl = _repl(extension_registry=registry, extension_manager=manager)
+    # Keep SQLite I/O outside the rendering and shutdown deadlines.
+    await anext(repl._history.load(), None)
     repl._handle_message(_delta({'role': 'user', 'content': 'Run the tool.'}))
     await repl._extension_host.start()
     repl.dispatch(
@@ -5323,6 +5325,8 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
       _actions.TurnStarted(observed_at=time.monotonic()),
       _actions.SetStatus('running tool…'),
     )
+    # prompt_toolkit's redraw deadline cannot expire while time is frozen.
+    repl._app.max_render_postpone_time = None
     rendered = asyncio.Event()
 
     def after_render(_: _application.Application[str | None]) -> None:
@@ -5330,8 +5334,8 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
 
     repl._app.after_render += after_render
     active = asyncio.create_task(repl.activate(show_context=False))
-    try:
-      with _current.set_app(repl._app):
+    with _current.set_app(repl._app):
+      try:
         await asyncio.wait_for(rendered.wait(), timeout=2)
         waiting_height = repl._bottom_pane.preferred_height(80, 40).preferred
         assert 'Tip:' not in terminal.getvalue()
@@ -5363,11 +5367,11 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
           repl._bottom_pane.preferred_height(80, 40).preferred == visible_height
         )
         assert 'Working' in _fragments_text(_render_activity(repl))
-    finally:
-      repl._app.exit()
-      await asyncio.wait_for(active, timeout=2)
-      await repl.close()
-      await registry.close()
+      finally:
+        repl._app.exit()
+        await asyncio.wait_for(active, timeout=2)
+        await repl.close()
+        await registry.close()
 
   activity_index = next(
     index for index, line in enumerate(lines) if 'Working' in line
@@ -7815,7 +7819,6 @@ def test_done_stays_busy_while_a_resubmitted_instruction_is_queued(
   monkeypatch.setattr(repl, '_run_effect', effects.append)
   repl.dispatch(_actions.TurnStarted())
   repl.dispatch(_actions.SubmitInstruction('follow-up'))
-  started = repl._state.activity.work_started
 
   # An interrupted turn's `done` can arrive after a follow-up was submitted; it
   # runs as its own turn, so the app must stay busy and keep the queued line.
@@ -7823,8 +7826,7 @@ def test_done_stays_busy_while_a_resubmitted_instruction_is_queued(
 
   assert repl._state.activity.busy
   assert repl._state.turn.queued == ('follow-up',)
-  assert started is not None
-  assert repl._state.activity.work_started == started
+  assert repl._state.activity.work_started is None
 
 
 def test_waiting_task_shows_footer_hint_until_detached() -> None:
@@ -8836,7 +8838,7 @@ async def test_exploration_retains_detail_row_until_visible_text() -> None:
   assert 'Working' in _fragments_text(_render_activity(repl))
   assert repl._state.activity.busy
   repl._handle_message(_turn_completed())
-  assert _render_activity(repl) == []
+  assert 'Worked for' in _fragments_text(_render_activity(repl))
   assert not repl._state.activity.busy
   await _settle(repl)
 
@@ -10011,11 +10013,11 @@ async def test_themes_persist_reload_and_keep_extension_consent(
     await first._run_slash('/themes')
     assert first._state.selector.selector is not None
     assert first._state.selector.selector.current == 'light'
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert themes.current(second._state.extensions) == 'light'
     assert themes.saved(config.Config(settings.path).read()) == 'light'
     settings.set_extension('builtin/themes', False)
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert themes.current(first._state.extensions) == 'dark'
     assert themes.current(second._state.extensions) == 'dark'
     assert themes.saved(settings.read()) == 'dark'
@@ -10107,7 +10109,7 @@ async def test_custom_themes_picker_selection_and_persistence(
     },
     'builtin/themes': {'config': {'name': 'test-themes:day'}},
   }
-  await repl._user_extensions.apply_settings(settings.read().get('extensions'))
+  await repl._user_extensions.apply_settings()
   second = _repl(
     extension_registry=repl._user_extensions.registry,
     extension_manager=repl._user_extensions,
@@ -10928,7 +10930,7 @@ async def test_activity_accumulates_reported_output_across_tool_calls(
       {'role': 'assistant', 'content': 'next response'}, completion_tokens=1000
     )
   )
-  assert 'Working (1,534 tokens)' in _fragments_text(_render_activity(repl))
+  assert 'Working (1.5k tokens)' in _fragments_text(_render_activity(repl))
   await _settle(repl)
 
 
@@ -11431,17 +11433,66 @@ async def test_extension_approval_advances_through_two_extensions(
       await asyncio.sleep(0.05)
       assert not repl._state.selector.active
       assert ('usage_telemetry' in registry.extension_ids()) is second_enabled
-      assert json.loads((tmp_path / 'config.json').read_text())[
-        'extensions'
-      ] == {
-        str(first / 'extension.py'): {'enabled': first_enabled},
-        str(second / 'extension.py'): {'enabled': second_enabled},
+      assert config.extension_choices(
+        json.loads((tmp_path / 'config.json').read_text())['extensions']
+      ) == {
+        str(first / 'extension.py'): first_enabled,
+        str(second / 'extension.py'): second_enabled,
       }
     finally:
       repl._app.exit()
       await asyncio.wait_for(running, timeout=2)
       await repl.close()
       await registry.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('enabled', [True, False, None])
+async def test_extension_consent_resolves_matching_workspace_prompts(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  enabled: bool | None,
+) -> None:
+  monkeypatch.setenv('MIRROR_EXTENSIONS_ENABLED', 'true')
+  directory = tmp_path / 'extensions' / 'clock'
+  directory.mkdir(parents=True)
+  (directory / 'extension.py').write_text(
+    'from mirror.cli import extension\n'
+    'class Clock(extension.Extension[None, None, None]):\n'
+    '  @classmethod\n  def id(cls): return "clock"\n'
+  )
+  registry = extension.ExtensionRegistry()
+  manager = user_extensions.UserExtensions(
+    registry, directory.parent, packaged=tmp_path / 'packaged'
+  )
+  first = _repl(extension_registry=registry, extension_manager=manager)
+  second = _repl(extension_registry=registry, extension_manager=manager)
+  try:
+    await manager.start()
+    await manager.on_foreground(first._extension_context)
+    await manager.on_foreground(second._extension_context)
+    selector = second._state.selector.selector
+    assert first._state.selector.active and selector is not None
+    request = selector.cancel_action
+    assert isinstance(request, _actions.ExtensionConsent)
+    await manager.change(
+      second._extension_context,
+      _actions.ExtensionConsent(request.key, enabled, request.revision),
+    )
+    await manager.change(
+      first._extension_context,
+      _actions.ExtensionConsent(request.key, not enabled, request.revision),
+    )
+    assert not first._state.selector.active
+    assert not second._state.selector.active
+    assert ('clock' in first._state.extensions) is (enabled is True)
+    assert ('clock' in second._state.extensions) is (enabled is True)
+    saved = config.Config(tmp_path / 'config.json').read().get('extensions')
+    assert config.extension_choices(saved).get(request.key) is enabled
+  finally:
+    await first.close()
+    await second.close()
+    await registry.close()
 
 
 @pytest.mark.asyncio

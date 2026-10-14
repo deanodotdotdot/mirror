@@ -60,6 +60,15 @@ class ExtensionConsent:
 
   key: str
   enabled: bool | None
+  revision: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ExtensionConsentResolved:
+  """Dismiss only confirmations for this source and reviewed revision."""
+
+  key: str
+  revision: str
 
 
 class ViewMode(enum.Enum):
@@ -732,7 +741,7 @@ class CompactionFinished:
 
 @dataclasses.dataclass(frozen=True)
 class TurnFinished:
-  pass
+  duration: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1059,6 +1068,7 @@ type Action = (
   | RemoveExtension
   | ToggleExtension
   | ExtensionConsent
+  | ExtensionConsentResolved
   | ClearScreen
   | QuitApp
   | CycleViewMode

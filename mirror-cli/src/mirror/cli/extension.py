@@ -748,6 +748,11 @@ class ExtensionRegistry:
     self._hosts.add(host)
     return host
 
+  def dispatch(self, action: actions.Action) -> None:
+    """Notify all attached workspaces, including background and unstarted hosts."""
+    for host in tuple(self._hosts):
+      host.dispatch(action)
+
   async def refresh_tools(self, extension_id: str) -> None:
     """Refresh one extension's tools in all of its workspaces."""
     for host in tuple(self._hosts):
@@ -971,10 +976,17 @@ class ExtensionHost(ExtensionView):
     self._context = context
     self._detach = detach
     self._started = False
+    # False means notified before startup; True means tools and config activated.
+    self._activation: dict[str, bool] = {}
     self._foreground = False
     self._mcp_connections: dict[
       str, tuple[mcp_configuration.McpConnection, ...]
     ] = {}
+
+  def dispatch(self, action: actions.Action) -> None:
+    """Deliver a shared lifecycle notification while this host is attached."""
+    if not self._closed:
+      self._context.dispatch(action)
 
   def validate_selection(self) -> None:
     """Prevent worker startup when an explicitly selected extension is unavailable."""
@@ -1020,6 +1032,11 @@ class ExtensionHost(ExtensionView):
     if loaded.extension.id() not in self._items:
       return
     name = loaded.extension.id()
+    if self._activation.get(name):
+      return
+    notified = name in self._activation
+    # Claim this generation before awaiting hooks that can overlap workspace startup.
+    self._activation[name] = self._started
     boundary = self._boundary(name)
     try:
       if self._started:
@@ -1029,7 +1046,8 @@ class ExtensionHost(ExtensionView):
           boundary=boundary,
           namespace=loaded.extension.tool_namespace(),
         )
-      self._context.dispatch(actions.ExtensionLoaded(name))
+      if not notified:
+        self._context.dispatch(actions.ExtensionLoaded(name))
     except Exception as error:  # Isolate extension initialization.
       boundary.fail(error)
     if self._started:
@@ -1133,6 +1151,7 @@ class ExtensionHost(ExtensionView):
     """Stop workspace calls before the shared extension releases its resources."""
     await self.cancel(extension_id)
     self._boundaries.pop(extension_id, None)
+    self._activation.pop(extension_id, None)
     if self._mcp_connections.pop(extension_id, ()):
       self.host_tool_registry.context_changed()
     await self.host_tool_registry.unregister(extension_id)

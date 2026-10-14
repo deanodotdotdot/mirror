@@ -16,18 +16,33 @@ from typing import override
 
 from prompt_toolkit import formatted_text, mouse_events, utils
 from prompt_toolkit.application import current
-from prompt_toolkit.formatted_text import ansi
 from prompt_toolkit.layout import controls
 from rich import cells, color, console, styled
 
 from mirror.cli import (
   actions,
+  hyperlinks,
   rendering,
   screen_selection,
   themes,
   transcript,
   workspace_application,
 )
+
+
+def _summarize(content: str, width: int) -> str:
+  """Normalize and clip a prompt without splitting terminal graphemes."""
+  content = ' '.join(content.split())
+  summary = f'{rendering.PROMPT} {rendering.strip_ansi(content)}'
+  used = end = 0
+  for start, stop, size in cells.split_graphemes(summary)[0]:
+    # Fit both renderers: their cell widths differ for some emoji sequences.
+    used += max(size, utils.get_cwidth(summary[start:stop]))
+    if used <= width - 1:
+      end = stop
+    if used > width:
+      return summary[:end].rstrip() + '…'
+  return summary
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,7 +58,12 @@ type _LayoutKey = tuple[str, tuple[int, int], int, int, str | themes.Theme, int]
 
 
 def _plain(fragments: _Row) -> str:
-  return ''.join(text for _, text, *_ in fragments).strip().removeprefix('● ')
+  return (
+    formatted_text
+    .fragment_list_to_text(list(fragments))
+    .strip()
+    .removeprefix('● ')
+  )
 
 
 def _layout_bytes(key: _LayoutKey, rows: _Rows) -> int:
@@ -146,6 +166,7 @@ class TranscriptView(screen_selection.HoverControl):
     )
     self._header_height = 0
     self._user_position: tuple[int, int, int | None] | None = None
+    self._summary: tuple[str, int, str] | None = None
 
   def _remember_line(
     self, index: int, part: int, row: int, first: int | None = None
@@ -254,6 +275,7 @@ class TranscriptView(screen_selection.HoverControl):
     self._settling_line = None
     self._cache.clear()
     self._cache_bytes = 0
+    self._summary = None
     self._oversized.clear()
     self._blocks = self._settled_snapshot = self._pending_snapshot = ()
     self._live_snapshot = ()
@@ -334,7 +356,6 @@ class TranscriptView(screen_selection.HoverControl):
           True: functools.partial(self._code_event, source, marker, True),
         }
       if rich_style:
-        rich_style = rich_style.clear_meta_and_links()
         if theme == 'mono':
           rich_style = rich_style.without_color
         value = rich_style.render(
@@ -343,9 +364,7 @@ class TranscriptView(screen_selection.HoverControl):
           if theme == 'terminal'
           else color.ColorSystem.TRUECOLOR,
         )
-      decoded = formatted_text.to_formatted_text(
-        ansi.ANSI(rendering.sanitize_ansi(value))
-      )
+      decoded = formatted_text.to_formatted_text(hyperlinks.ANSI(value))
       if marker and any(
         key in metadata
         for key in ('copy_code', 'code_block', 'code_action', 'code_hint')
@@ -477,18 +496,19 @@ class TranscriptView(screen_selection.HoverControl):
 
   def _header(self, owner: rendering.UserText) -> _Rows:
     """Summarize the original message, with a blank separator when space allows."""
-    content = ' '.join(owner.content.split())
-    summary = f'{rendering.PROMPT} {rendering.strip_ansi(content)}'
-    used = end = 0
-    for start, stop, size in cells.split_graphemes(summary)[0]:
-      # Fit both renderers: their cell widths differ for some emoji sequences.
-      used += max(size, utils.get_cwidth(summary[start:stop]))
-      if used <= self._width - 1:
-        end = stop
-      if used > self._width:
-        summary = summary[:end].rstrip() + '…'
-        break
-    header = ((('class:ui.muted.italic', summary),),)
+    cached = self._summary
+    # Identity avoids hashing or comparing multi-megabyte prompts on redraw.
+    if (
+      cached is None
+      or cached[0] is not owner.content
+      or cached[1] != self._width
+    ):
+      cached = self._summary = (
+        owner.content,
+        self._width,
+        _summarize(owner.content, self._width),
+      )
+    header = ((('class:ui.muted.italic', cached[2]),),)
     return header + ((),) if self._height > 2 else header
 
   def _content_start(self) -> tuple[int, int, int]:
@@ -704,6 +724,8 @@ class TranscriptView(screen_selection.HoverControl):
     elif 0 <= mouse_event.position.y < len(self._visible):
       column = 0
       for fragment in self._visible[mouse_event.position.y]:
+        if '[ZeroWidthEscape]' in fragment[0]:
+          continue
         end = column + len(fragment[1])
         if column <= mouse_event.position.x < end and len(fragment) == 3:
           fragment[2](mouse_event)

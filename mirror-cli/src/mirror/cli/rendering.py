@@ -251,11 +251,6 @@ def sanitize_ansi(text: str) -> str:
   return ''.join(parts)
 
 
-def without_hyperlinks(text: str) -> str:
-  """Remove OSC-8 delimiters unsupported by prompt-toolkit's ANSI decoder."""
-  return _SAFE_HYPERLINK_RE.sub('', text)
-
-
 def renderable_to_ansi(
   renderable: _console.RenderableType,
   width: int,
@@ -565,7 +560,7 @@ class StreamingAnswer:
   """Retain completed Markdown blocks and parse only the changing final block."""
 
   def __init__(
-    self, skill_names: Collection[str], *, hyperlinks: bool = False
+    self, skill_names: Collection[str], *, hyperlinks: bool = True
   ) -> None:
     self._skill_names = frozenset(skill_names)
     self._hyperlinks = hyperlinks
@@ -772,7 +767,6 @@ def reasoning_text(content: str) -> _LazyMarkdown:
   return _LazyMarkdown(
     strip_ansi(content).strip(),
     style='ui.muted.italic',
-    hyperlinks=False,
     # Left justification pads paragraphs with theme-colored spaces.
     justify='default',
   )
@@ -1071,13 +1065,24 @@ def _tool_title(header: str) -> _text.Text:
 
 @dataclasses.dataclass(frozen=True)
 class Stopwatch:
-  """Elapsed-seconds display for an in-flight activity (compaction, tools)."""
+  """Compact elapsed-time display for an in-flight activity."""
 
   started: float = dataclasses.field(default_factory=time.monotonic)
 
   def render(self) -> str:
-    """The elapsed time as a compact label like `12s`."""
-    return f'{time.monotonic() - self.started:.0f}s'
+    """The elapsed time as seconds or the two largest adjacent units."""
+    elapsed = time.monotonic() - self.started
+    seconds = round(elapsed)
+    if elapsed > 86_400:
+      days, hours = divmod(seconds // 3_600, 24)
+      return f'{days}d {hours}h'
+    if elapsed > 3_600:
+      hours, minutes = divmod(seconds // 60, 60)
+      return f'{hours}h {minutes}m'
+    if elapsed > 60:
+      minutes, seconds = divmod(seconds, 60)
+      return f'{minutes}m {seconds}s'
+    return f'{seconds}s'
 
 
 def _bash_result(

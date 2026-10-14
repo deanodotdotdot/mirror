@@ -28,7 +28,7 @@ def test_streaming_answer_matches_canonical_rich_text(source: str) -> None:
   stream.update(source[: len(source) // 2])
   actual = rendering.render_blocks(stream.update(source), 80)
   expected = rendering.renderable_to_ansi(
-    rendering.assistant_render(source, hyperlinks=False), 80
+    rendering.assistant_render(source), 80
   )
   # A continuation has the same gutter without repeating the turn's icon.
   assert [

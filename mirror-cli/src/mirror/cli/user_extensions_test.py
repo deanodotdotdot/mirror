@@ -209,6 +209,7 @@ async def test_set_enabled_reports_disabled_and_enabled_inventory(
 async def test_apply_settings_reports_packaged_and_external_hidden_inventory(
   manager: user_extensions.UserExtensions,
   analytics: _RecordingAnalytics,
+  settings: config.Config,
   tmp_path: pathlib.Path,
 ) -> None:
   packaged = tmp_path / 'packaged' / 'spark'
@@ -230,11 +231,16 @@ async def test_apply_settings_reports_packaged_and_external_hidden_inventory(
   ]
   analytics.events.clear()
 
-  await manager.apply_settings({
-    'builtin/clock': {'enabled': 'hidden'},
-    'packaged/spark': {'enabled': 'hidden'},
-    str(manager.root / 'mine' / 'extension.py'): {'enabled': 'hidden'},
-  })
+  settings.update(
+    lambda values: values.update(
+      extensions={
+        'builtin/clock': {'enabled': 'hidden'},
+        'packaged/spark': {'enabled': 'hidden'},
+        str(manager.root / 'mine' / 'extension.py'): {'enabled': 'hidden'},
+      }
+    )
+  )
+  await manager.apply_settings()
   assert analytics.events == _counts(0, 1, 3, 0, 0) + [
     _state('builtin/clock', 'hidden'),
     _state('builtin/dormant', 'disabled'),
@@ -242,7 +248,10 @@ async def test_apply_settings_reports_packaged_and_external_hidden_inventory(
   ]
   analytics.events.clear()
 
-  await manager.apply_settings({'packaged/spark': True})
+  settings.update(
+    lambda values: values.update(extensions={'packaged/spark': True})
+  )
+  await manager.apply_settings()
   assert analytics.events == _counts(2, 2, 0, 0, 1) + [
     _state('builtin/clock', 'enabled'),
     _state('builtin/dormant', 'disabled'),
@@ -297,10 +306,14 @@ async def test_change_reports_extension_consent(
   ]
   analytics.events.clear()
 
-  await manager.change(
-    context,
-    actions.ExtensionConsent(str(manager.root / 'mine' / 'extension.py'), True),
-  )
+  dispatched: list[actions.Action] = []
+  context = dataclasses.replace(context, dispatch=dispatched.append)
+  await manager.on_foreground(context)
+  opened = dispatched.pop()
+  assert isinstance(opened, actions.OpenSelector)
+  request = opened.selector.on_select('enable')
+  assert isinstance(request, actions.ExtensionConsent)
+  await manager.change(context, request)
   assert analytics.events == _counts(2, 1, 0, 1, 0) + [
     _state('builtin/clock', 'enabled'),
     _state('builtin/dormant', 'disabled'),
@@ -319,7 +332,7 @@ async def test_apply_settings_reports_current_inventory_when_analytics_reenabled
   assert analytics.events == []
 
   await analytics.enable()
-  await manager.apply_settings(settings.read().get('extensions'))
+  await manager.apply_settings()
   snapshot = _counts(1, 2, 0, 0, 1) + [
     _state('builtin/clock', 'enabled'),
     _state('builtin/dormant', 'disabled'),
@@ -328,10 +341,10 @@ async def test_apply_settings_reports_current_inventory_when_analytics_reenabled
   analytics.events.clear()
 
   await analytics.disable()
-  await manager.apply_settings(settings.read().get('extensions'))
+  await manager.apply_settings()
   assert analytics.events == []
   await analytics.enable()
-  await manager.apply_settings(settings.read().get('extensions'))
+  await manager.apply_settings()
   assert analytics.events == snapshot
 
 

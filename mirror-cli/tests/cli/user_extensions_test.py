@@ -136,13 +136,13 @@ async def test_bundled_enablement_override_changes_apply_immediately(
     settings.path.write_text(
       json.dumps({'extensions': {'builtin/clock': override}})
     )
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert bool(registry.extension_ids()) is enabled
     assert marker.exists() is not enabled
     opened = manager.selector()
     assert isinstance(opened, actions.OpenSelector)
     assert [choice.prefix for choice in opened.selector.choices] == prefixes
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert bool(registry.extension_ids()) is enabled
   finally:
     await registry.close()
@@ -494,7 +494,7 @@ async def test_user_override_transitions_between_extension_states(
     settings.path.write_text(
       json.dumps({'extensions': {str(source): {'enabled': updated}}})
     )
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert bool(registry.extension_ids()) is loaded
     opened = manager.selector()
     assert isinstance(opened, actions.OpenSelector)
@@ -1019,7 +1019,7 @@ async def test_packaged_respects_extensions_disabled(
     await manager.start()
     assert registry.extension_ids() == ('clock', 'clock/indicator')
     monkeypatch.setenv('MIRROR_EXTENSIONS_ENABLED', 'false')
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert manager.selector().selector.choices == ()
     assert registry.extension_ids() == ()
   finally:
@@ -1100,12 +1100,12 @@ async def test_local_override_replaces_packaged_before_activation_and_can_be_rem
     (local / 'extension.py').write_text(_SOURCE)
     with pytest.raises(ValueError, match='shadowed'):
       await manager.reload('clock')
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert registry.extension_ids() == ()
     await manager.set_enabled(local, True)
     assert registry.source_directory('clock') == local
     (local / 'extension.py').unlink()
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert registry.source_directory('clock') == packaged / 'clock'
   finally:
     await registry.close()
@@ -1266,13 +1266,13 @@ async def test_discovered_extension_skills_follow_source_precedence_and_consent(
     await manager.start()
     assert host.skills == ()
     settings.set_extension(str(user / 'extension.py'), True)
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert len(host.skills) == 1
     assert host.skills[0].path == (user / 'SKILL.md').resolve()
     assert host.skills[0].body == 'User'
 
     settings.set_extension(str(user / 'extension.py'), False)
-    await manager.apply_settings(settings.read().get('extensions'))
+    await manager.apply_settings()
     assert host.skills == ()
   finally:
     await registry.close()

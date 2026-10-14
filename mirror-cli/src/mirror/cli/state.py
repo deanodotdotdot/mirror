@@ -25,8 +25,16 @@ class ActivityState:
   status: str = ''
   work_started: float | None = None
   work_paused: float | None = None
+  completed_duration: float | None = None
   foreground_tasks: frozenset[str] = frozenset()
   spinner_color: spinner.Color = spinner.Color.PALE_PINK
+
+  def work_duration(self, now: float) -> float | None:
+    """Active work in seconds, excluding time spent waiting for approval."""
+    if self.work_started is None:
+      return None
+    end = self.work_paused if self.work_paused is not None else now
+    return max(0.0, end - self.work_started)
 
 
 @dataclasses.dataclass(frozen=True)

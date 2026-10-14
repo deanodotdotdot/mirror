@@ -21,7 +21,11 @@ from mirror.cli import actions, state, workspace_application
 @filters.Condition
 def standalone_escape() -> bool:
   """Handle Escape immediately unless it prefixes a queued Alt shortcut."""
-  queue = application.get_app().key_processor.input_queue
+  processor = application.get_app().key_processor
+  # Encoded Escape is complete, never the prefix of an Alt shortcut.
+  if processor.key_buffer[-1].data in ('\x1b[27u', '\x1b[27;1u'):
+    return True
+  queue = processor.input_queue
   # Terminal reports are not the second key of an Alt shortcut.
   return not queue or queue[0].key in (
     toolkit_keys.Keys.Vt100MouseEvent,
