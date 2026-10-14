@@ -1,0 +1,134 @@
+"""Raw workspace processes through the worker's native microsandbox transport."""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import json
+import pathlib
+import shlex
+import tempfile
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from typing import cast
+
+from mirror.cli import shell
+from mirror.cli.sandbox import setup as sandbox_setup
+
+
+@dataclasses.dataclass(frozen=True)
+class SandboxShell(shell.Shell):
+  """A native process adapter; VM creation and policy stay in the Rust worker."""
+
+  worker_command: tuple[str, ...] = ()
+  configuration: Mapping[str, object] = dataclasses.field(
+    default_factory=dict[str, object]
+  )
+
+  async def prepare(self) -> None:
+    """Prepare once before extensions start, never in response to a failed command."""
+    result = await shell.Shell(
+      pathlib.Path.home(), on_abort=self.quarantine
+    ).run(
+      (
+        *sandbox_setup.worker_command(self.worker_command),
+        'sandbox',
+        'prepare',
+        json.dumps(dict(self.configuration)),
+        str(self.cwd),
+      ),
+      timeout=900,
+    )
+    if result.returncode:
+      raise RuntimeError(result.stderr.decode(errors='replace').strip())
+    if self.configuration.get('image') == sandbox_setup.default_image()[0]:
+      result = await self.run(
+        (
+          '/bin/sh',
+          '-c',
+          'cat > /usr/local/bin/rg && chmod 755 /usr/local/bin/rg',
+        ),
+        data=sandbox_setup.guest_rg(),
+      )
+      if result.returncode:
+        raise RuntimeError(result.stderr.decode(errors='replace').strip())
+    result = await self.run((
+      '/bin/sh',
+      '-c',
+      'command -v python3 && command -v git && command -v rg',
+    ))
+    if result.returncode:
+      raise RuntimeError('Sandbox image must provide Python, Git and ripgrep.')
+
+  async def quarantine(self) -> None:
+    """Persist uncertain completion outside the guest mount before stopping it."""
+    result = await shell.Shell(pathlib.Path.home()).run(
+      (
+        *sandbox_setup.worker_command(self.worker_command),
+        'sandbox',
+        'quarantine',
+        str(self.configuration['id']),
+      ),
+      timeout=90,
+    )
+    if result.returncode:
+      raise RuntimeError(
+        'Could not quarantine sandbox: '
+        + result.stderr.decode(errors='replace').strip()
+      )
+
+  @contextlib.asynccontextmanager
+  async def open(self, argv: Sequence[str]) -> AsyncGenerator[shell.Process]:
+    if not argv:
+      raise ValueError('Workspace process requires an executable')
+    # Completion evidence is host-owned, never in the mounted workspace.
+    with tempfile.TemporaryDirectory(prefix='mirror-process-') as directory:
+      outcome = pathlib.Path(directory) / 'outcome'
+      launcher = shell.Shell(pathlib.Path.home(), on_abort=self.quarantine)
+      async with launcher.open((
+        *sandbox_setup.worker_command(self.worker_command),
+        'sandbox',
+        'exec',
+        json.dumps(dict(self.configuration)),
+        str(self.cwd),
+        str(outcome),
+        shlex.join(argv),
+      )) as child:
+        process = _Process(child, outcome)
+        yield process
+      try:
+        await process.wait()
+      except RuntimeError:
+        await self.quarantine()
+        raise
+
+
+@dataclasses.dataclass(frozen=True)
+class _Process:
+  child: shell.Process
+  outcome: pathlib.Path
+
+  async def read_stdout(self) -> bytes:
+    return await self.child.read_stdout()
+
+  async def read_stderr(self) -> bytes:
+    return await self.child.read_stderr()
+
+  async def write(self, data: bytes) -> None:
+    await self.child.write(data)
+
+  def close_stdin(self) -> None:
+    self.child.close_stdin()
+
+  async def wait(self) -> int:
+    await self.child.wait()
+    try:
+      value: object = json.loads(self.outcome.read_bytes())
+    except (OSError, ValueError) as error:
+      raise RuntimeError(
+        'Sandbox command completion is unknown; it will not be replayed'
+      ) from error
+    if isinstance(value, dict):
+      status = cast(dict[str, object], value).get('Ok')
+      if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    raise RuntimeError(f'Sandbox process failed: {value}')
