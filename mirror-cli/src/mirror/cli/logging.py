@@ -14,6 +14,8 @@ from typing import TextIO
 from prompt_toolkit.application import current
 from prompt_toolkit.output import defaults
 
+from mirror.cli import hyperlinks
+
 
 _FORMATTER = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
 
@@ -29,7 +31,7 @@ def capture_output(conversation_id: str) -> Generator[TextIO]:
     os.fdopen(os.dup(1), 'w', buffering=1) as terminal,
     os.fdopen(os.dup(2), 'w', buffering=1) as stderr,
   ):
-    output = defaults.create_output(stdout=terminal)
+    output = hyperlinks.native_output(defaults.create_output(stdout=terminal))
     sys.stdout.flush()
     sys.stderr.flush()
     try:

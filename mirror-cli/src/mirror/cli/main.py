@@ -21,11 +21,11 @@ from mirror.cli import (
   onboarding,
   reflection,
   showcase,
+  themes,
   worktrees,
 )
 from mirror.cli import logging as _logging
 from mirror.cli import models as _models
-from mirror.cli import themes
 from mirror.cli.extensions.memory import extension as _memory
 
 
@@ -42,7 +42,7 @@ def _startup_model(
   option = next((o for o in configured if o.model_id == model_id), None)
   if option is not None:
     return option
-  if model_id is not None and model_id == _models.default_model('reflection'):
+  if model_id is not None and _models.is_reflection_default(model_id):
     return _models.ModelOption(model_id, 'Reflection', api='reflection')
   return configured[0] if configured and requested is None else None
 

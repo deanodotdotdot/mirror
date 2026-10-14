@@ -1,4 +1,4 @@
-"""Transient agent-activity component for the terminal UI."""
+"""Live activity and completed turn timing for the terminal UI."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mirror.cli.components import component, spinner, text_shimmer
 
 
 class Activity(component.Component):
-  """The transient agent-activity row above the status bar."""
+  """The agent-activity row above the status bar."""
 
   @override
   def render(self, state: state.State) -> containers.AnyContainer:
@@ -31,12 +31,19 @@ def _content(state: state.State) -> _StyleAndTextTuples:
   pending_switch = state.session.pending_switch is not None
   busy = state.activity.busy
   status = state.activity.status
-  if (
-    pending_switch
-    or state.approval.request is not None
-    or not busy
-    or not status
-  ):
+  if pending_switch or state.approval.request is not None:
+    return []
+  if not busy:
+    duration = state.activity.completed_duration
+    if duration is None:
+      return []
+    label = '<1s' if duration < 1 else f'{duration:.0f}s'
+    return [
+      ('class:activity', ' '),
+      (f'class:activity class:{state.activity.spinner_color.value}', '● '),
+      ('class:activity', f' Worked for {label}'),
+    ]
+  if not status:
     return []
   if state.turn.compaction_started is not None:
     status = 'Compacting'
@@ -49,7 +56,7 @@ def _content(state: state.State) -> _StyleAndTextTuples:
         key = keys.pop()
     status = tool_groups.status_label(key) if key is not None else 'Working'
   tokens = (
-    f' ({state.turn.output_tokens:,} tokens)'
+    f' ({_format_token_count(state.turn.output_tokens)} tokens)'
     if state.turn.output_tokens
     else ''
   )
@@ -66,3 +73,12 @@ def _content(state: state.State) -> _StyleAndTextTuples:
     *text_shimmer.render(status, style='class:activity'),
     ('class:activity', tokens + timer + detach_hint),
   ]
+
+
+def _format_token_count(tokens: int) -> str:
+  """Keep small counts exact; use lowercase k/m with one decimal above them."""
+  if tokens > 1_000_000:
+    return f'{tokens / 1_000_000:.1f}m'
+  if tokens > 1_000:
+    return f'{tokens / 1_000:.1f}k'
+  return f'{tokens:,}'

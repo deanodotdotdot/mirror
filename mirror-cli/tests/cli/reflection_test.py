@@ -51,7 +51,7 @@ def test_reflection_default_and_restart_routing(
   monkeypatch.setattr(main.sys, 'argv', ['mirror', *arguments])
   args = main._parse_args()  # pyright: ignore[reportPrivateUsage]
   assert args.api == 'reflection'
-  assert args.model == 'Beam-501B-A23B'
+  assert args.model == 'Beam-1.0-501B-A23B'
   models.save_last_model(args.model)
   monkeypatch.setattr(main.sys, 'argv', ['mirror'])
   restarted = main._parse_args()  # pyright: ignore[reportPrivateUsage]

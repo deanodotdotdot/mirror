@@ -44,7 +44,6 @@ from prompt_toolkit.application import current as _current
 
 # prompt_toolkit exposes only the shadowing `run_in_terminal` function.
 from prompt_toolkit.application import run_in_terminal as _run_in_terminal
-from prompt_toolkit.formatted_text import ansi as _ansi
 from prompt_toolkit.layout import containers as _containers
 from prompt_toolkit.layout import controls as _controls
 from prompt_toolkit.layout import dimension as _dimension
@@ -68,6 +67,7 @@ from mirror.cli import effects as _effects
 from mirror.cli import extended_keys as _extended_keys
 from mirror.cli import extension as _extension
 from mirror.cli import host_tools as _host_tools
+from mirror.cli import hyperlinks as _hyperlinks
 from mirror.cli import keymap as _keymap
 from mirror.cli import local_rpc_client as _local_rpc_client
 from mirror.cli import logging as _logging
@@ -1721,7 +1721,7 @@ class _Repl:
         _containers.Window(
           _controls.FormattedTextControl(
             lambda: [
-              *_ansi.ANSI(
+              *_hyperlinks.ANSI(
                 _rendering.render_blocks(
                   list(self._transcript.welcome_notices()),
                   self._component_state().layout.columns,
@@ -1758,15 +1758,13 @@ class _Repl:
       pinned_header = _containers.ConditionalContainer(
         _containers.Window(
           _controls.FormattedTextControl(
-            lambda: _ansi.ANSI(
-              _rendering.without_hyperlinks(
-                _rendering.render_blocks(
-                  self._terminal.header,
-                  self._state.layout.columns,
-                  theme_name=_themes.current(
-                    self._state.extensions, self._state.extension_themes
-                  ),
-                )
+            lambda: _hyperlinks.ANSI(
+              _rendering.render_blocks(
+                self._terminal.header,
+                self._state.layout.columns,
+                theme_name=_themes.current(
+                  self._state.extensions, self._state.extension_themes
+                ),
               )
             ),
             show_cursor=False,
@@ -1974,7 +1972,6 @@ class _Repl:
         None if self._focus() else preview.reasoning,
         None,
         None,
-        hyperlinks=False,
         skill_names=self._available_skill_names,
       )
       if tail is not None:
@@ -1985,7 +1982,7 @@ class _Repl:
         )
       )
       refusal = _rendering.assistant_turn_renderable(
-        None, None, preview.refusal, hyperlinks=False
+        None, None, preview.refusal
       )
       if refusal is not None:
         blocks.append(refusal)
@@ -2216,6 +2213,9 @@ class _Repl:
       response,
       conversation_id=self._state.session.conversation_id,
       replaying=self._state.session.replaying,
+      turn_duration_seconds=self._state.activity.work_duration(
+        time.monotonic()
+      ),
     )
     self._extension_host.handle_message(response)
     payload = response.WhichOneof('payload')
@@ -2435,6 +2435,11 @@ class _Repl:
       self._stream_pane.clear_pending()
       self._record_decoration(_rendering.interrupt_text())
     elif kind == 'turn_completed':
+      duration = (
+        None
+        if self._state.session.replaying
+        else self._state.activity.work_duration(time.monotonic())
+      )
       self._flush_tool_group()
       leftovers = (
         []
@@ -2454,7 +2459,7 @@ class _Repl:
         else _actions.CloseStream()
       )
       self.dispatch(
-        _actions.TurnFinished(),
+        _actions.TurnFinished(duration=duration),
         _actions.ClearRunningToolCalls(),
         stream_action,
       )
@@ -2465,7 +2470,6 @@ class _Repl:
       # Queued lines clear as their user messages land in the transcript.
       if self._stream_pane.preview is not None:
         self._abort_stream()  # Fallback for a truncated stream lifecycle.
-        return
     if not self._state.session.replaying:
       self._app.invalidate()  # Refresh the pending pane and footer.
 
@@ -3976,7 +3980,7 @@ async def run_tui(
         updated.get('display_unmanaged_worktrees') is True
       )
       await asyncio.shield(extensions_loaded)
-      await user_extensions.apply_settings(updated.get('extensions'))
+      await user_extensions.apply_settings()
 
     config_task = asyncio.create_task(settings.watch(apply_config))
 

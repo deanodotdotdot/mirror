@@ -30,6 +30,7 @@ class ConversationMetrics:
     *,
     conversation_id: str,
     replaying: bool,
+    turn_duration_seconds: float | None = None,
   ) -> None:
     """Observe authoritative client events before their UI state changes."""
     if conversation_id != self._conversation_id:
@@ -59,6 +60,8 @@ class ConversationMetrics:
       self._emit('mirror_conversation_turn_started')
     elif kind in {'turn_completed', 'turn_interrupted'}:
       if self._turn_active:
+        if turn_duration_seconds is not None:
+          self._emit('mirror_turn_duration_seconds', turn_duration_seconds)
         self._emit('mirror_turn_tool_call_count', len(self._tool_results))
         self._emit(
           'mirror_turn_tool_success_count',

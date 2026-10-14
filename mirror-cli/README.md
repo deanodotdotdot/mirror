@@ -194,7 +194,10 @@ If Reflection is active and no key remains, Mirror reopens sign-in.
 **Check:** the composer stays fixed while history scrolls.
 
 Drag to select visible text and copy it on release. Copying uses OSC 52;
-your terminal's clipboard permissions still apply.
+your terminal's clipboard permissions still apply. Underlined Markdown links use
+native OSC 8 hyperlinks: your terminal controls hover feedback and the click
+gesture (often Command-click or Ctrl-click). Dragging selects the displayed label
+without opening the link.
 
 Hover over a completed Markdown code block to reveal **⧉** at its top right;
 hover over the icon for **click to copy**. It copies code without fences, rails,

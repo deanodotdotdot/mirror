@@ -60,7 +60,7 @@ _DARK = {
   'heading': '#afafff',
   'quote-rail': '#afafff',
   'inline-code': '#8fbcbb on #2a2a2a',
-  'link': 'underline bright_blue',
+  'link': 'underline #7aa2cc',
   'tool-heading': '#9e9e9e',
   # Preserve the selector's sage/mint hierarchy on its green inset surface.
   'menu': '#87a995 on #171d1a',
@@ -100,7 +100,7 @@ _LIGHT = {
   'heading': '#625295',
   'quote-rail': '#625295',
   'inline-code': '#345d61 on #eeeeee',
-  'link': 'underline blue',
+  'link': 'underline #355f85',
   'tool-heading': '#53625a',
   'menu': '#20382a on #e5eee8',
   'menu-accent': '#1e3207',
@@ -139,7 +139,7 @@ _TERMINAL = {
   'heading': 'default',
   'quote-rail': 'dim default',
   'inline-code': 'bold',
-  'link': 'underline blue',
+  'link': 'underline bright_blue',
   'tool-heading': 'default',
   'menu': 'default',
   'menu-accent': 'green',
@@ -494,7 +494,7 @@ def rich_theme(name: str | Theme = 'dark') -> theme.Theme:
     'markdown.code': resolved['ui.inline-code'],
     'markdown.code_block': style.Style(),
     'markdown.link': resolved['ui.link'],
-    'markdown.link_url': resolved['ui.muted'],
+    'markdown.link_url': resolved['ui.link'],
     'markdown.hr': resolved['ui.faint'],
     'markdown.block_quote': style.Style(italic=True),
     'markdown.table.border': resolved['ui.muted'],
@@ -537,6 +537,8 @@ def _prompt_style(value: style.Style) -> str:
     parts.append('bold' if value.bold else 'nobold')
   if value.italic:
     parts.append('italic')
+  if value.underline:
+    parts.append('underline')
   if value.reverse is not None:
     parts.append('reverse' if value.reverse else 'noreverse')
   if value.dim:

@@ -7,7 +7,6 @@ from collections.abc import Callable, Collection, Sequence
 
 from mirror.protocol import agent_pb2
 from prompt_toolkit import data_structures as _data_structures
-from prompt_toolkit.formatted_text import ansi as _ansi
 from rich import console as _console
 from rich import text as _text
 
@@ -15,7 +14,7 @@ from mirror.cli import actions as _actions
 from mirror.cli import rendering as _rendering
 from mirror.cli import state as _state
 from mirror.cli import terminal as _terminal_mod
-from mirror.cli import themes
+from mirror.cli import hyperlinks, themes
 
 _STREAMED_ARGUMENT_PREFIX_LIMIT = 4096
 # Explains why only the latest portion remains visible in a full live pane.
@@ -32,7 +31,7 @@ def render_stream_preview(
   skill_names: Collection[str] = (),
   hide_reasoning: bool = False,
   theme_name: str | themes.Theme = 'dark',
-) -> tuple[_ansi.ANSI, _data_structures.Point]:
+) -> tuple[hyperlinks.ANSI, _data_structures.Point]:
   """Render and truncate a live stream for a fixed viewport."""
   width = max(1, width)
   max_lines = max(1, max_lines)
@@ -40,8 +39,6 @@ def render_stream_preview(
     None if hide_reasoning else (preview.reasoning or None),
     preview.content or None,
     preview.refusal or None,
-    # prompt_toolkit's ANSI parser does not understand OSC-8 hyperlinks.
-    hyperlinks=False,
     skill_names=skill_names,
   )
   rendered_ansi = (
@@ -66,7 +63,7 @@ def render_stream_preview(
       *rendered_lines[-tail_lines:],
     ])
 
-  ansi = _ansi.ANSI(rendered_ansi)
+  ansi = hyperlinks.ANSI(rendered_ansi)
   plain = ''.join(
     fragment[1]
     for fragment in ansi.__pt_formatted_text__()
@@ -102,7 +99,7 @@ class StreamPane:
     self._render_key: (
       tuple[str, str, str, int, int, bool, str | themes.Theme] | None
     ) = None
-    self._ansi_cache = _ansi.ANSI('')
+    self._ansi_cache = hyperlinks.ANSI('')
     self._cursor_cache = _data_structures.Point(x=0, y=0)
 
   def _focus(self) -> bool:
@@ -374,7 +371,7 @@ class StreamPane:
       )
       self._high_water = max(self._high_water, rendered)
 
-  def ansi(self) -> _ansi.ANSI:
+  def ansi(self) -> hyperlinks.ANSI:
     """Return the cached live stream text for prompt_toolkit."""
     self._refresh_render()
     return self._ansi_cache

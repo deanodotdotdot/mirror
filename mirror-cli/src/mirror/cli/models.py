@@ -34,10 +34,15 @@ WIRE_PROTOCOLS: tuple[tuple[str, str], ...] = (
 )
 
 
+# A Reflection API alias of the default Beam model. The API serves it under this
+# name too, and a saved last-model selection may name it.
+_UNVERSIONED_BEAM = 'Beam-501B-A23B'
+
+
 def default_model(api: str) -> str:
   """The model id a wire protocol starts from when none is named."""
   if api == 'reflection':
-    return 'Beam-501B-A23B'
+    return 'Beam-1.0-501B-A23B'
   if api == 'anthropic-messages':
     return 'claude-opus-4-8'
   if api in ('openai-responses', 'openai-codex-responses'):
@@ -160,6 +165,11 @@ def find_model(model_id: str) -> ModelOption:
   for option in load_models():
     if option.model_id == model_id:
       return option
-  if model_id == default_model('reflection'):
+  if is_reflection_default(model_id):
     return ModelOption(model_id, 'Reflection', api='reflection')
   return ModelOption(model_id, model_id)
+
+
+def is_reflection_default(model_id: str) -> bool:
+  """Whether `model_id` names the Reflection API's default model."""
+  return model_id in (default_model('reflection'), _UNVERSIONED_BEAM)

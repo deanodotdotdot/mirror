@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import dataclasses
+import hashlib
+import json
 import logging
 import os
 import pathlib
@@ -30,6 +32,44 @@ def _description(directory: pathlib.Path) -> str:
     )
   except (OSError, SyntaxError, UnicodeError):
     return 'Description unavailable.'
+
+
+@dataclasses.dataclass(frozen=True)
+class _Approval:
+  directory: pathlib.Path
+  revision: str
+
+
+def _approval(
+  directory: pathlib.Path, overrides: config.JsonObject
+) -> _Approval:
+  """Bind consent to the source, its files, and its configured access."""
+  digest = hashlib.sha256(str(directory.resolve()).encode() + b'\0')
+  digest.update(
+    json.dumps(
+      {
+        key: value
+        for key, value in overrides.items()
+        if key not in {'enabled', 'consent_revision'}
+      },
+      sort_keys=True,
+    ).encode()
+  )
+  for root, directories, files in directory.walk():
+    directories[:] = sorted(
+      name
+      for name in directories
+      if name not in {'.git', '__pycache__', '.venv'}
+    )
+    for name in sorted(files):
+      path = root / name
+      if not path.is_file():
+        raise ValueError(f'Extension contains a non-file: {path}')
+      digest.update(str(path.relative_to(directory)).encode() + b'\0')
+      digest.update(str(path.resolve()).encode() + b'\0')
+      with path.open('rb') as source:
+        digest.update(hashlib.file_digest(source, 'sha256').digest())
+  return _Approval(directory, digest.hexdigest())
 
 
 class UserExtensions:
@@ -63,7 +103,7 @@ class UserExtensions:
     self._applied: dict[str, config.ExtensionSettings] | None = None
     self._apply_lock = asyncio.Lock()
     self._foreground: extension.Context | None = None
-    self._pending_approval: dict[str, pathlib.Path] = {}
+    self._pending_approval: dict[str, _Approval] = {}
 
   def _key(self, directory: pathlib.Path) -> str:
     if key := self._sources.key(directory):
@@ -116,6 +156,36 @@ class UserExtensions:
   def _trusted(self, directory: pathlib.Path) -> bool:
     return directory.parent in (self._bundled, self._packaged)
 
+  def _required_approval(
+    self, directory: pathlib.Path, overrides: config.JsonObject
+  ) -> _Approval | None:
+    if (
+      self._trusted(directory)
+      or config.resolve_extension(overrides).enabled is not True
+    ):
+      return None
+    # Explicit, unversioned config entries retain their existing source-wide trust.
+    if overrides.get('enabled') is True and 'consent_revision' not in overrides:
+      return None
+    approval = _approval(directory, overrides)
+    return (
+      None
+      if overrides.get('enabled') is True
+      and overrides.get('consent_revision') == approval.revision
+      else approval
+    )
+
+  def _resolve_approval(self, key: str) -> None:
+    if approval := self._pending_approval.pop(key, None):
+      self.registry.dispatch(
+        actions.ExtensionConsentResolved(key, approval.revision)
+      )
+
+  def _queue_approval(self, key: str, approval: _Approval) -> None:
+    if self._pending_approval.get(key) != approval:
+      self._resolve_approval(key)
+      self._pending_approval[key] = approval
+
   def _emit_metrics(self) -> None:
     """Report applied inventory after settings changes, not workspace focus."""
     if self._applied is None:
@@ -159,32 +229,32 @@ class UserExtensions:
 
   async def start(self, *, trust_extensions: bool = False) -> None:
     """Load enabled extensions; ask once about newly discovered external code."""
-    entries = self._config.read().get('extensions')
-    if os.getenv('MIRROR_EXTENSIONS_ENABLED', 'true').lower() == 'true':
-      await self._sources.prepare(entries)
-    for key, directory in self._directories().items():
-      try:
-        overrides = config.extension_overrides(entries, key)
-        settings = config.resolve_extension(overrides)
-      except (OSError, ValueError) as error:
-        logging.getLogger(__name__).warning(
-          'Ignoring config for extension %s: %s', key, error
-        )
-        continue
-      if 'enabled' not in overrides:
-        if self._trusted(directory) or settings.enabled is not True:
-          continue
-        if trust_extensions:
-          self._config.set_extension(key, True)
-        else:
-          self._pending_approval[key] = directory
-    await self.apply_settings(self._config.read().get('extensions'))
-    if self._foreground is not None:
-      self._show_approval(self._foreground)
-
-  async def apply_settings(self, settings: object) -> None:
-    """Enable and disable extensions to match their configured settings."""
     async with self._apply_lock:
+      if os.getenv('MIRROR_EXTENSIONS_ENABLED', 'true').lower() == 'true':
+        await self._sources.prepare(self._config.read().get('extensions'))
+      entries = self._config.read().get('extensions')
+      for key, directory in self._directories().items():
+        try:
+          overrides = config.extension_overrides(entries, key)
+          approval = self._required_approval(directory, overrides)
+        except (OSError, ValueError) as error:
+          logging.getLogger(__name__).warning(
+            'Ignoring config for extension %s: %s', key, error
+          )
+          continue
+        if approval is not None:
+          if trust_extensions:
+            self._config.set_extension(
+              key, True, consent_revision=approval.revision
+            )
+          else:
+            self._queue_approval(key, approval)
+    await self.apply_settings()
+
+  async def apply_settings(self) -> None:
+    """Apply the authoritative settings, reading only after acquiring ownership."""
+    async with self._apply_lock:
+      settings = self._config.read().get('extensions')
       if os.getenv('MIRROR_EXTENSIONS_ENABLED', 'true').lower() == 'true':
         await self._sources.prepare(settings)
       directories = self._directories()
@@ -198,24 +268,24 @@ class UserExtensions:
           key = self._key(directory)
           if key in previous and directories.get(key) != directory:
             await self.registry.unload(name)
-      self._pending_approval = {
-        key: directory
-        for key, directory in self._pending_approval.items()
-        if directories.get(key) == directory
-      }
+      for key, approval in tuple(self._pending_approval.items()):
+        if directories.get(key) != approval.directory:
+          self._resolve_approval(key)
       applied: dict[str, config.ExtensionSettings] = {}
       for key, directory in directories.items():
         await asyncio.sleep(0)
         try:
           overrides = config.extension_overrides(settings, key)
           resolved = config.resolve_extension(overrides)
-          if 'enabled' in overrides or resolved.enabled is not True:
-            self._pending_approval.pop(key, None)
-          if (
-            not self._trusted(directory)
-            and resolved.enabled is True
-            and overrides.get('enabled') is not True
-          ):
+          approval = self._required_approval(directory, overrides)
+          if approval is None:
+            self._resolve_approval(key)
+          else:
+            # Cancellation skips this launch; an active revision losing trust asks again.
+            if key in self._pending_approval or (
+              key in previous and previous[key].enabled is True
+            ):
+              self._queue_approval(key, approval)
             resolved = dataclasses.replace(resolved, enabled=False)
           try:
             loaded = await self._apply_extension(
@@ -242,6 +312,8 @@ class UserExtensions:
             applied[key] = previous[key]
       self._applied = applied
       self._refresh_selector()
+      if self._foreground is not None:
+        self._show_approval(self._foreground)
       self._emit_metrics()
 
   async def on_foreground(self, context: extension.Context) -> None:
@@ -270,7 +342,10 @@ class UserExtensions:
   def _show_approval(self, context: extension.Context) -> None:
     if not self._pending_approval:
       return
-    key, directory = next(iter(self._pending_approval.items()))
+    if context.get_state().selector.active:
+      return
+    key, approval = next(iter(self._pending_approval.items()))
+    directory = approval.directory
     context.dispatch(
       actions.OpenSelector(
         selection.Selector(
@@ -280,10 +355,12 @@ class UserExtensions:
             selection.Choice('disable', 'Disable', key),
             selection.Choice('enable', 'Enable', key),
           ),
-          lambda choice: actions.ExtensionConsent(key, choice == 'enable'),
+          lambda choice: actions.ExtensionConsent(
+            key, choice == 'enable', approval.revision
+          ),
           selected='disable',
           numbered=True,
-          cancel_action=actions.ExtensionConsent(key, None),
+          cancel_action=actions.ExtensionConsent(key, None, approval.revision),
         )
       )
     )
@@ -396,7 +473,7 @@ class UserExtensions:
     async with self._apply_lock:
       self._sources.add(self._config, url)
     context.dispatch(actions.ShowText('Downloading extension…'))
-    await self.apply_settings(self._config.read().get('extensions'))
+    await self.apply_settings()
     if error := self._sources.errors.get(url):
       raise ValueError(
         f'Source added, but download failed: {error}. '
@@ -408,9 +485,8 @@ class UserExtensions:
     overrides = config.extension_overrides(
       self._config.read().get('extensions'), url
     )
-    settings = config.resolve_extension(overrides)
-    if 'enabled' not in overrides and settings.enabled is True:
-      self._pending_approval[url] = directory
+    if approval := self._required_approval(directory, overrides):
+      self._queue_approval(url, approval)
     context.dispatch(
       actions.ShowText(
         f'{directory.name} downloaded. Approval required to enable.'
@@ -458,15 +534,18 @@ class UserExtensions:
           if status.error is not None:
             await self.registry.unload(directory.name)
             raise extension.ExtensionLoadError(status.error)
-      self._pending_approval.pop(key, None)
+      self._config.set_extension(
+        key, True, consent_revision=_approval(directory, overrides).revision
+      )
+      self._resolve_approval(key)
       message = 'updated and reloaded'
     else:
       if loaded is not None:
         await self.registry.unload(loaded)
-      self._pending_approval.pop(key, None)
+      self._resolve_approval(key)
       message = 'updated; disabled'
-      if 'enabled' not in overrides and resolved.enabled is True:
-        self._pending_approval[key] = directory
+      if approval := self._required_approval(directory, overrides):
+        self._queue_approval(key, approval)
         message = 'downloaded; approval required to enable'
         resolved = dataclasses.replace(resolved, enabled=False)
     self._sources.use(key, directory)
@@ -520,7 +599,7 @@ class UserExtensions:
     else:
       async with self._apply_lock:
         self._sources.remove(self._config, request.key)
-      await self.apply_settings(self._config.read().get('extensions'))
+      await self.apply_settings()
       context.dispatch(
         actions.ShowText('Extension removed. Cached files were kept.')
       )
@@ -545,32 +624,12 @@ class UserExtensions:
         context.dispatch(actions.ShowText(str(error), style='ui.error'))
       return
     if isinstance(effect, actions.ExtensionConsent):
-      directory = self._pending_approval.pop(effect.key, None)
       try:
-        if directory is not None and effect.enabled is not None:
-          entries = self._config.read().get('extensions')
-          overrides = config.extension_overrides(entries, effect.key)
-          settings = config.resolve_extension(overrides)
-          if (
-            'enabled' not in overrides
-            and settings.enabled is True
-            and self._directories().get(effect.key) == directory
-          ):
-            await self.set_enabled(directory, effect.enabled)
-            context.dispatch(
-              actions.ShowText(
-                f'{directory.name} {"enabled" if effect.enabled else "disabled"}.'
-              )
-            )
-        elif directory is not None:
-          context.dispatch(
-            actions.ShowText(
-              f'{directory.name} not enabled; approval cancelled.'
-            )
-          )
+        await self._consent(context, effect)
       except (ValueError, OSError) as error:
         context.dispatch(actions.ShowText(str(error), style='ui.error'))
-      self._show_approval(context)
+      if self._foreground is not None:
+        self._show_approval(self._foreground)
       return
     directory = self._directories().get(effect.key)
     if directory is None:
@@ -588,32 +647,79 @@ class UserExtensions:
       return
     context.dispatch(self.selector(selected=effect.key))
 
+  async def _consent(
+    self, context: extension.Context, request: actions.ExtensionConsent
+  ) -> None:
+    async with self._apply_lock:
+      approval = self._pending_approval.get(request.key)
+      if approval is None or approval.revision != request.revision:
+        return
+      directory = self._directories().get(request.key)
+      self._resolve_approval(request.key)
+      if directory is None or directory != approval.directory:
+        return
+      overrides = config.extension_overrides(
+        self._config.read().get('extensions'), request.key
+      )
+      current = self._required_approval(directory, overrides)
+      if current is None:
+        return
+      if current != approval:
+        self._queue_approval(request.key, current)
+        return
+      if request.enabled is None:
+        context.dispatch(
+          actions.ShowText(
+            f'{directory.name} not enabled; approval cancelled for all workspaces this launch.'
+          )
+        )
+        return
+      await self._set_enabled(directory, request.enabled)
+      context.dispatch(
+        actions.ShowText(
+          f'{directory.name} {"enabled" if request.enabled else "disabled"}.'
+        )
+      )
+
   async def set_enabled(
     self, directory: pathlib.Path, enabled: bool
   ) -> str | None:
     """Persist enablement and apply it to every workspace."""
     async with self._apply_lock:
-      key = self._key(directory)
-      if (
-        enabled
-        and self._directories(ignore_environment=True).get(key) != directory
-      ):
-        raise ValueError(
-          f'Extension is shadowed or no longer discoverable: {directory}'
-        )
-      self._config.set_extension(key, enabled)
-      self._pending_approval.pop(key, None)
-      overrides = config.extension_overrides(
-        self._config.read().get('extensions'), key
+      return await self._set_enabled(directory, enabled)
+
+  async def _set_enabled(
+    self, directory: pathlib.Path, enabled: bool
+  ) -> str | None:
+    key = self._key(directory)
+    if (
+      enabled
+      and self._directories(ignore_environment=True).get(key) != directory
+    ):
+      raise ValueError(
+        f'Extension is shadowed or no longer discoverable: {directory}'
       )
-      settings = config.resolve_extension(overrides)
-      loaded = await self._apply_extension(directory, enabled, overrides)
-      if enabled and loaded is None:
-        raise ValueError(f'Could not load {directory}; see the CLI log.')
-      self._applied = {**(self._applied or {}), key: settings}
-      self._refresh_selector()
-      self._emit_metrics()
-      return loaded
+    overrides = config.extension_overrides(
+      self._config.read().get('extensions'), key
+    )
+    revision = (
+      _approval(directory, overrides).revision
+      if enabled and not self._trusted(directory)
+      else None
+    )
+    self._config.set_extension(key, enabled, consent_revision=revision)
+    self._resolve_approval(key)
+    overrides = config.extension_overrides(
+      self._config.read().get('extensions'), key
+    )
+    settings = config.resolve_extension(overrides)
+    loaded = await self._apply_extension(directory, enabled, overrides)
+    if enabled and loaded is None:
+      raise ValueError(f'Could not load {directory}; see the CLI log.')
+    self._applied = {**(self._applied or {}), key: settings}
+    self._refresh_selector()
+    self._emit_metrics()
+    return loaded
 
   async def _apply_extension(
     self, directory: pathlib.Path, enabled: bool, overrides: config.JsonObject
@@ -660,7 +766,15 @@ class UserExtensions:
         await self.registry.unload(extension_id)
         loaded = None
       else:
+        revision = (
+          _approval(directory, overrides).revision
+          if not self._trusted(directory)
+          else None
+        )
         loaded = await self.registry.reload(extension_id, overrides=overrides)
+        if loaded is not None and revision is not None:
+          self._config.set_extension(key, True, consent_revision=revision)
+        self._resolve_approval(key)
       self._applied = {**(self._applied or {}), key: settings}
       self._refresh_selector()
       return loaded

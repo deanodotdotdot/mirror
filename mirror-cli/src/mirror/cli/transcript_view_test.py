@@ -18,7 +18,6 @@ from prompt_toolkit import (
   mouse_events,
   utils,
 )
-from prompt_toolkit.formatted_text import ansi
 from prompt_toolkit.input import defaults
 from prompt_toolkit.layout import containers, controls, layout
 from prompt_toolkit.output import base, color_depth, vt100
@@ -26,6 +25,7 @@ from rich import cells, markdown
 
 from mirror.cli import (
   actions,
+  hyperlinks,
   rendering,
   themes,
   tool_groups,
@@ -61,7 +61,7 @@ def _answer(
 
 def _text(content: controls.UIContent) -> str:
   return '\n'.join(
-    ''.join(fragment[1] for fragment in content.get_line(index))
+    formatted_text.fragment_list_to_text(content.get_line(index))
     for index in range(content.line_count)
   )
 
@@ -570,14 +570,12 @@ def test_viewport_keeps_character_styles_when_coalescing_ansi_fragments(
   )
   content = view.create_content(80, 20)
   expected = formatted_text.to_formatted_text(
-    ansi.ANSI(
-      rendering.without_hyperlinks(
-        rendering.renderable_to_ansi(
-          rendering.assistant_render(markdown),
-          80,
-          theme_name=theme,
-        ).rstrip()
-      )
+    hyperlinks.ANSI(
+      rendering.renderable_to_ansi(
+        rendering.assistant_render(markdown),
+        80,
+        theme_name=theme,
+      ).rstrip()
     )
   )
   expected_rows = list(formatted_text.split_lines(expected))
@@ -592,6 +590,7 @@ def test_viewport_keeps_character_styles_when_coalescing_ansi_fragments(
         character,
       )
       for style, text, *_ in content.get_line(index)
+      if '[ZeroWidthEscape]' not in style
       for character in text
     ]
     expected_cells = [
@@ -600,6 +599,7 @@ def test_viewport_keeps_character_styles_when_coalescing_ansi_fragments(
         character,
       )
       for style, text, *_ in row
+      if '[ZeroWidthEscape]' not in style
       for character in text
     ]
     # The window fills unstyled space omitted at semantic part boundaries.
@@ -1300,9 +1300,7 @@ def test_chunked_answer_preserves_canonical_wrapping(
   actual = _text(view.create_content(width, 100))
   rendered = rendering.renderable_to_ansi(source.blocks()[0].renderable, width)
   expected = formatted_text.fragment_list_to_text(
-    formatted_text.to_formatted_text(
-      ansi.ANSI(rendering.without_hyperlinks(rendered))
-    )
+    formatted_text.to_formatted_text(hyperlinks.ANSI(rendered))
   )
   assert [line.rstrip() for line in actual.rstrip().splitlines()] == [
     line.rstrip() for line in expected.rstrip().splitlines()

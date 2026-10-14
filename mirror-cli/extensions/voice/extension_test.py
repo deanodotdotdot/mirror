@@ -38,7 +38,7 @@ async def test_installed_voice_is_optional_and_loading_never_installs(
       await manager.start()
       assert 'core/voice' not in registry.extension_ids()
       settings.set_extension('builtin/voice', True)
-      await manager.apply_settings(settings.read().get('extensions'))
+      await manager.apply_settings()
       assert 'core/voice' in registry.extension_ids()
     finally:
       await registry.close()
