@@ -2,9 +2,9 @@
 
 Runs Mirror sandboxes as [microsandbox](https://microsandbox.dev) microVMs. It
 implements `SandboxProvider` and `SandboxTransport` from `mirror-sandbox` by
-calling the `msb` command.
+calling `msb` for lifecycle operations and connections to `sandboxd`.
 
-Mirror does not ship microsandbox. Install `msb` 0.7.7 or newer yourself; the
+Mirror does not ship the runtime. Install `msb` 0.7.7 or newer yourself; the
 provider uses `$MIRROR_MSB` if set and the first `msb` on `PATH` otherwise.
 macOS needs Apple silicon. Linux needs read and write access to `/dev/kvm`.
 
@@ -30,21 +30,31 @@ mirror-ws-<request>                 one VM per provisioning request
   a stopped VM would otherwise boot a throwaway copy. `create` removes a VM
   with the wrong network policy, and one it just made with the wrong mounts.
 - Workspace tools reach `sandboxd serve` over `msb exec --stream`.
+- Extension processes use `sandboxd`'s raw streaming RPC, shared with hosted
+  execution, with no PTY or forwarded host environment. Tools and raw commands
+  share process-group supervision. Cancellation waits for confirmed termination;
+  missing confirmation remains unknown and quarantines the VM without replay.
+  Confirmed cancellation leaves the VM and unrelated commands running.
+- Older guest binaries without the raw-command RPC fail before command dispatch;
+  they must be updated rather than falling back to unconfirmed execution.
 - The guest kernel can keep stale metadata for files the host changes, so the
   provider asks `sandboxd` to drop the guest's dentry and inode caches before
-  each call. This needs the image to run commands as root.
+  each tool call. This needs the image to run commands as root.
 - Suspending stops the VM. Its root filesystem survives until the sandbox is
   deleted, and the workspace lives on the host.
 
 ## Tests
 
 The unit tests drive a fake `msb` (`testdata/fake_msb.sh`). The live test boots
-real VMs and is manual:
+real VMs and is manual. Pull the image into the same `msb` cache first; the
+provider creates VMs with `--pull never`:
 
 ```bash
+"${MIRROR_MSB:-msb}" image pull "${MIRROR_LIVE_IMAGE:-debian:bookworm-slim}"
 MIRROR_LIVE_SANDBOXD=/path/to/linux/mirror-sandboxd \
-  cargo test -p mirror-sandbox-microsandbox --test live_acceptance -- --ignored
+  cargo test --locked -p mirror-sandbox-microsandbox --test live_acceptance -- --ignored
 ```
 
 `MIRROR_LIVE_SANDBOXD` must be built for the host's architecture.
-`MIRROR_LIVE_IMAGE` overrides the default `debian:bookworm-slim`.
+`MIRROR_LIVE_IMAGE` overrides the default `debian:bookworm-slim`; export it before
+both commands when using another image.

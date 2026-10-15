@@ -169,6 +169,7 @@ class EditorExtension(
         'editor',
         'Open a file under CWD in your editor',
         _pick_file,
+        shortcut_action=actions.RoutedExtensionAction(self.id(), OpenEditor()),
         available_when_busy=True,
       ),
     )

@@ -56,6 +56,7 @@ asyncio.run(main())
     assert received == [event]
   finally:
     await transport.close()
+  assert (tmp_path / 'stderr').stat().st_mode & 0o777 == 0o600
   assert (tmp_path / 'stderr').read_bytes() == b'x' * (1 << 18)
   assert (
     tmp_path / 'stdout'

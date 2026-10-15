@@ -52,8 +52,6 @@ def fragments(state: _state.State) -> _StyleAndTextTuples:
   segments = [('class:footer class:footer-model', state.status_bar.model)]
   if state.status_bar.reasoning_effort != 'none':
     segments.append(('class:footer', state.status_bar.reasoning_effort))
-  if state.status_bar.resize_dirty:
-    segments.insert(0, ('class:footer', 'Ctrl+L to redraw'))
   fragments: _StyleAndTextTuples = [
     ('class:footer', ' '),
     approval,

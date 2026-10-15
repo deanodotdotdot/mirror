@@ -1,63 +1,59 @@
+//! Admission, dispatch, and cleanup ownership for one sandboxd connection.
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::os::unix::process::CommandExt;
-use std::pin::Pin;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::Duration;
 
 use mirror_protocol::ChatRecord;
-use nix::errno::Errno;
-use nix::sys::signal::killpg;
-use nix::sys::signal::Signal;
-use nix::sys::wait::waitpid;
-use nix::sys::wait::WaitPidFlag;
-use nix::sys::wait::WaitStatus;
+use mirror_sandbox::{
+    execute_event, run_command_response, run_command_result, CallOutcome, ExecuteEvent,
+    ExecuteRequest, ExecuteResponse, RunCommandRequest, RunCommandResponse, RunCommandResult,
+    RunCommandStart, CANCEL_ANSWER_TIMEOUT, MAX_DISPATCH_CALL_ID_BYTES, MAX_MESSAGE_BYTES,
+};
 use nix::unistd::Pid;
 use prost::Message;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
-use tokio::time::Instant;
 
-use crate::{RunnerCommand, REQUEST_BYTES_VARIABLE};
-use mirror_sandbox::{
-    execute_event, CallOutcome, ExecuteEvent, ExecuteRequest, ExecuteResponse,
-    MAX_DISPATCH_CALL_ID_BYTES, MAX_MESSAGE_BYTES, STOP_GRACE,
+use crate::{
+    run_command, supervise_process, ProcessInterrupt, ProcessSupervision, RunnerCommand,
+    REQUEST_BYTES_VARIABLE,
 };
-use tokio::sync::watch;
+
+// RPC envelopes stay internal to the connection runtime and its service adapter.
+pub(crate) enum ExecutionCommand {
+    Execute(ExecutionRequest),
+    Cancel(String),
+}
+
+pub(crate) enum ExecutionRequest {
+    Tool {
+        request: ExecuteRequest,
+        events: mpsc::Sender<ExecuteEvent>,
+    },
+    Command {
+        request: RunCommandStart,
+        input: Box<tonic::Streaming<RunCommandRequest>>,
+        events: mpsc::Sender<RunCommandResponse>,
+    },
+}
 
 const MAX_ACTIVE_CALLS: usize = 64;
 const CALL_STOP_GRACE: Duration = Duration::from_secs(16);
 const DIAGNOSTIC_BYTES: u64 = 8 * 1024;
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-type Events = mpsc::Sender<ExecuteEvent>;
-pub(crate) enum ExecutionCommand {
-    Execute {
-        request: ExecuteRequest,
-        events: Events,
-    },
-    Cancel(String),
-}
-#[derive(Clone, Copy)]
-enum Interrupt {
-    Cancel,
-    Deadline,
-}
 struct Execution {
     stdout: io::Result<(Vec<u8>, bool)>,
     stderr: io::Result<(Vec<u8>, bool)>,
     status: io::Result<ExitStatus>,
-}
-struct Stopped {
-    finished: Option<Execution>,
-    confirmed: bool,
 }
 
 pub(crate) async fn run(
@@ -66,60 +62,108 @@ pub(crate) async fn run(
     mut closing: watch::Receiver<bool>,
     egress: crate::egress_runtime::GuestEgress,
 ) {
-    let mut calls = HashMap::<String, Option<oneshot::Sender<Interrupt>>>::new();
+    let mut calls = HashMap::<String, Option<oneshot::Sender<()>>>::new();
     let mut tasks = JoinSet::new();
     loop {
         tokio::select! {
             biased;
             _ = closing.wait_for(|closed| *closed) => break,
             completed = tasks.join_next(), if !tasks.is_empty() => {
-                let Some(Ok((id, events, outcome))) = completed else { break; };
+                let Some(Ok(id)) = completed else { break; };
                 calls.remove(&id);
-                complete(&events, outcome);
             }
             command = commands.recv() => match command {
                 Some(ExecutionCommand::Cancel(id)) => {
                     if let Some(interrupt) = calls.get_mut(&id).and_then(Option::take) {
-                        let _ = interrupt.send(Interrupt::Cancel);
+                        let _ = interrupt.send(());
                     }
                 }
-                Some(ExecutionCommand::Execute { request, events }) => {
-                    let rejection = if request.call_id.len() > MAX_DISPATCH_CALL_ID_BYTES {
+                Some(ExecutionCommand::Execute(request)) => {
+                    let (id, valid) = match &request {
+                        ExecutionRequest::Tool { request, .. } => (&request.call_id, request.call.is_some()),
+                        ExecutionRequest::Command { request, .. } => (&request.call_id, true),
+                    };
+                    let rejection = if id.len() > MAX_DISPATCH_CALL_ID_BYTES {
                         Some("sandboxd call ID exceeds the dispatch limit")
                     } else if calls.len() >= MAX_ACTIVE_CALLS {
                         Some("sandboxd concurrent call limit reached")
-                    } else if calls.contains_key(&request.call_id) {
+                    } else if calls.contains_key(id) {
                         Some("sandboxd call is already running")
-                    } else if request.call.is_none() {
+                    } else if !valid {
                         Some("execute has no tool call")
                     } else { None };
-                    if let Some(reason) = rejection {
-                        complete(&events, CallOutcome::Rejected(reason.into()));
-                        continue;
-                    }
-                    if events.try_send(ExecuteEvent { event: Some(execute_event::Event::Accepted(true)) }).is_err() { continue; }
+                    let delivered = match &request {
+                        ExecutionRequest::Tool { events, .. } => events.try_send(ExecuteEvent {
+                            event: Some(match rejection {
+                                Some(reason) => execute_event::Event::Completed(ExecuteResponse {
+                                    outcome: Some(CallOutcome::Rejected(reason.into())),
+                                }),
+                                None => execute_event::Event::Accepted(true),
+                            }),
+                        }).is_ok(),
+                        ExecutionRequest::Command { events, .. } => events.try_send(RunCommandResponse {
+                            event: Some(match rejection {
+                                Some(reason) => run_command_response::Event::Completed(RunCommandResult {
+                                    outcome: Some(run_command_result::Outcome::Rejected(reason.into())),
+                                }),
+                                None => run_command_response::Event::Accepted(true),
+                            }),
+                        }).is_ok(),
+                    };
+                    if rejection.is_some() || !delivered { continue; }
+                    let id = id.clone();
                     let (interrupt, interrupted) = oneshot::channel();
-                    calls.insert(request.call_id.clone(), Some(interrupt));
+                    calls.insert(id.clone(), Some(interrupt));
                     let runner = runner.clone();
                     let egress = egress.get().cloned();
                     tasks.spawn(async move {
-                        let (abandoned, abandoned_rx) = oneshot::channel();
-                        let relay = async {
-                            let reason = tokio::select! {
-                                reason = interrupted => reason.unwrap_or(Interrupt::Cancel),
-                                () = events.closed() => Interrupt::Cancel,
-                            };
-                            let _ = abandoned.send(reason);
-                        };
-                        let execution = run_call(&runner, egress.as_deref(),
-                            request.call.map(|call| call.encode_to_vec()).unwrap_or_default(),
-                            Duration::from_millis(request.timeout_millis), request.max_output_bytes, abandoned_rx);
-                        tokio::pin!(execution);
-                        let outcome = tokio::select! {
-                            outcome = &mut execution => outcome,
-                            () = relay => execution.await,
-                        };
-                        (request.call_id, events, outcome)
+                        match request {
+                            ExecutionRequest::Tool { request, events } => {
+                                let cancelled = async {
+                                    tokio::select! {
+                                        _ = interrupted => {},
+                                        () = events.closed() => {},
+                                    }
+                                };
+                                let outcome = run_call(
+                                    &runner,
+                                    egress.as_deref(),
+                                    request.call.map(|call| call.encode_to_vec()).unwrap_or_default(),
+                                    Duration::from_millis(request.timeout_millis),
+                                    request.max_output_bytes,
+                                    cancelled,
+                                ).await;
+                                let mut event = ExecuteEvent {
+                                    event: Some(execute_event::Event::Completed(ExecuteResponse {
+                                        outcome: Some(outcome),
+                                    })),
+                                };
+                                if event.encoded_len() > MAX_MESSAGE_BYTES {
+                                    event.event = Some(execute_event::Event::Completed(ExecuteResponse {
+                                        outcome: Some(CallOutcome::Failed(
+                                            "the tool result exceeded the RPC message limit and was discarded".into(),
+                                        )),
+                                    }));
+                                }
+                                let _ = events.try_send(event);
+                            }
+                            ExecutionRequest::Command { request, mut input, events } => {
+                                let cancelled = async {
+                                    tokio::select! {
+                                        _ = interrupted => {},
+                                        () = events.closed() => {},
+                                    }
+                                };
+                                let outcome = run_command(&request, &mut input, &events, cancelled).await;
+                                // A stalled output consumer must not retain an admission slot forever.
+                                let _ = tokio::time::timeout(CANCEL_ANSWER_TIMEOUT, events.send(RunCommandResponse {
+                                    event: Some(run_command_response::Event::Completed(RunCommandResult {
+                                        outcome: Some(outcome),
+                                    })),
+                                })).await;
+                            }
+                        }
+                        id
                     });
                 }
                 None => break,
@@ -127,12 +171,10 @@ pub(crate) async fn run(
         }
     }
     for interrupt in calls.into_values().flatten() {
-        let _ = interrupt.send(Interrupt::Cancel);
+        let _ = interrupt.send(());
     }
     if tokio::time::timeout(CALL_STOP_GRACE, async {
-        while let Some(Ok((_, events, outcome))) = tasks.join_next().await {
-            complete(&events, outcome);
-        }
+        while tasks.join_next().await.is_some() {}
     })
     .await
     .is_err()
@@ -142,29 +184,13 @@ pub(crate) async fn run(
     }
 }
 
-fn complete(events: &Events, outcome: CallOutcome) {
-    let mut event = ExecuteEvent {
-        event: Some(execute_event::Event::Completed(ExecuteResponse {
-            outcome: Some(outcome),
-        })),
-    };
-    if event.encoded_len() > MAX_MESSAGE_BYTES {
-        event.event = Some(execute_event::Event::Completed(ExecuteResponse {
-            outcome: Some(CallOutcome::Failed(
-                "the tool result exceeded the RPC message limit and was discarded".into(),
-            )),
-        }));
-    }
-    let _ = events.try_send(event);
-}
-
 async fn run_call(
     runner: &RunnerCommand,
     egress: Option<&crate::egress_connector::EgressConnector>,
     request: Vec<u8>,
     timeout: Duration,
     max_output_bytes: u64,
-    interrupted: oneshot::Receiver<Interrupt>,
+    cancelled: impl Future<Output = ()>,
 ) -> CallOutcome {
     let mut command = std::process::Command::new(&runner.program);
     command
@@ -223,74 +249,25 @@ async fn run_call(
             status,
         }
     };
-    tokio::pin!(execution);
-    let interrupt = tokio::select! {
-        result = &mut execution => return finish(result),
-        interrupt = interrupted => match interrupt {
-            Ok(interrupt) => interrupt,
-            Err(_) => return finish(execution.await),
-        },
-        () = tokio::time::sleep(timeout) => Interrupt::Deadline,
-    };
-    let stopped = stop_group(group, execution).await;
-    if let Some(finished) = stopped.finished {
-        let outcome = finish(finished);
-        if matches!(outcome, CallOutcome::Completed(_)) {
-            return outcome;
-        }
-    }
-    let confirmed = stopped.confirmed;
-    match interrupt {
-        Interrupt::Cancel => CallOutcome::Cancelled(confirmed),
-        Interrupt::Deadline => CallOutcome::DeadlineExceeded(confirmed),
-    }
-}
-
-async fn stop_group(
-    group: Pid,
-    mut execution: Pin<&mut impl Future<Output = Execution>>,
-) -> Stopped {
-    let _ = killpg(group, Signal::SIGTERM);
-    let mut finished = tokio::time::timeout(STOP_GRACE, &mut execution).await.ok();
-    if finished.is_none() {
-        let _ = killpg(group, Signal::SIGKILL);
-        finished = tokio::time::timeout(STOP_GRACE, &mut execution).await.ok();
-    }
-    let Some(finished) = finished else {
-        return Stopped {
-            finished: None,
-            confirmed: false,
-        };
-    };
-    let deadline = Instant::now() + STOP_GRACE;
-    loop {
-        reap_group(group);
-        match killpg(group, None::<Signal>) {
-            Err(Errno::ESRCH) => {
-                return Stopped {
-                    finished: Some(finished),
-                    confirmed: true,
-                };
+    match supervise_process(group, timeout, cancelled, |_| execution).await {
+        ProcessSupervision::Completed(result) => finish(result),
+        ProcessSupervision::Interrupted {
+            reason,
+            finished,
+            confirmed,
+        } => {
+            if let Some(finished) = finished {
+                let outcome = finish(finished);
+                if matches!(outcome, CallOutcome::Completed(_)) {
+                    return outcome;
+                }
             }
-            _ if Instant::now() >= deadline => {
-                return Stopped {
-                    finished: Some(finished),
-                    confirmed: false,
-                };
-            }
-            _ => {
-                let _ = killpg(group, Signal::SIGKILL);
-                tokio::time::sleep(POLL_INTERVAL).await;
+            match reason {
+                ProcessInterrupt::Cancel => CallOutcome::Cancelled(confirmed),
+                ProcessInterrupt::Deadline => CallOutcome::DeadlineExceeded(confirmed),
             }
         }
     }
-}
-
-fn reap_group(group: Pid) {
-    while matches!(
-        waitpid(Pid::from_raw(-group.as_raw()), Some(WaitPidFlag::WNOHANG)),
-        Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..))
-    ) {}
 }
 
 fn finish(execution: Execution) -> CallOutcome {

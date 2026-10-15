@@ -18,7 +18,7 @@ def test_create_content_reuses_summary_during_redraw_and_navigation() -> None:
     ),
   )
   first = view.create_content(80, 20).get_line(0)
-  assert first[0][1].startswith('› word ')
+  assert first[0][1].startswith('›  word ')
 
   with cProfile.Profile() as profile:
     view.create_content(80, 2)

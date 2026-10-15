@@ -26,6 +26,7 @@ from mirror.cli import (
   models,
   onboarding,
   sandboxes,
+  selection,
   workspace_tags,
   workspaces,
   worktrees,
@@ -229,6 +230,7 @@ class WorkspaceController:
       )
     ]
     self.selected = self.workspaces[0]
+    discovered_paths: set[pathlib.Path] | None = None
     for workspace_id, path, name, stored_sandbox in saved:
       directory = pathlib.Path(path)
       try:
@@ -242,9 +244,21 @@ class WorkspaceController:
           'skipping unreadable sandbox workspace %s', workspace_id
         )
         continue
-      # Mirror created each sandbox clone, so it needs no separate trust.
+      # Normal tabs can reuse managed checkouts without granting folder trust.
+      # Revalidate repository membership so stale or unrelated paths stay closed.
       if sandbox is None and not self._is_trusted_directory(directory):
-        continue
+        if not worktrees.is_managed_directory(directory):
+          continue
+        if discovered_paths is None:
+          try:
+            discovered_paths = {
+              checkout.path.resolve()
+              for checkout in self._discover(current.path)
+            }
+          except (OSError, worktrees.WorktreeError):
+            discovered_paths = set()
+        if directory.resolve() not in discovered_paths:
+          continue
       self.workspaces.append(
         self._new_workspace(
           workspaces.Directory(
@@ -364,36 +378,37 @@ class WorkspaceController:
     workspace_id = location.id
     overlay = self._overlays.get(workspace_id, cli_store.WorktreeOverlay())
     preferences = overlay.preferences
+    definition = preferences.definition
     config = dict(config)
     if sandbox is not None:
       config['sandbox'] = sandbox.worker_config(self._sandboxd)
-    if preferences.HasField('model') and not (
+    if definition.HasField('model') and not (
       active and config.get('model_selection_override')
     ):
-      selection = models.find_model(preferences.model)
+      selection = models.find_model(definition.model)
       config.update({
-        'model': preferences.model,
-        'model_api': preferences.model_api
-        if preferences.HasField('model_api')
+        'model': definition.model,
+        'model_api': definition.model_api
+        if definition.HasField('model_api')
         else selection.api or None,
-        'model_base_url': preferences.model_base_url or None
-        if preferences.HasField('model_base_url')
+        'model_base_url': definition.model_base_url or None
+        if definition.HasField('model_base_url')
         else selection.base_url or None,
         'base_url': None,
       })
       if remote:
-        config['remote_model_api'] = preferences.model_api
-    if preferences.HasField('system_prompt'):
-      config['system_prompt'] = preferences.system_prompt
+        config['remote_model_api'] = definition.model_api
+    if definition.HasField('system_prompt'):
+      config['system_prompt'] = definition.system_prompt
     extension_tools = None
-    if preferences.HasField('tools_allowlist'):
+    if definition.HasField('tools_allowlist'):
       builtins = agents.builtins()
       config['tools'] = tuple(
-        name for name in preferences.tools_allowlist.names if name in builtins
+        name for name in definition.tools_allowlist.names if name in builtins
       )
       extension_tools = tuple(
         name
-        for name in preferences.tools_allowlist.names
+        for name in definition.tools_allowlist.names
         if name not in builtins
       )
     if preferences.HasField('approval_mode') and not (
@@ -404,8 +419,10 @@ class WorkspaceController:
         if preferences.approval_mode == agent_pb2.APPROVAL_MODE_AUTO
         else 'approve'
       )
-    if preferences.HasField('reasoning_effort'):
-      reasoning_effort = preferences.reasoning_effort
+    if definition.HasField('reasoning_effort') and not (
+      active and config.get('reasoning_effort_override')
+    ):
+      reasoning_effort = definition.reasoning_effort
     agent = self._create_agent(
       workspaces.AgentSpec(
         config=config,
@@ -421,7 +438,7 @@ class WorkspaceController:
     )
     if (
       not remote
-      and not preferences.HasField('model')
+      and not definition.HasField('model')
       and not (active and config.get('model_selection_override'))
     ):
       self._save_model(workspace_id, agent, agent.model_selection)
@@ -895,7 +912,7 @@ class WorkspaceController:
           workspace_id,
           self._overlays.get(workspace_id, cli_store.WorktreeOverlay()),
         )
-        overlay.preferences.reasoning_effort = reasoning_effort
+        overlay.preferences.definition.reasoning_effort = reasoning_effort
         overlay.preferences.approval_mode = (
           agent_pb2.APPROVAL_MODE_AUTO
           if approval_mode == 'auto'
@@ -949,9 +966,9 @@ class WorkspaceController:
         overlay = store.worktree_overlays(self._repository_key).get(
           workspace_id, cli_store.WorktreeOverlay()
         )
-        overlay.preferences.model = selection.model_id
-        overlay.preferences.model_api = selection.api
-        overlay.preferences.model_base_url = selection.base_url
+        overlay.preferences.definition.model = selection.model_id
+        overlay.preferences.definition.model_api = selection.api
+        overlay.preferences.definition.model_base_url = selection.base_url
         store.set_worktree_preferences(
           self._repository_key, workspace_id, overlay.preferences
         )
@@ -1200,19 +1217,21 @@ class WorkspaceController:
       source_preferences = self._overlays.get(
         source.id, cli_store.WorktreeOverlay()
       ).preferences
-      if source_preferences.HasField('tools_allowlist'):
-        preferences.tools_allowlist.CopyFrom(source_preferences.tools_allowlist)
+      if source_preferences.definition.HasField('tools_allowlist'):
+        preferences.definition.tools_allowlist.CopyFrom(
+          source_preferences.definition.tools_allowlist
+        )
     else:
       requested = client_pb2.WorkspacePreferences()
       requested.CopyFrom(preferences)
       preferences = requested
-    if not preferences.HasField('model'):
+    if not preferences.definition.HasField('model'):
       selection = source.agent.model_selection
-      preferences.model = selection.model_id
-      preferences.model_api = selection.api
-      preferences.model_base_url = selection.base_url
-    if not preferences.HasField('reasoning_effort'):
-      preferences.reasoning_effort = source.agent.reasoning_effort
+      preferences.definition.model = selection.model_id
+      preferences.definition.model_api = selection.api
+      preferences.definition.model_base_url = selection.base_url
+    if not preferences.definition.HasField('reasoning_effort'):
+      preferences.definition.reasoning_effort = source.agent.reasoning_effort
     if not preferences.HasField('approval_mode'):
       preferences.approval_mode = (
         agent_pb2.APPROVAL_MODE_AUTO
@@ -1231,6 +1250,8 @@ class WorkspaceController:
       agent_workspace=created.path / relative_workspace,
     )
     self._replace_pending(pending, workspace)
+    if created.warning:
+      workspace.show_error(created.warning)
     try:
       with cli_store.Store(self._database) as store:
         store.set_worktree_preferences(
@@ -1264,7 +1285,9 @@ class WorkspaceController:
     source: workspaces.AgentWorkspace,
     name: str | None,
     preferences: client_pb2.WorkspacePreferences | None = None,
-  ) -> asyncio.Task[workspaces.AgentWorkspace]:
+  ) -> tuple[
+    workspaces.PendingWorkspace, asyncio.Task[workspaces.AgentWorkspace]
+  ]:
     if self._shutting_down:
       raise worktrees.WorktreeError('cannot create a worktree during shutdown')
     if source.sandbox is not None:
@@ -1294,7 +1317,7 @@ class WorkspaceController:
         task.exception()
 
     task.add_done_callback(completed)
-    return task
+    return pending, task
 
   async def _create_worktree(
     self,
@@ -1322,6 +1345,45 @@ class WorkspaceController:
     await workspace.start()
     return workspace
 
+  def new_workspace_selector(self) -> selection.Selector[actions.Action]:
+    """Offer supported workspace kinds, remembering the last accepted choice."""
+    previous = self._settings.read().get('new_workspace_kind')
+    return selection.Selector(
+      id='new-workspace',
+      title='New workspace',
+      choices=(
+        selection.Choice('normal', 'Normal', 'Use the current directory'),
+        selection.Choice('worktree', 'Worktree', 'Create an isolated checkout'),
+      ),
+      on_select=actions.CreateWorkspace,
+      selected=previous
+      if isinstance(previous, str) and previous in ('normal', 'worktree')
+      else 'normal',
+    )
+
+  async def create_workspace(self, kind: str) -> str:
+    """Return a new tab identity without waiting for worktree provisioning."""
+    source = self._local_source()
+    if kind == 'normal':
+      if source.sandbox is not None:
+        raise ValueError('Create normal workspaces from a host workspace.')
+      created = await self._open_directory(
+        source, source.agent.workspace.resolve(strict=True)
+      )
+      identity = created.id
+    elif kind == 'worktree':
+      pending, _ = self._start_worktree_creation(source, None)
+      identity = pending.identity
+    else:
+      raise ValueError(f'Unknown workspace kind: {kind!r}')
+    try:
+      self._settings.update(
+        lambda settings: settings.update({'new_workspace_kind': kind})
+      )
+    except (OSError, ValueError) as error:
+      source.show_error(f'Could not remember workspace kind: {error}')
+    return identity
+
   async def open_folder(
     self,
     source: pathlib.Path | str,
@@ -1342,6 +1404,20 @@ class WorkspaceController:
       raise ValueError(
         f'Folder {str(path)!r} is not trusted. Open it in Mirror interactively first.'
       )
+    return await self._open_directory(sender, path, name=name)
+
+  async def _open_directory(
+    self,
+    sender: workspaces.AgentWorkspace,
+    path: pathlib.Path,
+    *,
+    name: str | None = None,
+  ) -> WorkspaceSnapshot:
+    """Open a directory authorized by consent or the current local tab."""
+    if self._shutting_down:
+      raise worktrees.WorktreeError('cannot open a folder during shutdown')
+    if not path.is_dir():
+      raise ValueError(f'not a directory: {path}')
     label = name.strip() if name is not None else path.name or str(path)
     if not label:
       raise ValueError('workspace name must not be empty')
@@ -1435,7 +1511,7 @@ class WorkspaceController:
     preferences: client_pb2.WorkspacePreferences | None = None,
   ) -> WorkspaceSubmission:
     """Create a workspace and save its configuration and tool selections."""
-    task = self._start_worktree_creation(
+    _, task = self._start_worktree_creation(
       self._source_workspace(source), name, preferences
     )
     # Tab handoff cancels UI effects, not controller-owned workspace creation.

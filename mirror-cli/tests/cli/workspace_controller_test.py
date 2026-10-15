@@ -25,7 +25,7 @@ from mirror.protocol import (
 )
 from prompt_toolkit.application import current
 from prompt_toolkit.input import defaults
-from prompt_toolkit.layout import containers, controls
+from prompt_toolkit.layout import containers, controls, mouse_handlers, screen
 from prompt_toolkit.output import base
 
 from mirror import config, project
@@ -36,7 +36,9 @@ from mirror.cli import (
   effects,
   extension,
   models,
+  reducer,
   rpc_client,
+  state,
   workspace_controller,
   workspace_tags,
   workspaces,
@@ -466,12 +468,23 @@ async def test_drop_command_confirms_unmanaged_worktree(
 
   assert calls == []
   assert repl._input.read_only()
-  window = repl._components['selector'].render(repl._state)
-  assert isinstance(window, containers.Window)
-  assert window.style == 'class:menu-surface'
-  assert isinstance(window.content, controls.FormattedTextControl)
-  assert not callable(window.content.text)
-  panel = ''.join(fragment[1] for fragment in window.content.text)
+  container = repl._components['selector'].render(repl._state)
+  width = repl._state.layout.columns
+  height = container.preferred_height(width, 100).preferred
+  frame = screen.Screen()
+  container.write_to_screen(
+    frame,
+    mouse_handlers.MouseHandlers(),
+    screen.WritePosition(0, 0, width, height),
+    '',
+    True,
+    None,
+  )
+  panel = '\n'.join(
+    ''.join(frame.data_buffer[row][column].char for column in range(width))
+    for row in range(height)
+  )
+  assert 'class:menu-surface' in frame.data_buffer[height - 1][0].style
   assert 'Delete unmanaged worktree?' in panel
   assert 'feature' in panel
   assert str(tmp_path) in ''.join(panel.split())
@@ -831,13 +844,15 @@ async def test_rewound_remote_tab_keeps_preferences_and_deletes_the_child(
     assert store.worktree_overlays(str(tmp_path)) == {
       tmp_path.name: cli_store.WorktreeOverlay(
         preferences=client_pb2.WorkspacePreferences(
-          model='m-test', model_api='', model_base_url=''
+          definition=mirror_pb2.AgentDefinition(
+            model='m-test', model_api='', model_base_url=''
+          ),
         ),
       ),
       child: cli_store.WorktreeOverlay(
         alias='My work',
         preferences=client_pb2.WorkspacePreferences(
-          reasoning_effort='high',
+          definition=mirror_pb2.AgentDefinition(reasoning_effort='high'),
           approval_mode=agent_pb2.APPROVAL_MODE_HITL,
         ),
       ),
@@ -1124,13 +1139,17 @@ async def test_reconcile_keeps_overlay_for_externally_removed_worktree(
   expected_overlays = {
     'default': cli_store.WorktreeOverlay(
       preferences=client_pb2.WorkspacePreferences(
-        model='m-test', model_api='', model_base_url=''
+        definition=mirror_pb2.AgentDefinition(
+          model='m-test', model_api='', model_base_url=''
+        ),
       ),
     ),
     'feature': cli_store.WorktreeOverlay(
       alias='Reusable alias',
       preferences=client_pb2.WorkspacePreferences(
-        model='m-test', model_api='', model_base_url=''
+        definition=mirror_pb2.AgentDefinition(
+          model='m-test', model_api='', model_base_url=''
+        ),
       ),
     ),
   }
@@ -1498,7 +1517,9 @@ async def test_controller_creates_a_worktree_from_selected_agent_settings(
     assert name == 'release-prep'
     started.set()
     release.wait()
-    return worktrees.Worktree(created, name)
+    return worktrees.Worktree(
+      created, name, warning='Using cached default branch.'
+    )
 
   def discover(_: pathlib.Path) -> Sequence[worktrees.Worktree]:
     items = [worktrees.Worktree(main, 'main')]
@@ -1541,6 +1562,7 @@ async def test_controller_creates_a_worktree_from_selected_agent_settings(
 
   created_spec = factory.agents[1].spec
   assert factory.agents[1].started
+  assert factory.agents[1].errors == ['Using cached default branch.']
   assert created_spec.workspace == created / 'package'
   assert any(
     tab.label == 'release-prep' for tab in controller.visible_workspaces()
@@ -1554,16 +1576,20 @@ async def test_controller_creates_a_worktree_from_selected_agent_settings(
     assert store.worktree_overlays(str(main.resolve())) == {
       'main': cli_store.WorktreeOverlay(
         preferences=client_pb2.WorkspacePreferences(
-          model='m-test', model_api='', model_base_url=''
+          definition=mirror_pb2.AgentDefinition(
+            model='m-test', model_api='', model_base_url=''
+          ),
         ),
       ),
       'release-prep': cli_store.WorktreeOverlay(
         preferences=client_pb2.WorkspacePreferences(
-          reasoning_effort='high',
+          definition=mirror_pb2.AgentDefinition(
+            reasoning_effort='high',
+            model='m-test',
+            model_api='',
+            model_base_url='',
+          ),
           approval_mode=agent_pb2.APPROVAL_MODE_HITL,
-          model='m-test',
-          model_api='',
-          model_base_url='',
         ),
       ),
     }
@@ -1698,7 +1724,9 @@ async def test_overlapping_spawns_keep_results_and_preferences_with_their_reques
   factory.agents[1].model = 'sibling-model'
   factory.agents[1].reasoning_effort = 'high'
   factory.agents[1].approval_mode = 'approve'
-  preferences = client_pb2.WorkspacePreferences(system_prompt='Review only.')
+  preferences = client_pb2.WorkspacePreferences(
+    definition=mirror_pb2.AgentDefinition(system_prompt='Review only.')
+  )
   first = asyncio.create_task(
     controller.spawn_workspace(
       main, None, 'First task', preferences=preferences
@@ -1760,7 +1788,7 @@ async def test_overlapping_spawns_keep_results_and_preferences_with_their_reques
     'workspace and leave the response here for the sending agent to inspect.\n\nFirst task'
   ]
   assert preferences == client_pb2.WorkspacePreferences(
-    system_prompt='Review only.'
+    definition=mirror_pb2.AgentDefinition(system_prompt='Review only.')
   )
   assert controller.list_workspaces(main).creating is None
   assert controller.selected is controller.visible_workspaces()[1]
@@ -2091,9 +2119,7 @@ async def test_selected_failure_remains_visible_while_another_tab_finishes(
   'legacy_preferences',
   [
     b'',
-    client_pb2.WorkspacePreferences(
-      reasoning_effort='high'
-    ).SerializeToString(),
+    mirror_pb2.AgentDefinition(reasoning_effort='high').SerializeToString(),
   ],
 )
 @pytest.mark.asyncio
@@ -2125,7 +2151,7 @@ async def test_legacy_overlay_preserves_default_tools(
   controller.save_preferences('high', 'auto')
   with cli_store.Store(database) as store:
     overlay = store.worktree_overlays(str(main.resolve()))['main']
-    assert not overlay.preferences.HasField('tools_allowlist')
+    assert not overlay.preferences.definition.HasField('tools_allowlist')
   reopened = _AgentFactory()
   controller = workspace_controller.WorkspaceController(
     _config() | {'tools': ('bash', 'read')},
@@ -2145,27 +2171,25 @@ async def test_legacy_overlay_preserves_default_tools(
   [
     (None, ('bash',), None),
     (
-      client_pb2.WorkspacePreferences.ToolAllowlist(
+      mirror_pb2.AgentDefinition.ToolAllowlist(
         names=['mcp_search', 'mcp_describe', 'mcp_call', 'mcp__extension_tool']
       ),
       ('mcp_search', 'mcp_describe', 'mcp_call'),
       ('mcp__extension_tool',),
     ),
-    (client_pb2.WorkspacePreferences.ToolAllowlist(), (), ()),
+    (mirror_pb2.AgentDefinition.ToolAllowlist(), (), ()),
     (
-      client_pb2.WorkspacePreferences.ToolAllowlist(names=['read']),
+      mirror_pb2.AgentDefinition.ToolAllowlist(names=['read']),
       ('read',),
       (),
     ),
     (
-      client_pb2.WorkspacePreferences.ToolAllowlist(names=['checklist']),
+      mirror_pb2.AgentDefinition.ToolAllowlist(names=['checklist']),
       (),
       ('checklist',),
     ),
     (
-      client_pb2.WorkspacePreferences.ToolAllowlist(
-        names=['read', 'checklist']
-      ),
+      mirror_pb2.AgentDefinition.ToolAllowlist(names=['read', 'checklist']),
       ('read',),
       ('checklist',),
     ),
@@ -2174,7 +2198,7 @@ async def test_legacy_overlay_preserves_default_tools(
 @pytest.mark.asyncio
 async def test_workspace_tool_selection_restores_exactly(
   tmp_path: pathlib.Path,
-  tools: client_pb2.WorkspacePreferences.ToolAllowlist | None,
+  tools: mirror_pb2.AgentDefinition.ToolAllowlist | None,
   builtins: tuple[str, ...],
   extension_tools: tuple[str, ...] | None,
 ) -> None:
@@ -2185,7 +2209,9 @@ async def test_workspace_tool_selection_restores_exactly(
     store.set_worktree_preferences(
       str(main.resolve()),
       'main',
-      client_pb2.WorkspacePreferences(tools_allowlist=tools),
+      client_pb2.WorkspacePreferences(
+        definition=mirror_pb2.AgentDefinition(tools_allowlist=tools)
+      ),
     )
   factory = _AgentFactory()
   controller = workspace_controller.WorkspaceController(
@@ -2240,9 +2266,11 @@ async def test_spawn_survives_caller_cancellation_and_tab_switch(
       'custom',
       None,
       preferences=client_pb2.WorkspacePreferences(
-        system_prompt='Review only.',
-        tools_allowlist=client_pb2.WorkspacePreferences.ToolAllowlist(
-          names=('read', 'test_checklist')
+        definition=mirror_pb2.AgentDefinition(
+          system_prompt='Review only.',
+          tools_allowlist=mirror_pb2.AgentDefinition.ToolAllowlist(
+            names=('read', 'test_checklist')
+          ),
         ),
         extensions=('test/indicator',),
       ),
@@ -2278,9 +2306,12 @@ async def test_spawn_survives_caller_cancellation_and_tab_switch(
   )
   with cli_store.Store(tmp_path / 'state.db') as store:
     saved = store.worktree_overlays(str(main.resolve()))['custom'].preferences
-    assert saved.system_prompt == 'Review only.'
+    assert saved.definition.system_prompt == 'Review only.'
     assert saved.extensions == ['test/indicator']
-    assert saved.tools_allowlist.names == ['read', 'test_checklist']
+    assert saved.definition.tools_allowlist.names == [
+      'read',
+      'test_checklist',
+    ]
 
 
 @pytest.mark.asyncio
@@ -2340,12 +2371,12 @@ async def test_persistence_failure_keeps_created_tab_and_requested_configuration
   )
   await _refresh(controller)
   preferences = client_pb2.WorkspacePreferences(
-    model='review-model',
-    system_prompt='Review only.',
-    approval_mode=agent_pb2.APPROVAL_MODE_HITL,
-    tools_allowlist=client_pb2.WorkspacePreferences.ToolAllowlist(
-      names=['read']
+    definition=mirror_pb2.AgentDefinition(
+      model='review-model',
+      system_prompt='Review only.',
+      tools_allowlist=mirror_pb2.AgentDefinition.ToolAllowlist(names=['read']),
     ),
+    approval_mode=agent_pb2.APPROVAL_MODE_HITL,
   )
   with monkeypatch.context() as patch:
     patch.setattr(
@@ -2369,8 +2400,10 @@ async def test_persistence_failure_keeps_created_tab_and_requested_configuration
   controller.save_preferences('medium', 'approve')
   with cli_store.Store(database) as store:
     saved = store.worktree_overlays(str(main.resolve()))['review'].preferences
-    assert saved.tools_allowlist == preferences.tools_allowlist
-    assert saved.system_prompt == 'Review only.'
+    assert (
+      saved.definition.tools_allowlist == preferences.definition.tools_allowlist
+    )
+    assert saved.definition.system_prompt == 'Review only.'
 
 
 @pytest.mark.asyncio
@@ -2555,7 +2588,9 @@ async def test_controller_drops_selected_worktree_and_closes_agent(
     assert store.worktree_overlays(str(feature)) == {
       'main': cli_store.WorktreeOverlay(
         preferences=client_pb2.WorkspacePreferences(
-          model='m-test', model_api='', model_base_url=''
+          definition=mirror_pb2.AgentDefinition(
+            model='m-test', model_api='', model_base_url=''
+          ),
         ),
       ),
     }
@@ -3148,11 +3183,13 @@ async def test_initial_discovery_preserves_active_agent_and_preferences(
   )
   database = tmp_path / 'state.db'
   preferences = client_pb2.WorkspacePreferences(
-    model='saved-model',
-    tools_allowlist=client_pb2.WorkspacePreferences.ToolAllowlist(
-      names=['bash', 'extension-tool']
+    definition=mirror_pb2.AgentDefinition(
+      model='saved-model',
+      reasoning_effort='high',
+      tools_allowlist=mirror_pb2.AgentDefinition.ToolAllowlist(
+        names=['bash', 'extension-tool']
+      ),
     ),
-    reasoning_effort='high',
   )
   with cli_store.Store(database) as store:
     store.set_worktree_alias('repository', initial.id, 'Primary')
@@ -3605,7 +3642,7 @@ async def test_live_roster_picker_handoff_and_inactive_agent_effects(
       await output.wait_for_text('creating ·')
       pending = controller.visible_workspaces()[1]
       assert isinstance(pending, workspaces.PendingWorkspace)
-      assert pending.preferences.model == 'm-test'
+      assert pending.preferences.definition.model == 'm-test'
       assert agent.selector.query == name
       assert [choice.value for choice in agent.selector.filtered_choices()] == [
         pending.identity
@@ -3625,7 +3662,7 @@ async def test_live_roster_picker_handoff_and_inactive_agent_effects(
       assert controller.selected is pending
       with cli_store.Store(tmp_path / 'state.db') as store:
         preferences = store.worktree_overlays(str(main))['main'].preferences
-        assert preferences.reasoning_effort == 'high'
+        assert preferences.definition.reasoning_effort == 'high'
         assert preferences.approval_mode == agent_pb2.APPROVAL_MODE_HITL
 
       pipe.send_text('pending draft\x1b[D')
@@ -4818,3 +4855,126 @@ async def test_create_sandbox_missing_daemon_retains_error_tab(
   assert await controller.drop()
   assert len(controller.visible_workspaces()) == 1
   await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_workspace_picker_creates_normal_workspace_and_remembers_kind(
+  tmp_path: pathlib.Path,
+) -> None:
+  settings = config.Config(tmp_path / 'config.json')
+  controller = workspace_controller.WorkspaceController(
+    _config(),
+    workspace=tmp_path,
+    reasoning_effort='high',
+    create_agent=_AgentFactory(),
+    database=tmp_path / 'cli.db',
+    settings=settings,
+    is_trusted_directory=lambda _: True,
+  )
+  try:
+    picker = controller.new_workspace_selector()
+    assert [choice.label for choice in picker.choices] == ['Normal', 'Worktree']
+    assert picker.selected == 'normal'
+    identity = await controller.create_workspace('normal')
+    assert await controller.select_workspace(identity)
+    selected = controller.selected
+    assert isinstance(selected, workspaces.AgentWorkspace)
+    assert selected.path == tmp_path
+    assert config.Config(settings.path).read()['new_workspace_kind'] == 'normal'
+    assert await controller.close_workspace(selected.id)
+    assert tmp_path.is_dir()
+    with pytest.raises(ValueError, match='only available workspace'):
+      assert isinstance(controller.selected, workspaces.AgentWorkspace)
+      await controller.close_workspace(controller.selected.id)
+  finally:
+    await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_workspace_picker_returns_before_worktree_creation_finishes(
+  tmp_path: pathlib.Path,
+) -> None:
+  creator = _WorktreeCreator()
+  settings = config.Config(tmp_path / 'config.json')
+  controller = workspace_controller.WorkspaceController(
+    _config(),
+    workspace=tmp_path,
+    reasoning_effort='high',
+    create_agent=_AgentFactory(),
+    database=tmp_path / 'cli.db',
+    settings=settings,
+    create=creator,
+    discover=lambda _: (worktrees.Worktree(tmp_path, None),),
+  )
+  initial = controller.selected.identity
+  try:
+    identity = await controller.create_workspace('worktree')
+    assert await controller.select_workspace(identity)
+    assert isinstance(controller.selected, workspaces.PendingWorkspace)
+    request = await creator.next()
+    assert await controller.select_workspace(initial)
+    assert controller.new_workspace_selector().selected == 'worktree'
+    assert (
+      config.Config(settings.path).read()['new_workspace_kind'] == 'worktree'
+    )
+    checkout = tmp_path / 'checkout'
+    checkout.mkdir()
+    request.result.set_result(worktrees.Worktree(checkout, 'feature'))
+    tasks = tuple(controller._worktree_creation_tasks)  # pyright: ignore[reportPrivateUsage]
+    await asyncio.gather(*tasks)
+    assert controller.selected.identity == initial
+    assert await controller.select_workspace(identity)
+    assert isinstance(controller.selected, workspaces.AgentWorkspace)
+    assert controller.selected.path == checkout
+  finally:
+    await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_workspace_picker_navigation_and_cancellation_preserve_draft(
+  tmp_path: pathlib.Path,
+) -> None:
+  settings = config.Config(tmp_path / 'config.json')
+  settings.update(
+    lambda values: values.update({'new_workspace_kind': 'worktree'})
+  )
+  controller = workspace_controller.WorkspaceController(
+    _config(),
+    workspace=tmp_path,
+    reasoning_effort='high',
+    create_agent=_AgentFactory(),
+    database=tmp_path / 'cli.db',
+    settings=settings,
+  )
+  current = state.State(
+    activity=state.ActivityState(),
+    status_bar=state.StatusBarState('test', 'medium', 'auto'),
+    session=state.SessionState('test'),
+    lifecycle=state.LifecycleState(active=True),
+    supervised=True,
+    composer=actions.ComposerState('keep my draft', 4),
+  )
+  try:
+    opened, _ = reducer.reduce(
+      current, actions.OpenSelector(controller.new_workspace_selector())
+    )
+    choice = opened.selector.selected_choice()
+    assert choice is not None and choice.value == 'worktree'
+    moved, _ = reducer.reduce(opened, actions.MoveSelection(-1))
+    choice = moved.selector.selected_choice()
+    assert choice is not None and choice.value == 'normal'
+    moved, _ = reducer.reduce(moved, actions.MoveSelection(1))
+    _, emitted = reducer.reduce(moved, actions.AcceptSelection())
+    assert emitted == (effects.AcceptSelection(),)
+    choice = moved.selector.selected_choice()
+    assert choice is not None
+    assert controller.new_workspace_selector().on_select(choice.value) == (
+      actions.CreateWorkspace('worktree')
+    )
+    cancelled, _ = reducer.reduce(opened, actions.CloseSelector())
+    assert not cancelled.selector.active
+    assert cancelled.composer == current.composer
+    assert len(controller.workspaces) == 1
+    assert controller.new_workspace_selector().selected == 'worktree'
+  finally:
+    await controller.close()

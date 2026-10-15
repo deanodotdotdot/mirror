@@ -6,14 +6,13 @@ requests through GitHub issues.
 For now, we are not accepting external code or documentation contributions.
 We will consider opening up contributions in the future.
 
-If you would like to contribute, please express your interest using `/feedback`
-in the Mirror CLI or [this GitHub form](https://github.com/reflection-oss/mirror/issues/new/choose).
-`/feedback` opens the GitHub issue form.
+If you would like to contribute, please express your interest using
+[this GitHub form](https://github.com/reflection-oss/mirror/issues/new/choose).
 
 ## Reporting issues
 
 For suspected security vulnerabilities, follow [SECURITY.md](SECURITY.md)
-instead of using `/feedback` or public GitHub issues.
+instead of using public GitHub issues.
 
 Search [existing issues](https://github.com/reflection-oss/mirror/issues)
 before [opening a new issue](https://github.com/reflection-oss/mirror/issues/new/choose).

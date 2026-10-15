@@ -13,6 +13,7 @@ from mirror.cli import cli_store
 from mirror.protocol import (
   agent_pb2,
   client_pb2,
+  mirror_pb2,
 )
 
 
@@ -147,9 +148,20 @@ def test_record_user_messages_rolls_back_the_whole_batch(
 def test_store_handles_a_fresh_database(
   tmp_path: pathlib.Path,
 ) -> None:
-  with cli_store.Store(tmp_path / 'state.db') as store:
+  database = tmp_path / 'state.db'
+  with cli_store.Store(database) as store:
     assert store.list_infos(cwd=str(tmp_path)) == []
     assert store.recent_user_messages() == []
+  assert database.stat().st_mode & 0o777 == 0o600
+  with sqlite3.connect(database) as connection:
+    connection.execute('CREATE TABLE synthetic(content TEXT)')
+    connection.execute("INSERT INTO synthetic VALUES ('history')")
+    assert (tmp_path / 'state.db-journal').stat().st_mode & 0o777 == 0o600
+    connection.commit()
+    connection.execute('PRAGMA journal_mode=WAL')
+    connection.execute("INSERT INTO synthetic VALUES ('history')")
+    assert (tmp_path / 'state.db-wal').stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / 'state.db-shm').stat().st_mode & 0o777 == 0o600
 
 
 def test_worktree_overlays_store_aliases_and_preferences(
@@ -164,7 +176,8 @@ def test_worktree_overlays_store_aliases_and_preferences(
       'repo-a',
       'first',
       client_pb2.WorkspacePreferences(
-        reasoning_effort='high', approval_mode=agent_pb2.APPROVAL_MODE_HITL
+        definition=mirror_pb2.AgentDefinition(reasoning_effort='high'),
+        approval_mode=agent_pb2.APPROVAL_MODE_HITL,
       ),
     )
     with pytest.raises(ValueError, match='already in use'):
@@ -175,7 +188,8 @@ def test_worktree_overlays_store_aliases_and_preferences(
       'first': cli_store.WorktreeOverlay(
         alias='Shared name',
         preferences=client_pb2.WorkspacePreferences(
-          reasoning_effort='high', approval_mode=agent_pb2.APPROVAL_MODE_HITL
+          definition=mirror_pb2.AgentDefinition(reasoning_effort='high'),
+          approval_mode=agent_pb2.APPROVAL_MODE_HITL,
         ),
       )
     }
@@ -185,23 +199,25 @@ def test_worktree_overlays_store_aliases_and_preferences(
   'tools',
   [
     None,
-    client_pb2.WorkspacePreferences.ToolAllowlist(),
-    client_pb2.WorkspacePreferences.ToolAllowlist(names=['read']),
-    client_pb2.WorkspacePreferences.ToolAllowlist(names=['review_checklist']),
-    client_pb2.WorkspacePreferences.ToolAllowlist(
+    mirror_pb2.AgentDefinition.ToolAllowlist(),
+    mirror_pb2.AgentDefinition.ToolAllowlist(names=['read']),
+    mirror_pb2.AgentDefinition.ToolAllowlist(names=['review_checklist']),
+    mirror_pb2.AgentDefinition.ToolAllowlist(
       names=['read', 'review_checklist']
     ),
   ],
 )
 def test_workspace_preferences_restore_without_losing_presence(
   tmp_path: pathlib.Path,
-  tools: client_pb2.WorkspacePreferences.ToolAllowlist | None,
+  tools: mirror_pb2.AgentDefinition.ToolAllowlist | None,
 ) -> None:
   preferences = client_pb2.WorkspacePreferences(
-    reasoning_effort='high',
-    model='review-model',
-    system_prompt='',
-    tools_allowlist=tools,
+    definition=mirror_pb2.AgentDefinition(
+      reasoning_effort='high',
+      model='review-model',
+      system_prompt='',
+      tools_allowlist=tools,
+    ),
     extensions=['review/indicator'],
   )
   database = tmp_path / 'cli.db'
@@ -212,15 +228,49 @@ def test_workspace_preferences_restore_without_losing_presence(
     overlay = store.worktree_overlays('repo')['review']
     assert overlay.alias == 'Reviewer'
     assert overlay.preferences == preferences
-    assert overlay.preferences.HasField('system_prompt')
-    assert overlay.preferences.HasField('tools_allowlist') == (
+    assert overlay.preferences.definition.HasField('system_prompt')
+    assert overlay.preferences.definition.HasField('tools_allowlist') == (
       tools is not None
     )
-    overlay.preferences.reasoning_effort = 'low'
+    overlay.preferences.definition.reasoning_effort = 'low'
     store.set_worktree_preferences('repo', 'review', overlay.preferences)
   with cli_store.Store(database) as store:
-    preferences.reasoning_effort = 'low'
+    preferences.definition.reasoning_effort = 'low'
     assert store.worktree_overlays('repo')['review'].preferences == preferences
+
+
+def test_worktree_overlays_moves_preferences_saved_before_definition(
+  tmp_path: pathlib.Path,
+) -> None:
+  database = tmp_path / 'cli.db'
+  # Old preferences held the definition fields at the top level, under the
+  # numbers `AgentDefinition` now uses.
+  saved = mirror_pb2.AgentDefinition(
+    reasoning_effort='high',
+    model='saved-model',
+    system_prompt='Review only.',
+    tools_allowlist=mirror_pb2.AgentDefinition.ToolAllowlist(names=['read']),
+    model_api='openai-chat-completions',
+    model_base_url='http://localhost:8000/v1',
+  )
+  legacy = (
+    saved.SerializeToString()
+    + client_pb2.WorkspacePreferences(
+      approval_mode=agent_pb2.APPROVAL_MODE_HITL, tag_id='blocked'
+    ).SerializeToString()
+  )
+  with cli_store.Store(database) as store:
+    store.set_worktree_alias('repo', 'review', 'Reviewer')
+  with sqlite3.connect(database) as connection:
+    connection.execute(
+      'UPDATE cli_worktree_overlays SET preferences = ? WHERE id = ?',
+      (legacy, 'review'),
+    )
+  with cli_store.Store(database) as store:
+    preferences = store.worktree_overlays('repo')['review'].preferences
+  assert preferences.definition == saved
+  assert preferences.approval_mode == agent_pb2.APPROVAL_MODE_HITL
+  assert preferences.tag_id == 'blocked'
 
 
 def test_corrupt_worktree_preferences_reject_unsafe_default_restore(
@@ -305,7 +355,8 @@ def test_store_imports_cli_state_from_agent_database(
       'repo-a',
       'worktree-a',
       client_pb2.WorkspacePreferences(
-        reasoning_effort='high', approval_mode=agent_pb2.APPROVAL_MODE_HITL
+        definition=mirror_pb2.AgentDefinition(reasoning_effort='high'),
+        approval_mode=agent_pb2.APPROVAL_MODE_HITL,
       ),
     )
   with sqlite3.connect(agent_database) as connection:
@@ -346,7 +397,8 @@ def test_store_imports_cli_state_from_agent_database(
       'worktree-a': cli_store.WorktreeOverlay(
         alias='Preserved alias',
         preferences=client_pb2.WorkspacePreferences(
-          reasoning_effort='high', approval_mode=agent_pb2.APPROVAL_MODE_HITL
+          definition=mirror_pb2.AgentDefinition(reasoning_effort='high'),
+          approval_mode=agent_pb2.APPROVAL_MODE_HITL,
         ),
       ),
     }
@@ -381,7 +433,11 @@ def test_workspace_tags_share_the_existing_preferences_blob(
   with cli_store.Store(database) as store:
     store.set_worktree_alias('repo', 'default', 'Main')
     store.set_worktree_preferences(
-      'repo', 'default', client_pb2.WorkspacePreferences(model='test-model')
+      'repo',
+      'default',
+      client_pb2.WorkspacePreferences(
+        definition=mirror_pb2.AgentDefinition(model='test-model')
+      ),
     )
     store.set_workspace_tag('repo', 'default', 'blocked')
     store.set_workspace_tag('other-repo', 'feature-id', 'blocked')
@@ -389,7 +445,7 @@ def test_workspace_tags_share_the_existing_preferences_blob(
     overlay = store.worktree_overlays('repo')['default']
     assert overlay.tag_id == 'blocked'
     assert overlay.preferences.tag_id == 'blocked'
-    assert overlay.preferences.model == 'test-model'
+    assert overlay.preferences.definition.model == 'test-model'
     assert overlay.alias == 'Main'
     store.set_workspace_tag('repo', 'default', None)
     assert not store.worktree_overlays('repo')['default'].preferences.HasField(
@@ -398,7 +454,7 @@ def test_workspace_tags_share_the_existing_preferences_blob(
     store.delete_workspace_tag('blocked')
     assert store.worktree_overlays('other-repo')['feature-id'].tag_id is None
     assert (
-      store.worktree_overlays('repo')['default'].preferences.model
+      store.worktree_overlays('repo')['default'].preferences.definition.model
       == 'test-model'
     )
   with sqlite3.connect(database) as connection:
@@ -407,7 +463,7 @@ def test_workspace_tags_share_the_existing_preferences_blob(
       'SELECT preferences FROM cli_worktree_overlays WHERE repository_key = ?',
       ('repo',),
     ).fetchone()[0] == client_pb2.WorkspacePreferences(
-      model='test-model'
+      definition=mirror_pb2.AgentDefinition(model='test-model')
     ).SerializeToString(deterministic=True)
 
 
@@ -487,7 +543,9 @@ def test_store_preserves_unknown_additive_data(tmp_path: pathlib.Path) -> None:
     store.set_worktree_preferences(
       'repo',
       'checkout',
-      client_pb2.WorkspacePreferences(reasoning_effort='high'),
+      client_pb2.WorkspacePreferences(
+        definition=mirror_pb2.AgentDefinition(reasoning_effort='high')
+      ),
     )
   with sqlite3.connect(database) as future_client:
     assert future_client.execute(

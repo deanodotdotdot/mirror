@@ -19,6 +19,10 @@ struct GrpcConnection<R, W> {
     output: W,
     closing: watch::Sender<bool>,
 }
+
+const MAX_CONCURRENT_STREAMS: u32 = 128;
+const STREAM_WINDOW_BYTES: u32 = 64 * 1024;
+
 impl<R, W> Drop for GrpcConnection<R, W> {
     fn drop(&mut self) {
         self.closing.send_replace(true);
@@ -123,6 +127,10 @@ where
     let incoming = futures_util::stream::once(async { Ok::<_, io::Error>(stream) })
         .chain(futures_util::stream::pending());
     let server = Server::builder()
+        .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+        .initial_stream_window_size(STREAM_WINDOW_BYTES)
+        // A blocked request body must not consume another RPC's receive capacity.
+        .initial_connection_window_size(MAX_CONCURRENT_STREAMS * STREAM_WINDOW_BYTES)
         .add_service(
             SandboxdServer::new(service)
                 .max_decoding_message_size(MAX_MESSAGE_BYTES)

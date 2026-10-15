@@ -1,8 +1,8 @@
 """An isolated, synthetic AgentRPC worker for `mirror --showcase`.
 
 Starts with a rendered gallery; send any message to play its events live.
-Esc stops playback. /new restores the gallery. No model, host tool, external service,
-or real agent store is used. CLI metadata and the workspace are temporary.
+Esc stops playback. /clear restores the gallery. No model, host tool, external
+service, or real agent store is used. CLI metadata and the workspace are temporary.
 """
 
 from __future__ import annotations
@@ -375,7 +375,7 @@ def messages() -> list[agent_pb2.AgentMessage]:
     'This conversation exercises **exploration**, *reasoning*, tables, lists, code, writes, edits, shell output, errors, host tools, background results, and compaction.\n\n'
     '1. Use `/view detail` to inspect individual calls and reasoning.\n'
     '2. Use `/view default` to inspect grouped activity.\n'
-    '3. Resize the terminal, then press Ctrl+L to redraw.\n'
+    '3. Resize the terminal; the conversation reflows automatically.\n'
     '4. Send any message to play the gallery live; Esc stops playback.\n\n'
     '**Everything in this conversation is fabricated. No files changed and no external tools ran.**'
   )

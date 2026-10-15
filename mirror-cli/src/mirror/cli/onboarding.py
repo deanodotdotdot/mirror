@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
+from prompt_toolkit import shortcuts
 from rich import console, text
 
 from mirror import config
@@ -38,7 +39,8 @@ def _confirm(message: str) -> bool:
       'mirror: open Mirror in a terminal to review and accept this notice.'
     )
   try:
-    return input(
+    # Decode keys even if a previous process left the terminal in raw mode.
+    return shortcuts.prompt(
       '\nContinue and trust this folder? [y/N] '
     ).strip().lower() in {'y', 'yes'}
   except (EOFError, KeyboardInterrupt):

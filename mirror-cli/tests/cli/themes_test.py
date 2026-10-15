@@ -10,6 +10,7 @@ import sys
 
 import pyte
 import pytest
+from mirror.cli.extensions.tokyonight import extension as tokyonight
 from prompt_toolkit import application, data_structures
 from prompt_toolkit.formatted_text import ansi
 from prompt_toolkit.input import defaults
@@ -20,7 +21,6 @@ from rich import color, text
 from mirror.cli import extension, extension_state, rendering, themes
 from mirror.cli.components import banner, spinner
 from mirror.cli.extensions.themes import extension as themes_extension
-from mirror.cli.extensions.tokyonight import extension as tokyonight
 
 
 @pytest.mark.parametrize('name', themes.NAMES)
@@ -357,6 +357,7 @@ def test_selected_extension_indicator_keeps_selection_contrast(
     'worktree-attention',
     'worktree-failed',
     'worktree-running class:activity-spinner-highlight',
+    'worktree-running class:ui.success',
   ],
 )
 def test_selected_workspace_status_keeps_its_surface_colors(
@@ -665,11 +666,11 @@ def test_edit_panel_uses_palette_fill_without_changing_text(
       '\n', '\r\n'
     )
   )
-  assert terminal.display[2].startswith('    ┃    1 - old = 1')
-  assert terminal.display[3].startswith('    ┃    1 + new = 2')
+  assert terminal.display[2].startswith('     ┃    1 - old = 1')
+  assert terminal.display[3].startswith('     ┃    1 + new = 2')
   assert (terminal.buffer[2][39].bg != 'default') == filled
   assert (terminal.buffer[3][39].bg != 'default') == filled
-  assert terminal.buffer[2][4].bg == 'default'
+  assert terminal.buffer[2][5].bg == 'default'
 
 
 def _render_diff_terminal(

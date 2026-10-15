@@ -288,7 +288,12 @@ async def test_code_hover_copies_source_and_preserves_drag_selection(
     )
     owner.enable_views()
     rendered, started = asyncio.Event(), asyncio.Event()
-    owner.after_render += lambda _: rendered.set()
+
+    def after_render(_: application.Application[str | None]) -> None:
+      if viewport.create_content(width, 39).line_count:
+        rendered.set()
+
+    owner.after_render += after_render
     running = asyncio.create_task(owner.run_async(pre_run=started.set))
     await asyncio.wait_for(started.wait(), 1)
     view = workspace_application.WorkspaceApplication(
@@ -386,8 +391,10 @@ async def test_code_copy_feedback_and_pointer_reset_without_disabling_clicks(
   rendered, reset = asyncio.Event(), asyncio.Event()
 
   def after_render(_: application.Application[str | None]) -> None:
-    rendered.set()
     content = viewport.create_content(40, 39)
+    if content.line_count < 3:
+      return
+    rendered.set()
     if '⧉' in ''.join(part[1] for part in content.get_line(1)):
       reset.set()
 

@@ -25,6 +25,7 @@ from mirror.cli import (
   cli_store,
   local_rpc_client,
   main,
+  models,
   onboarding,
   rpc_client,
   showcase,
@@ -125,6 +126,7 @@ def test_logging_flushes_startup_records_to_conversation(
     assert 'after conversation' not in no_id
     assert 'before conversation' in conversation
     assert 'after conversation' in conversation
+    assert (tmp_path / '.mirror/logs/no-id.log').stat().st_mode & 0o777 == 0o600
   finally:
     for handler in tuple(root.handlers):
       root.removeHandler(handler)
@@ -209,6 +211,9 @@ def test_capture_output_keeps_only_ui_output_on_terminal(
   assert 'child stderr' in stderr
   assert 'stdout' not in stderr
   assert 'UI' not in stdout + stderr
+  assert (
+    (tmp_path / '.mirror/logs/conversation-1/cli-stdout').stat().st_mode & 0o777
+  ) == 0o600
   os.write(1, b'restored stdout\n')
   os.write(2, b'restored stderr\n')
   restored = capfd.readouterr()
@@ -274,12 +279,79 @@ def test_parse_args_accepts_named_reasoning_effort(
   args = main._parse_args()  # pyright: ignore[reportPrivateUsage]
 
   assert args.reasoning_effort == effort
+  assert args.reasoning_effort_override
+
+
+@pytest.mark.parametrize(
+  ('arguments', 'command', 'prompt'),
+  [
+    ([], None, None),
+    (['Explain this project'], 'exec', 'Explain this project'),
+    (
+      ['--model', 'test', 'Explain this project'],
+      'exec',
+      'Explain this project',
+    ),
+    (
+      ['Explain this project', '--model', 'test'],
+      'exec',
+      'Explain this project',
+    ),
+    (['--', '--literal'], 'exec', '--literal'),
+    (['-'], 'exec', '-'),
+    ([''], 'exec', ''),
+    (['exec'], 'exec', None),
+    (['acp'], 'acp', None),
+    (['exec', 'Explain this project'], 'exec', 'Explain this project'),
+    (
+      ['exec', '--model', 'test', 'Explain this project'],
+      'exec',
+      'Explain this project',
+    ),
+    (['exec', '--', '--literal'], 'exec', '--literal'),
+  ],
+)
+def test_parse_args_routes_prompt_to_exec(
+  monkeypatch: pytest.MonkeyPatch,
+  arguments: list[str],
+  command: str | None,
+  prompt: str | None,
+) -> None:
+  monkeypatch.setattr(sys, 'argv', ['mirror', *arguments])
+
+  args = main._parse_args()  # pyright: ignore[reportPrivateUsage]
+
+  assert args.command == command
+  assert args.prompt == prompt
+
+
+@pytest.mark.parametrize(
+  'arguments',
+  [
+    ['first prompt', 'second prompt'],
+    ['acp', 'unexpected prompt'],
+    ['Explain this project', '--continue'],
+    ['Explain this project', '--trust-extensions'],
+    ['Explain this project', '--api-key', 'synthetic-cli-key'],
+    ['Explain this project', '--log-level', 'debug'],
+  ],
+)
+def test_parse_args_rejects_invalid_prompt_invocations(
+  monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+  monkeypatch.setattr(sys, 'argv', ['mirror', *arguments])
+
+  with pytest.raises(SystemExit) as exit_info:
+    main._parse_args()  # pyright: ignore[reportPrivateUsage]
+
+  assert exit_info.value.code == 2
 
 
 @pytest.mark.parametrize(
   'argv',
   [
     ['mirror', '--reasoning-effort', 'lots'],
+    ['mirror', '--reasoning-effort', 'min'],
     ['mirror', '--reasoning-effort', '64'],
     ['mirror', '--extra-body', '{}'],
   ],
@@ -291,6 +363,32 @@ def test_parse_args_rejects_unsupported_inference_options(
 
   with pytest.raises(SystemExit):
     main._parse_args()  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+  'flag',
+  [
+    '--max-iterations',
+    '--max-tokens',
+    '--context-window',
+    '--compaction-threshold',
+  ],
+)
+def test_main_rejects_negative_worker_limits(
+  tmp_path: pathlib.Path, flag: str
+) -> None:
+  result = subprocess.run(
+    [sys.executable, '-m', 'mirror.cli.main', flag, '-1', 'exec', 'hello'],
+    env={'HOME': str(tmp_path), 'TERM': 'xterm-256color'},
+    cwd=tmp_path,
+    capture_output=True,
+    text=True,
+    check=False,
+  )
+
+  assert result.returncode == 2
+  assert f'{flag} cannot be negative' in result.stderr
+  assert 'could not start agent' not in result.stderr
 
 
 def test_resolve_conversation_creates_new_by_default(
@@ -601,8 +699,8 @@ def test_anthropic_messages_defaults_to_claude(
 
 
 def test_anthropic_messages_reads_its_own_credentials() -> None:
-  assert main._key_env('anthropic-messages') == 'ANTHROPIC_API_KEY'  # pyright: ignore[reportPrivateUsage]
-  assert main._base_env('anthropic-messages') == 'ANTHROPIC_BASE_URL'  # pyright: ignore[reportPrivateUsage]
+  assert models.key_env('anthropic-messages') == 'ANTHROPIC_API_KEY'
+  assert models.base_env('anthropic-messages') == 'ANTHROPIC_BASE_URL'
 
 
 def test_a_configured_endpoint_counts_as_self_hosted() -> None:

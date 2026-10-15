@@ -157,7 +157,10 @@ class SettingsExtension(extension.Extension[None, Show | Select, None]):
 
   @override
   def tips(self) -> tuple[str, ...]:
-    return ('Use /settings to adjust preferences',)
+    return (
+      'Use /settings to adjust preferences',
+      'Use /approvals to cycle automatic and manual tool approval',
+    )
 
   @override
   def slash_commands(self) -> Sequence[commands.CommandDef]:
@@ -166,6 +169,13 @@ class SettingsExtension(extension.Extension[None, Show | Select, None]):
         'settings',
         'Change preferences and tool approval',
         lambda _context, _args: _route(Show()),
+        available_when_busy=True,
+      ),
+      commands.CommandDef(
+        'approvals',
+        'Cycle automatic and manual tool approval',
+        lambda _context, _args: actions.ToggleApprovalMode(),
+        shortcut_action=actions.ToggleApprovalMode(),
         available_when_busy=True,
       ),
     )

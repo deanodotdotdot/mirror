@@ -19,7 +19,10 @@ class Failure(component.Component):
       if state.lifecycle.failure is None
       else [
         ('class:worktree-failed', 'Agent failed to load. '),
-        ('class:menu-hint', 'Press Enter to try loading again'),
+        (
+          'class:menu-hint',
+          'Press Enter to try loading again, or /model to change model',
+        ),
       ]
     )
     return containers.Window(

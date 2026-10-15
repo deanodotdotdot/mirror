@@ -77,7 +77,9 @@ async def test_status_extensions_observe_and_render_in_explicit_order() -> None:
     create_agent=lambda *_: pytest.fail('Unexpected agent creation'),
   )
   registry = extension.ExtensionRegistry()
-  await registry.register(view_mode.ViewModeExtension(), None)
+  await registry.register(
+    view_mode.ViewModeExtension(), None, overrides={'enabled': True}
+  )
   context_entrypoint = pathlib.Path(cast(str, context_usage.__file__)).parent
   tokens_entrypoint = pathlib.Path(cast(str, tokens_per_second.__file__)).parent
   assert await registry.load(context_entrypoint) == 'core/context-usage'

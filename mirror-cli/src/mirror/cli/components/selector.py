@@ -6,10 +6,11 @@ from typing import override
 
 from prompt_toolkit import buffer, data_structures, formatted_text
 from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.key_binding import key_bindings, key_processor
 from prompt_toolkit.layout import containers, controls, dimension, processors
 from prompt_toolkit.utils import get_cwidth
 
-from rich import text
+from rich import console, text
 
 from mirror.cli import rendering, selection, state, themes
 from mirror.cli.components import component, fuzzy_score, menu, resume
@@ -64,14 +65,25 @@ def render_choices(
   numbered: bool = False,
   width: int | None = None,
   stacked: bool = False,
+  wrap_details: bool = False,
   footer: str | None = None,
 ) -> StyleAndTextTuples:
+  row_budget = menu_state.max_rows
+  wrapping_console = console.Console() if wrap_details else None
   view = _MENU.view(menu_state, choices)
   label_width = max((get_cwidth(choice.label) for choice in choices), default=0)
   if width is not None:
     label_width = min(
-      label_width, max(0, width - 4) if stacked else max(8, (width - 4) // 3)
+      label_width,
+      max(0, width - 4) if stacked else max(8, (width - 4) // 3),
     )
+
+  shortcut_width = max(
+    (get_cwidth(choice.shortcut) for choice in choices), default=0
+  )
+  # Keep the command and description usable before reserving shortcut space.
+  if width is None or stacked or width < label_width + shortcut_width + 8:
+    shortcut_width = 0
 
   def heading(choice: selection.Choice, index: int) -> str:
     return (
@@ -120,26 +132,65 @@ def render_choices(
       *prefix,
       *highlight(label, label_query, style),
       *status,
+    ]
+    detail = choice.detail
+    content_width = (
+      (width or 0) - 2 - (shortcut_width + 2 if shortcut_width else 0)
+    )
+    detail_column = (
+      sum(get_cwidth(fragment[1]) for fragment in fragments) + len(padding) + 2
+    )
+    detail_width = content_width - detail_column
+    if wrapping_console is not None and not stacked and detail_width >= 2:
+      lines = text.Text(detail).wrap(wrapping_console, detail_width)
+      detail = ('\n' + ' ' * detail_column).join(line.plain for line in lines)
+    fragments.extend((
       *highlight(
-        f'\n  {choice.detail}'
+        f'\n  {detail}'
         if stacked
-        else (f'{padding}  {choice.detail}' if choice.detail else ''),
+        else (f'{padding}  {detail}' if detail else ''),
         '' if label_query else query,
         detail_style,
       ),
       (style, '  (current)' if choice.value == current else ''),
-    ]
+    ))
     if width is None:
       return fragments
     fitted: StyleAndTextTuples = []
     for index, line in enumerate(formatted_text.split_lines(fragments)):
       if index:
         fitted.append(('', '\n'))
-      line = menu.fit_line(line, max(0, width - 2))
+      line = menu.fit_line(line, max(0, content_width))
       used = sum(get_cwidth(fragment[1]) for fragment in line)
       fitted.extend(line)
-      fitted.append((style, ' ' * max(0, width - 2 - used)))
+      fitted.append((style, ' ' * max(0, width - 2 - shortcut_width - used)))
+      if shortcut_width:
+        shortcut = choice.shortcut if index == 0 else ''
+        shortcut_style = f'{style} bold' if selected else 'class:ui.accent bold'
+        fitted.append((shortcut_style, shortcut))
+        fitted.append((
+          style,
+          ' ' * (shortcut_width - get_cwidth(shortcut)),
+        ))
     return fitted
+
+  # Wrapped descriptions share a fixed line budget; unused lines stay padded.
+  while wrap_details:
+    used_rows = sum(
+      1
+      + formatted_text.fragment_list_to_text(
+        row(item, index, index == view.selected)
+      ).count('\n')
+      for index, item in enumerate(view.visible, start=view.start)
+    )
+    if used_rows <= row_budget or menu_state.max_rows == 1:
+      # `min_rows` counts items, so add only the unused physical lines.
+      min_rows = max(min_rows, len(view.visible) + row_budget - used_rows)
+      break
+    menu_state = dataclasses.replace(
+      menu_state, max_rows=menu_state.max_rows - 1
+    )
+    view = _MENU.view(menu_state, choices)
 
   fragments = _MENU.render(
     menu_state,
@@ -173,14 +224,25 @@ class Selector(component.Component):
 
   def __init__(self, get_max_height: Callable[[], int] | None = None) -> None:
     self._get_max_height = get_max_height
-    # Retain only native scroll state; request content remains in State.
+    # Cache only the current header's wrapping and native scroll position.
     self._header: tuple[str, containers.Window] | None = None
+    self._wrapped_header: (
+      tuple[
+        console.RenderableType,
+        int,
+        str | themes.Theme,
+        formatted_text.ANSI,
+        int,
+      ]
+      | None
+    ) = None
 
   @override
   def render(self, state: state.State) -> containers.AnyContainer:
     request = state.selector.selector
     if request is None:
       self._header = None
+      self._wrapped_header = None
       return containers.Window(height=0)
     choices = state.selector.filtered_choices()
     empty = 'No matching choices.' if state.selector.query else request.empty
@@ -230,54 +292,89 @@ class Selector(component.Component):
         ('', '\n'),
         *fragments,
       ]
-    if has_header:
-      header = rendering.strip_ansi(
-        rendering.renderable_to_ansi(
-          rendering.tool_block(text.Text(request.header), wrap=True),
-          state.layout.columns,
-          theme_name=themes.current(state.extensions, state.extension_themes),
+    width = state.layout.columns
+    theme = themes.current(state.extensions, state.extension_themes)
+    menu_window = menu.window(fragments, width, theme_name=theme)
+    if not has_header:
+      return menu_window
+    cached_header = self._wrapped_header
+    if cached_header is None or cached_header[:3] != (
+      request.header,
+      width,
+      theme,
+    ):
+      # Wrapping large payloads must not run again on every animation frame.
+      body = (
+        rendering.tool_block(
+          text.Text(request.header, style='ui.warning'), wrap=True
         )
+        if isinstance(request.header, str)
+        else request.header
+      )
+      rendered = rendering.renderable_to_ansi(
+        body, width, theme_name=theme
       ).rstrip()
-      header_height = len(header.splitlines())
-      if limit is not None:
-        menu_window = menu.window(
-          fragments,
-          state.layout.columns,
-          theme_name=themes.current(state.extensions, state.extension_themes),
-        )
-        menu_height = menu_window.preferred_height(
-          state.layout.columns, limit
-        ).preferred
-        cached = self._header
-        if cached is None or cached[0] != request.id:
-          window = containers.Window(wrap_lines=False)
-          window.content = controls.FormattedTextControl(
-            show_cursor=False,
-            get_cursor_position=lambda: data_structures.Point(
-              0, window.vertical_scroll
-            ),
-          )
-          self._header = (request.id, window)
-        else:
-          window = cached[1]
-        control = window.content
-        assert isinstance(control, controls.FormattedTextControl)
-        header_fragments: StyleAndTextTuples = [
-          ('class:footer-approval-manual', header)
-        ]
-        control.text = header_fragments
-        window.height = dimension.Dimension.exact(
-          max(0, min(header_height, limit - menu_height))
-        )
-        return containers.HSplit([
-          window,
-          menu_window,
-        ])
-      fragments = [('class:footer-approval-manual', header + '\n'), *fragments]
-    return menu.window(
-      fragments,
-      state.layout.columns,
-      theme_name=themes.current(state.extensions, state.extension_themes),
+      cached_header = self._wrapped_header = (
+        request.header,
+        width,
+        theme,
+        formatted_text.ANSI(rendered),
+        len(rendered.splitlines()),
+      )
+    header, header_height = cached_header[3:]
+    available = (
+      max(0, limit - menu_window.preferred_height(width, limit).preferred)
+      if limit is not None
+      else header_height
+    )
+    overflow = header_height > available
+    page_size = max(0, min(header_height, available - int(overflow)))
+    cached = self._header
+    if cached is None or cached[0] != request.id:
+      window = containers.Window(wrap_lines=False)
+      window.content = controls.FormattedTextControl(
+        show_cursor=False,
+        get_cursor_position=lambda: data_structures.Point(
+          0, window.vertical_scroll
+        ),
+      )
+      self._header = (request.id, window)
+    else:
+      window = cached[1]
+    control = window.content
+    assert isinstance(control, controls.FormattedTextControl)
+    control.text = header
+    window.height = dimension.Dimension.exact(page_size)
+    max_scroll = max(0, header_height - max(1, page_size))
+    window.vertical_scroll = min(window.vertical_scroll, max_scroll)
+    bindings = key_bindings.KeyBindings()
+
+    @bindings.add('pageup', is_global=True)
+    @bindings.add('pagedown', is_global=True)
+    def page_header(event: key_processor.KeyPressEvent) -> None:
+      direction = -1 if event.key_sequence[-1].key == 'pageup' else 1
+      window.vertical_scroll = max(
+        0,
+        min(
+          max_scroll, window.vertical_scroll + direction * max(1, page_size - 1)
+        ),
+      )
+
+    hint = (
+      f'PgUp/Dn · {window.vertical_scroll + 1}–{window.vertical_scroll + page_size}/{header_height}'
+      if page_size
+      else 'Enlarge terminal to inspect details'
+    )
+    return containers.HSplit(
+      [
+        window,
+        containers.Window(
+          controls.FormattedTextControl([('class:ui.muted', f'  {hint}')]),
+          height=int(overflow),
+        ),
+        menu_window,
+      ],
+      key_bindings=bindings,
     )
 
 

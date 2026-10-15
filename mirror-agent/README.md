@@ -6,29 +6,29 @@ Use it for automation, evaluations, and embedding in other applications.
 
 ## Install
 
-The standalone distribution is a native executable, not a Python package.
-Given a release archive for your platform, extract it into a new directory:
+The PyPI package `mirror-agent` installs the `mirror` CLI. This page covers the
+standalone native executable and its HTTP API.
+
+From the [full source checkout](../README.md#run-from-source), install Rust,
+a C compiler, `protoc`, and ripgrep (`rg`), then run at the repository root:
 
 ```bash
-mkdir mirror-agent-release
-tar -xzf mirror-agent-linux-x86_64.tar.gz -C mirror-agent-release
-cd mirror-agent-release
-./mirror-agent --version
+cargo install --locked --path mirror-agent --bin mirror-agent
+mirror-agent --version
 ```
 
-Use `mirror-agent-linux-aarch64.tar.gz` for ARM64. Keep the accompanying license
-and attribution files with the executable. Public download instructions will be
-added when the release channel is available.
+Ensure Cargo's binary directory (usually `~/.cargo/bin`) is on `PATH`.
+Keep the accompanying license and attribution files when redistributing binaries.
 
 ### Requirements
 
-- **Linux x86-64 or ARM64**, matching the release archive.
+- **Linux x86-64 or ARM64.**
 - **Model access:** a supported provider or an OpenAI-compatible endpoint.
 - **A writable workspace and output directory.**
 
-Release binaries bundle ripgrep; Python, uv, and a Rust toolchain are not
-required. Install any compilers, test runners, or other tools your project needs
-separately.
+Source-built binaries use ripgrep from `PATH`; local shell tools require
+`/bin/bash`. Python and uv are not needed to run the executable. Install any
+compilers, test runners, or other tools your project needs separately.
 
 ## First conversation
 
@@ -43,7 +43,7 @@ Start with an OpenAI-compatible Chat Completions endpoint:
 # Only needed if your model endpoint requires authentication.
 export OPENAI_API_KEY="your-model-api-key"
 
-./mirror-agent serve \
+mirror-agent serve \
   --api openai-chat-completions \
   --base-url https://model-endpoint.example/v1 \
   --model your-model-name \
@@ -74,22 +74,22 @@ with an `Origin` header are rejected.
 
 ## Configure
 
-Run `./mirror-agent serve --help` for all options.
+Run `mirror-agent serve --help` for all options.
 
-| Setting | Option |
-| --- | --- |
-| Provider protocol, endpoint, and model | `--api`, `--base-url`, `--model` |
-| Working directory | `--workspace` |
-| Available tools | `--tools bash` (default); also `read,write,edit,grep,find,ls` |
-| Set the system prompt | `--system-prompt` |
-| Opt in to project instructions | `--include-project-instructions` |
-| Opt in to the skills catalog | `--include-skills` |
-| Reasoning level or token budget | `--reasoning-effort` |
-| Sampling | `--temperature`, `--top-p`, `--seed` |
-| Context and output token limits | `--context-window`, `--max-tokens` |
-| Per-turn limits | `--max-iterations`, `--turn-timeout-seconds`, `--request-timeout-seconds` |
-| Provider-specific request fields | `--extra-body` (JSON object) |
-| Personal memory | `--memory-dir` (see [Memory](docs/memory.md)) |
+| Setting                                | Option                                                                    |
+| -------------------------------------- | ------------------------------------------------------------------------- |
+| Provider protocol, endpoint, and model | `--api`, `--base-url`, `--model`                                          |
+| Working directory                      | `--workspace`                                                             |
+| Available tools                        | `--tools bash` (default); also `read,write,edit,grep,find,ls`             |
+| Set the system prompt                  | `--system-prompt`                                                         |
+| Opt in to project instructions         | `--include-project-instructions`                                          |
+| Opt in to the skills catalog           | `--include-skills`                                                        |
+| Reasoning level or token budget        | `--reasoning-effort`                                                      |
+| Sampling                               | `--temperature`, `--top-p`, `--seed`                                      |
+| Context and output token limits        | `--context-window`, `--max-tokens`                                        |
+| Per-turn limits                        | `--max-iterations`, `--turn-timeout-seconds`, `--request-timeout-seconds` |
+| Provider-specific request fields       | `--extra-body` (JSON object)                                              |
+| Personal memory                        | `--memory-dir` (see [Memory](docs/memory.md))                             |
 
 By default, model requests have no system message. Project instructions
 (`AGENTS.md` / `CLAUDE.md`, including global instructions) and skills are disabled
@@ -104,10 +104,10 @@ support.** Choose a new `--output` path for each run you want to preserve.
 Relative paths resolve from the launch directory, not `--workspace`; missing
 parent directories are created.
 
-| File (with `--output mirror.jsonl`) | Contents |
-| --- | --- |
-| `mirror.jsonl` | Committed `AgentMessage` records, one protobuf-JSON object per line |
-| `mirror.model-calls.jsonl` | Model-facing messages, tools, settings, usage, and errors |
+| File (with `--output mirror.jsonl`) | Contents                                                            |
+| ----------------------------------- | ------------------------------------------------------------------- |
+| `mirror.jsonl`                      | Committed `AgentMessage` records, one protobuf-JSON object per line |
+| `mirror.model-calls.jsonl`          | Model-facing messages, tools, settings, usage, and errors           |
 
 Conversation records are flushed as they are committed, not streamed token by
 token. Model-call traces include `context_reset` records that re-emit the active
@@ -117,9 +117,9 @@ write failures warn on stderr without stopping inference.
 These files can contain source code, prompts, and tool output. Treat them as
 sensitive. Model requests send context to the configured provider.
 
-Stop with Ctrl-C or SIGTERM to cancel active work and shut down. To upgrade,
-stop the server, extract the new release into a separate directory, check its
-version, and start it with a fresh output path. Keep previous binaries and
+Stop with Ctrl-C or SIGTERM to cancel active work and shut down. Stop the
+server before rebuilding or replacing the executable, check its version, and
+start it with a fresh output path. Keep a copy of the old executable and
 outputs if you need to reproduce a run.
 
 ## Documentation

@@ -157,6 +157,35 @@ class Keymap:
     self._compiled = compiled
     return compiled
 
+  def shortcut_hint(self, action: actions.Action | None) -> str:
+    """Return one active Ctrl/function key; omit chords and ambiguous captures."""
+    if action is None or not self._enabled():
+      return ''
+    active = tuple(
+      binding
+      for binding in resolve(self._layers(), self._remappings)
+      if filters.to_filter(binding.filter)()
+    )
+    if any(
+      binding.keys == ('<any>',) and (binding.eager or binding.replay)
+      for binding in active
+    ):
+      return ''
+    for binding in active:
+      if binding.action != action or binding.replay or len(binding.keys) != 1:
+        continue
+      if any(
+        other.keys[0] in (binding.keys[0], '<any>') and len(other.keys) > 1
+        for other in active
+      ):
+        continue
+      key = binding.keys[0]
+      if key.startswith('f') and key[1:].isdigit():
+        return key.upper()
+      if len(key) == 3 and key.startswith('c-') and key != 'c-l':
+        return f'Ctrl+{key[2].upper()}'
+    return ''
+
   def _not_replayed(self) -> bool:
     return not any(
       any(key is replayed for replayed in self._replayed)
@@ -230,7 +259,7 @@ def defaults(
     Binding(('c-s',), actions.WorkspaceTagCommand()),
     Binding(('c-c',), actions.CancelOrQuitRequested()),
     Binding(('c-d',), actions.QuitRequested()),
-    Binding(('c-l',), actions.RerenderRequested()),
+    Binding(('c-t',), actions.CycleViewMode()),
     Binding(('c-o',), actions.OpenWorkspaces()),
     Binding(('c-b',), actions.DetachRequested()),
     *(
@@ -238,6 +267,8 @@ def defaults(
       for index in range(9)
     ),
   ]
+  if not modal_active:
+    bindings.append(Binding(('c-n',), actions.OpenNewWorkspace()))
   if (
     not modal_active
     and current.approval.request is None

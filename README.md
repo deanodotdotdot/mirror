@@ -3,6 +3,27 @@
 Mirror is a coding agent for your terminal. It can read and edit files, run
 commands, and work on parallel tasks in separate repository worktrees.
 
+## Install
+
+Install with
+[uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```bash
+uv tool install mirror-agent
+cd /path/to/your/project
+mirror
+```
+
+The package is named `mirror-agent`; the command is `mirror`. Release wheels
+include the native agent and ripgrep, so no Rust build is required. See the
+[supported platforms](mirror-cli/README.md#requirements).
+
+The `mirror-agent-py` Python embedding bindings are not part of the CLI release
+and are not included in the PyPI package.
+
+If your shell cannot find `mirror`, run `uv tool update-shell` and restart it.
+The PyPI package named `mirror` is unrelated; do not install it.
+
 ## Run from source
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), Rust/Cargo,
@@ -38,7 +59,6 @@ To try the interface without model credentials or a Rust build:
 
 Send a message to play a synthetic conversation. No model calls or real tools run.
 
-The PyPI package named `mirror` is unrelated; do not install it.
 By default, tools run with your account's permissions. Manual approval is not a
 sandbox; see [local data and safety](mirror-cli/README.md#local-data-and-safety).
 

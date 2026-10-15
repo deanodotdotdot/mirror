@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import contextlib
 import dataclasses
@@ -17,7 +18,7 @@ from typing import override
 from prompt_toolkit import formatted_text, mouse_events, utils
 from prompt_toolkit.application import current
 from prompt_toolkit.layout import controls
-from rich import cells, color, console, styled
+from rich import cells, color, console, styled, text
 
 from mirror.cli import (
   actions,
@@ -33,7 +34,9 @@ from mirror.cli import (
 def _summarize(content: str, width: int) -> str:
   """Normalize and clip a prompt without splitting terminal graphemes."""
   content = ' '.join(content.split())
-  summary = f'{rendering.PROMPT} {rendering.strip_ansi(content)}'
+  summary = rendering.icon_prefix(rendering.PROMPT) + rendering.strip_ansi(
+    content
+  )
   used = end = 0
   for start, stop, size in cells.split_graphemes(summary)[0]:
     # Fit both renderers: their cell widths differ for some emoji sequences.
@@ -62,7 +65,7 @@ def _plain(fragments: _Row) -> str:
     formatted_text
     .fragment_list_to_text(list(fragments))
     .strip()
-    .removeprefix('● ')
+    .removeprefix(rendering.icon_prefix(rendering.ASSISTANT_ICON))
   )
 
 
@@ -159,6 +162,10 @@ class TranscriptView(screen_selection.HoverControl):
     self._copy_until = 0.0
     self._visible: _Rows = ()
     self._cache_bytes = 0
+    self._render_task: asyncio.Task[None] | None = None
+    self._render_needed: tuple[transcript.Block, _LayoutKey] | None = None
+    self._layout_ready = True
+    self._generation = 0
     # The cache budget excludes transient rendering and the visible row slice.
     # Keep both sides of a boundary, not every layout crossed by a large jump.
     self._oversized: collections.deque[tuple[_LayoutKey, _Rows]] = (
@@ -179,6 +186,8 @@ class TranscriptView(screen_selection.HoverControl):
     pattern = r'\s+'.join(
       re.escape(word) for word in _plain(rows[target_row]).split()
     )
+    if not pattern:
+      return
     preceding: list[str] = []
     if first is not None:
       for block_index in range(first, index + 1):
@@ -276,6 +285,7 @@ class TranscriptView(screen_selection.HoverControl):
     self._cache.clear()
     self._cache_bytes = 0
     self._summary = None
+    self._generation += 1
     self._oversized.clear()
     self._blocks = self._settled_snapshot = self._pending_snapshot = ()
     self._live_snapshot = ()
@@ -284,22 +294,19 @@ class TranscriptView(screen_selection.HoverControl):
 
   @contextlib.contextmanager
   def _layout_pass(self) -> Generator[None]:
-    """Reuse oversized boundary layouts within an operation, not at rest."""
+    """Reuse oversized boundary layouts until the pending layout is painted."""
+    self._layout_ready = True
     try:
       yield
     finally:
-      self._oversized.clear()
+      if self._layout_ready:
+        self._oversized.clear()
 
   def _rows(self, index: int, part: int) -> _Rows:
     block = self._blocks[index]
     renderable = block.parts[part]
-    padding = 1 if part + 1 < len(block.parts) else 2
-    if index + 1 < len(self._blocks) and isinstance(
-      renderable, rendering.Answer
-    ):
-      following = self._blocks[index + 1].renderable
-      if isinstance(following, rendering.Answer) and following.continuation:
-        padding = 1
+    # Match inline scrollback: one empty row between blocks or Markdown parts.
+    padding = 1
     theme_name = self._theme_name()
     key = (block.key, block.revision, part, self._width, theme_name, padding)
     cached = self._cache.get(key)
@@ -309,11 +316,54 @@ class TranscriptView(screen_selection.HoverControl):
     for oversized_key, oversized_rows in self._oversized:
       if oversized_key == key:
         return oversized_rows
-    rows = self._render_block(block, part, theme_name, padding)
-    size = _layout_bytes(key, rows)
+    app = current.get_app_or_none()
+    # Input geometry and plain status decorations must be available immediately.
+    if (
+      app is not None
+      and app.is_running
+      and not isinstance(renderable, (rendering.UserText, text.Text))
+    ):
+      self._render_needed = self._render_needed or (block, key)
+      # Keep the last painted revision while formatting the newest snapshot.
+      for previous, (rows, _) in reversed(self._cache.items()):
+        if previous[0] == key[0] and previous[2:] == key[2:]:
+          return rows
+      for previous, rows in reversed(self._oversized):
+        if previous[0] == key[0] and previous[2:] == key[2:]:
+          return rows
+      self._render_needed = (block, key)
+      self._layout_ready = False
+      return ((),) * padding
+    rows, size = self._render_block(block, key, next(self._copy_ids))
+    self._remember_rows(key, rows, size)
+    return rows
+
+  def _schedule_render(self) -> None:
+    # One render at a time; prioritize unseen parts over refreshing live text.
+    if self._render_task is None and self._render_needed is not None:
+      block, key = self._render_needed
+      self._render_task = current.get_app().create_background_task(
+        self._render(block, key, self._generation)
+      )
+
+  async def _render(
+    self, block: transcript.Block, key: _LayoutKey, generation: int
+  ) -> None:
+    try:
+      # Rich layout and ANSI decoding must not hold up input or RPC cancellation.
+      rows, size = await asyncio.to_thread(
+        self._render_block, block, key, next(self._copy_ids)
+      )
+      if generation == self._generation:
+        self._remember_rows(key, rows, size)
+    finally:
+      self._render_task = None
+      current.get_app().invalidate()
+
+  def _remember_rows(self, key: _LayoutKey, rows: _Rows, size: int) -> None:
     if size > self._max_cache_bytes:
       self._oversized.append((key, rows))
-      return rows
+      return
     self._cache[key] = (rows, size)
     self._cache_bytes += size
     while self._cache and (
@@ -325,18 +375,15 @@ class TranscriptView(screen_selection.HoverControl):
     if not self._cache:
       self._cache.clear()
       self._oversized.append((key, rows))
-    return rows
 
   def _render_block(
-    self,
-    block: transcript.Block,
-    part: int,
-    theme: str | themes.Theme,
-    padding: int,
-  ) -> _Rows:
+    self, block: transcript.Block, key: _LayoutKey, copy_id: int
+  ) -> tuple[_Rows, int]:
+    """Render captured geometry and copy IDs without mutating viewport state."""
+    _, _, part, width, theme, padding = key
     painter = rendering.ansi_console(
       io.StringIO(),
-      self._width,
+      width,
       theme_name=theme,
       interactive=not block.key.startswith('live:'),
     )
@@ -344,13 +391,15 @@ class TranscriptView(screen_selection.HoverControl):
     marker = ''
     handlers: dict[bool, Callable[[mouse_events.MouseEvent], None]] = {}
     # Direct rendering bypasses the console's default text style.
-    for segment in painter.render(styled.Styled(block.parts[part], 'ui.text')):
+    for index, segment in enumerate(
+      painter.render(styled.Styled(block.parts[part], 'ui.text'))
+    ):
       rich_style = segment.style
       value = segment.text
       metadata = rich_style.meta if rich_style else {}
       source = metadata.get('copy_code')
       if isinstance(source, str):
-        marker = f' class:code-copy-{next(self._copy_ids)} '
+        marker = f' class:code-copy-{copy_id}-{index} '
         handlers = {
           False: functools.partial(self._code_event, source, marker, False),
           True: functools.partial(self._code_event, source, marker, True),
@@ -379,7 +428,8 @@ class TranscriptView(screen_selection.HoverControl):
         )
       else:
         fragments.extend(decoded)
-    return _split_rows(fragments, padding)
+    rows = _split_rows(fragments, padding)
+    return rows, _layout_bytes(key, rows)
 
   @override
   def clear_hover(self) -> None:
@@ -463,9 +513,11 @@ class TranscriptView(screen_selection.HoverControl):
     part = min(self._anchor.part, len(self._blocks[index].parts) - 1)
     if self._settling_line is not None:
       pattern, occurrence, offset, whole_record = self._settling_line
-      self._settling_line = None
       parts = range(len(self._blocks[index].parts)) if whole_record else (part,)
       rows = [self._rows(index, i) for i in parts]
+      if not self._layout_ready:
+        return index, part, 0
+      self._settling_line = None
       text = '\n'.join(map(_plain, itertools.chain.from_iterable(rows)))
       match = (
         next(
@@ -646,6 +698,8 @@ class TranscriptView(screen_selection.HoverControl):
         self._remember_line(*self._start())
       if (width, height) != (self._width, self._height):
         self.clear_hover()
+      self._render_needed = None
+      self._layout_ready = True
       self._width, self._height = max(1, width), max(1, height)
       self._refresh_blocks()
       visible: list[_Row] = []
@@ -667,10 +721,11 @@ class TranscriptView(screen_selection.HoverControl):
             part, row = part + 1, 0
           else:
             index, part, row = index + 1, 0, 0
-      snapshot = tuple(visible)
+      snapshot = tuple(visible) if self._layout_ready else self._visible
       if snapshot != self._visible:
         self.clear_hover()
       self._visible = snapshot
+      self._schedule_render()
       return controls.UIContent(
         get_line=lambda index: self._display_row(snapshot[index]),
         line_count=len(snapshot),

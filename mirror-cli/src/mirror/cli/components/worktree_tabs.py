@@ -14,7 +14,7 @@ from mirror.cli import (
   workspace_tags,
   workspaces,
 )
-from mirror.cli.components import breathing_dots
+from mirror.cli.components import spinner
 
 _HINT = 'Tab / Shift+Tab'
 
@@ -244,7 +244,7 @@ def _indicator(
 ) -> tuple[formatted_text.AnyFormattedText, str]:
   return {
     actions.WorktreeAgentState.CREATING: (
-      breathing_dots.render,
+      lambda: spinner.render(spinner.Color.LIGHT_GREEN),
       'class:worktree-running',
     ),
     actions.WorktreeAgentState.NOT_STARTED: ('·', 'class:worktree'),

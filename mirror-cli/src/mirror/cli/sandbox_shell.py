@@ -7,6 +7,7 @@ import dataclasses
 import json
 import pathlib
 import shlex
+import signal
 import tempfile
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import cast
@@ -83,23 +84,42 @@ class SandboxShell(shell.Shell):
     # Completion evidence is host-owned, never in the mounted workspace.
     with tempfile.TemporaryDirectory(prefix='mirror-process-') as directory:
       outcome = pathlib.Path(directory) / 'outcome'
-      launcher = shell.Shell(pathlib.Path.home(), on_abort=self.quarantine)
-      async with launcher.open((
-        *sandbox_setup.worker_command(self.worker_command),
-        'sandbox',
-        'exec',
-        json.dumps(dict(self.configuration)),
-        str(self.cwd),
-        str(outcome),
-        shlex.join(argv),
-      )) as child:
-        process = _Process(child, outcome)
-        yield process
+      launcher = shell.Shell(
+        pathlib.Path.home(),
+        termination_signal=signal.SIGTERM,
+        # Allow admission plus sandboxd's process-group cancellation grace.
+        termination_timeout=35,
+      )
+      process: _Process | None = None
+      completed = False
       try:
-        await process.wait()
-      except RuntimeError:
-        await self.quarantine()
-        raise
+        async with launcher.open((
+          *sandbox_setup.worker_command(self.worker_command),
+          'sandbox',
+          'exec',
+          json.dumps(dict(self.configuration)),
+          str(self.cwd),
+          str(outcome),
+          shlex.join(argv),
+        )) as child:
+          process = _Process(child, outcome)
+          yield process
+        completed = True
+      finally:
+        if process is not None:
+          try:
+            await process.wait()
+          except _OutcomeUnknown:
+            await self.quarantine()
+            raise
+          except shell.ProcessError:
+            # Preserve the caller's timeout or cancellation after confirmed cleanup.
+            if completed:
+              raise
+
+
+class _OutcomeUnknown(RuntimeError):
+  pass
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,11 +144,16 @@ class _Process:
     try:
       value: object = json.loads(self.outcome.read_bytes())
     except (OSError, ValueError) as error:
-      raise RuntimeError(
+      raise _OutcomeUnknown(
         'Sandbox command completion is unknown; it will not be replayed'
       ) from error
     if isinstance(value, dict):
-      status = cast(dict[str, object], value).get('Ok')
+      fields = cast(dict[str, object], value)
+      status = fields.get('Ok')
       if isinstance(status, int) and not isinstance(status, bool):
         return status
-    raise RuntimeError(f'Sandbox process failed: {value}')
+      if isinstance(error := fields.get('Err'), str):
+        raise shell.ProcessError(f'Sandbox process failed: {error}')
+    raise _OutcomeUnknown(
+      f'Sandbox command completion is unknown; it will not be replayed: {value}'
+    )

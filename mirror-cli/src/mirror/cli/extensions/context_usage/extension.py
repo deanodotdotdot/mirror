@@ -186,7 +186,7 @@ class ContextUsageExtension(extension.Extension[ContextUsage, None, None]):
     return (
       commands.CommandDef(
         'context',
-        'Show the latest system prompt construction and its sources',
+        'Show system prompt and sources',
         lambda _context, _args: actions.RoutedExtensionAction(
           self.id(), _ShowContext()
         ),

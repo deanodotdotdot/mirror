@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import override
 
-from prompt_toolkit.formatted_text import (
-  StyleAndTextTuples as _StyleAndTextTuples,
-)
+from prompt_toolkit import formatted_text
 from prompt_toolkit.layout import containers, controls, dimension
 
 from mirror.cli import rendering, state, tool_groups
@@ -27,7 +25,7 @@ class Activity(component.Component):
     )
 
 
-def _content(state: state.State) -> _StyleAndTextTuples:
+def _content(state: state.State) -> formatted_text.StyleAndTextTuples:
   pending_switch = state.session.pending_switch is not None
   busy = state.activity.busy
   status = state.activity.status
@@ -39,9 +37,11 @@ def _content(state: state.State) -> _StyleAndTextTuples:
       return []
     label = '<1s' if duration < 1 else f'{duration:.0f}s'
     return [
-      ('class:activity', ' '),
-      (f'class:activity class:{state.activity.spinner_color.value}', '● '),
-      ('class:activity', f' Worked for {label}'),
+      (
+        f'class:activity class:{state.activity.spinner_color.value}',
+        rendering.icon_prefix(rendering.ASSISTANT_ICON),
+      ),
+      ('class:activity', f'Worked for {label}'),
     ]
   if not status:
     return []
@@ -66,10 +66,15 @@ def _content(state: state.State) -> _StyleAndTextTuples:
   detach_hint = (
     '  ·  Ctrl+B to detach' if state.activity.foreground_tasks else ''
   )
+  indicator = spinner.render(
+    state.activity.spinner_color, style='class:activity'
+  )
+  padding = rendering.GUTTER_WIDTH - formatted_text.fragment_list_width(
+    indicator
+  )
   return [
-    ('class:activity', ' '),
-    *spinner.render(state.activity.spinner_color, style='class:activity'),
-    ('class:activity', ' '),
+    *indicator,
+    ('class:activity', ' ' * padding),
     *text_shimmer.render(status, style='class:activity'),
     ('class:activity', tokens + timer + detach_hint),
   ]

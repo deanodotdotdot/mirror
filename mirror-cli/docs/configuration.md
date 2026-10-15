@@ -12,14 +12,14 @@ client; each workspace selects its own model and approval settings.
 Select a protocol explicitly when setting up a provider; merely exporting an
 API key does not select it.
 
-| Provider | `--api` | Authentication |
-| --- | --- | --- |
-| Reflection | `reflection` | `/login`, a saved key, or `REFLECTION_API_KEY` |
-| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
-| OpenAI Responses | `openai-responses` | `OPENAI_API_KEY` |
-| Anthropic Messages | `anthropic-messages` | `ANTHROPIC_API_KEY` |
-| ChatGPT plan via Codex | `openai-codex-responses` | Existing Codex CLI login |
-| Custom Chat Completions server | `openai-chat-completions` | Endpoint-specific; `--api-key` if required |
+| Provider                       | `--api`                   | Authentication                                 |
+| ------------------------------ | ------------------------- | ---------------------------------------------- |
+| Reflection                     | `reflection`              | `/login`, a saved key, or `REFLECTION_API_KEY` |
+| OpenRouter                     | `openrouter`              | `OPENROUTER_API_KEY`                           |
+| OpenAI Responses               | `openai-responses`        | `OPENAI_API_KEY`                               |
+| Anthropic Messages             | `anthropic-messages`      | `ANTHROPIC_API_KEY`                            |
+| ChatGPT plan via Codex         | `openai-codex-responses`  | Existing Codex CLI login                       |
+| Custom Chat Completions server | `openai-chat-completions` | Endpoint-specific; `--api-key` if required     |
 
 For ChatGPT plan access, log in with the Codex CLI using
 `codex login --device-auth`. Mirror reads `~/.codex/auth.json` by default;
@@ -38,7 +38,7 @@ defaults to Reflection, or Chat Completions when a custom endpoint is supplied.
 
 ## Model picker
 
-`/model` selects a model; `/reasoning` selects an effort level. Optional
+`/model` selects a model; `/effort` selects an effort level. Optional
 `~/.mirror/models.json` entries supply model IDs, labels, and routing:
 
 ```json
@@ -62,9 +62,12 @@ Use `MIRROR_MODELS_CONFIG` to select a different file. Do not put API keys in
 model entries or endpoint URLs.
 
 Explicit `--api` and `--base-url` flags override a matching model entry. Without
-`--model`, the CLI prefers the last-used model if it remains configured, then
-the first configured entry. See [model loading](../src/mirror/cli/models.py)
-and [startup resolution](../src/mirror/cli/main.py).
+`--model` or `--api`, startup prefers the workspace's saved model, then the
+complete selection in `last_model.json`, including its protocol and endpoint.
+That selection need not remain in `models.json`. If no saved selection can be
+used, startup falls back to the configured list or the provider's default.
+See [model loading](../src/mirror/cli/models.py) and
+[startup resolution](../src/mirror/cli/main.py).
 
 ## Project instructions and approvals
 
@@ -88,7 +91,9 @@ Approval is not filesystem or network isolation.
   `cat` does not match `catfish`, `/bin/cat`, or `sudo cat`.
 - Scope: local workspace and override, or remote endpoint/transport/session.
 - Limits: no file-access restriction or executable identity pinning.
-- Storage: `~/.mirror/tool_approvals.json`; cached, prefixes plaintext. No secrets.
+- Storage: `~/.mirror/tool_approvals.json`; exact-call arguments are hashed,
+  but command prefixes are stored in plaintext without redaction. Do not remember
+  prefixes containing secrets.
 - Revoke: stop Mirror → edit file → restart.
 
 ## Keybindings
@@ -97,6 +102,9 @@ Approval is not filesystem or network isolation.
 - Ctrl+C: dismiss modal → clear draft → interrupt work → exit if idle.
 - Escape: dismiss UI or interrupt work.
 - Ctrl+D: quit immediately.
+- Ctrl+N: choose **Normal** (a new workspace in the current directory) or
+  **Worktree** (an isolated checkout), then press Enter. Use Up/Down to choose
+  and Escape to cancel. The previous choice is remembered across launches.
 
 Create `~/.mirror/keybindings.json` and restart the CLI. Each entry replaces
 one action's shortcuts; omitted actions keep their defaults and `[]` disables
@@ -130,7 +138,6 @@ Every field is optional:
 ```json
 {
   "sandbox": {
-    "image": "buildpack-deps:bookworm",
     "egress": ["github.com", "api.github.com", "pypi.org"],
     "cpus": 2,
     "memory_mib": 2048
@@ -138,9 +145,11 @@ Every field is optional:
 }
 ```
 
-- `image` is any OCI image. The default carries Git, curl and common build
-  tools. Its commands must run as root, which lets `sandboxd` see edits made on
-  this machine at once.
+- `image` must be an anonymously accessible OCI reference pinned with
+  `@sha256:<64 hex digits>`. Omit it to use the pinned default with Git, curl and
+  common build tools. Custom images must provide `python3`, `git`, and `rg`.
+  Commands must run as root, which lets `sandboxd` see edits made on this machine
+  at once.
 - `egress` replaces the default allowlist of GitHub, PyPI and npm hosts. Each
   entry is a host name, or `*.domain` for its subdomains, reached over HTTPS
   only.

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mirror"
 version = "0.1.0"
-description = "A minimal, open-sourceable coding-agent harness (CLI)."
+description = "A terminal coding agent from Reflection AI."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -26,6 +26,11 @@ dependencies = [
   "tree-sitter>=0.25",
   "tree-sitter-bash",
 ]
+
+[project.urls]
+Source = "https://github.com/reflection-oss/mirror"
+Documentation = "https://github.com/reflection-oss/mirror/blob/main/mirror-cli/README.md"
+Issues = "https://github.com/reflection-oss/mirror/issues"
 
 [project.scripts]
 mirror = "mirror.main:run"

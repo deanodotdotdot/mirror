@@ -195,8 +195,6 @@ async def _run(harness: _Harness, action: object) -> None:
 
 
 async def _open_settings(harness: _Harness) -> selection.Selector[object]:
-  (command,) = harness.plugin.slash_commands()
-  assert command.name == 'settings'
   action = commands.dispatch(
     '/settings',
     commands.CommandContext(
@@ -207,7 +205,7 @@ async def _open_settings(harness: _Harness) -> selection.Selector[object]:
       str(harness.context.workspace.cwd),
       remote=harness.context.workspace.remote,
     ),
-    (command,),
+    harness.plugin.slash_commands(),
   )
   assert action == actions.RoutedExtensionAction(
     'core/settings', settings_extension.Show()

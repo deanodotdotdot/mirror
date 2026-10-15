@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -21,14 +22,19 @@ pub trait SandboxTransport: Send + Sync {
     async fn stream(
         &self,
         sandbox_id: &str,
-        request: SandboxStream,
-    ) -> Result<SandboxStreamOutcome, SandboxTransportError>;
+        request: SandboxStream<'_>,
+    ) -> Result<SandboxStreamOutcome, SandboxTransportError> {
+        let workspace = request.workdir.clone().unwrap_or_else(|| "/".into());
+        crate::run_sandbox_command(self.connect(sandbox_id, &workspace), request).await
+    }
 }
 
-pub struct SandboxStream {
+pub struct SandboxStream<'a> {
     pub command: String,
     pub workdir: Option<String>,
     pub timeout: Duration,
+    /// Request cancellation, then keep awaiting the stream for confirmed termination.
+    pub cancellation: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
     pub stdin: Option<Pin<Box<dyn AsyncRead + Send>>>,
     pub stdout: Pin<Box<dyn AsyncWrite + Send>>,
     /// Stream stderr verbatim when supplied; otherwise retain a bounded diagnostic.

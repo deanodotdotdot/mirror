@@ -129,7 +129,7 @@ impl SandboxTransport for FakeSandbox {
     async fn stream(
         &self,
         _: &str,
-        mut request: SandboxStream,
+        mut request: SandboxStream<'_>,
     ) -> Result<SandboxStreamOutcome, SandboxTransportError> {
         if self.fail_probe {
             return Err(SandboxTransportError::OutcomeUnknown(
@@ -160,6 +160,14 @@ struct NameEcho(Arc<tokio::sync::Notify>);
 
 #[tonic::async_trait]
 impl Sandboxd for NameEcho {
+    type RunCommandStream = ReceiverStream<Result<mirror_sandbox::RunCommandResponse, Status>>;
+    async fn run_command(
+        &self,
+        _: Request<tonic::Streaming<mirror_sandbox::RunCommandRequest>>,
+    ) -> Result<Response<Self::RunCommandStream>, Status> {
+        Err(Status::unimplemented("tool-only fixture"))
+    }
+
     type EgressStream = ReceiverStream<Result<EgressEvent, Status>>;
 
     async fn egress(

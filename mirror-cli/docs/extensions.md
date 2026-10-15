@@ -6,6 +6,7 @@ owns MCP discovery and execution. Extensions and local stdio servers run without
 a sandbox.
 
 ## Enable trusted extensions
+
 Put an extension at `~/.mirror/extensions/<name>/extension.py`. Mirror also
 discovers `.mirror/extensions/<name>/extension.py` from the nearest repository
 root through the launch directory (only the launch directory outside a repo).
@@ -20,6 +21,7 @@ account's filesystem, network, and credential access. Consent is not a code
 review or a sandbox; review project-provided extensions before enabling them.
 
 ## GitHub sources
+
 - `/extensions-add`: paste URL → download → consent.
 - `/extensions-update`: pick one/all → reload enabled extensions now.
 - `/extensions-remove`: confirm → unload; keep cache.
@@ -34,13 +36,14 @@ updates, hooks, submodules, or dependency installs. Private repos use Git creden
 helpers—never put tokens in URLs or settings.
 
 ## Author an extension
+
 Enable `user_extensions` in `/extensions` for authoring tools and
 `$mirror-extensions` (off by default).
 
 Start with the widget scaffold in
-[`user_extensions.py`](../src/mirror/cli/user_extensions.py).
-The model-facing `extensions` tool supports these JSON arguments (these are
-tool calls, not shell or slash commands):
+[`extension.py`](../src/mirror/cli/extensions/user_extensions/extension.py).
+The model-facing `user-extensions__extensions` tool supports these JSON arguments
+(these are tool calls, not shell or slash commands):
 
 ```json
 {"action": "create", "name": "clock"}
@@ -56,6 +59,7 @@ Load/unload persist enablement; list reports user extensions and workspace fault
 The tool manages the user directory, not project extension directories.
 
 The mental model is a small state machine:
+
 - Define an `Extension[StateT, EffectT, ContextT]` subclass with an `id()` equal
   to its directory name and a no-argument constructor. The loader rejects
   mismatches before activation. Use the module docstring for its menu description.
@@ -116,6 +120,7 @@ Reload the extension after editing its skills. Never include secrets.
 - `disable-model-invocation: true` hides a skill from the catalog, not `$name`.
 
 ## Connect services and MCP tools
+
 One extension, `core/connections`, owns every service connection and the MCP
 tools they provide. A service can be connected on the Mirror server at
 `--remote-endpoint` or on this machine, and each service appears once:
@@ -138,7 +143,7 @@ tools they provide. A service can be connected on the Mirror server at
   stops a running command). The Mirror server identifies the account. When several accounts are usable, the
   newly connected one becomes the default. When the Mirror server is
   unavailable or does not offer the service, the command signs in on this
-  machine instead, except during `/remote` setup, which stops. A custom OAuth
+  machine instead, except during remote session setup, which stops. A custom OAuth
   server signs in with its saved `auth.clientId` when it has one.
 - `/connections` lists each connection with where it lives, its account, its
   status, and the default marker.
@@ -148,12 +153,12 @@ tools they provide. A service can be connected on the Mirror server at
   connection.
 
 Every sign-in hint points at `/connect <service>` and is shown once per service
-until that service connects. Before `/remote` opens a session, the extension
-requires a usable connection for each provider in its
+until that service connects. The extension's remote-creation hooks require a
+usable connection for each provider in its
 `required_remote_connections` config (default `["github"]`) that the Mirror
 server offers; a missing one starts `/connect <provider>` and a missing default
 opens an account picker, then the original request resumes. When the Mirror
-server's connections cannot be listed, `/remote` stops with an error.
+server's connections cannot be listed, remote session creation stops with an error.
 
 Tools are chosen per service. A service connected through the Mirror server's
 MCP gateway uses the gateway's tools; otherwise a configured local server's
@@ -164,18 +169,21 @@ sessions discover their own authorized gateway catalog, without a CLI attachment
 Local endpoint and credential paths are never sent to hosted sessions.
 
 ### Mirror server gateway
+
 The Mirror server's MCP gateway is off by default. Turn it on with the
 extension's `remote_mcp` config, whose `~/.mirror/config.json` entry is
 `builtin/connections`:
 
 ```json
-{"extensions": {"builtin/connections": {"config": {"remote_mcp": true}}}}
+{
+  "extensions": { "builtin/connections": { "config": { "remote_mcp": true } } }
+}
 ```
 
 Changing it takes effect in a running TUI. While it is off the client never
 lists or opens gateway servers, so there are no gateway tools, gateway sign-in
 hints, or gateway rows in `/connections`; `/connect`, `/disconnect`, and the
-`/remote` readiness check still use the Mirror server's connections.
+remote-creation readiness check still use the Mirror server's connections.
 
 When it is on, the gateway is listed with `McpGatewayService.ListMcpServers`,
 and each server is reached with MCP's Streamable HTTP transport at
@@ -188,6 +196,7 @@ from runtime discovery. Remote workspaces use the hosted runtime's gateway
 instead of opening connections from the CLI.
 
 ### Local servers
+
 Custom servers stay on this machine. Local definitions are individual JSON
 objects in `~/.mirror/mcp/<name>.json`, not an `mcpServers` wrapper. Names
 allow letters, numbers, underscores, and dashes. `MIRROR_MCP_DIR` overrides that
@@ -196,9 +205,14 @@ one of `url` (Streamable HTTP) or `command` (stdio). Connecting or disconnecting
 one replaces the local worker so its stable tool set is discovered again.
 
 #### HTTP: OAuth or bearer
+
 For example, connecting Notion on this machine creates `notion.json` with:
+
 ```json
-{"url": "https://mcp.notion.com/mcp", "auth": {"type": "oauth", "credential": "notion"}}
+{
+  "url": "https://mcp.notion.com/mcp",
+  "auth": { "type": "oauth", "credential": "notion" }
+}
 ```
 
 OAuth credentials live under `credentials/` in the MCP directory.
@@ -207,8 +221,12 @@ Writing OAuth JSON alone does not sign in; after writing a file,
 `/connect <name>` starts it or signs in.
 
 For a custom bearer server (replace the example URL):
+
 ```json
-{"url": "https://mcp.example.com/mcp", "auth": {"type": "bearer", "tokenEnvVar": "MY_MCP_TOKEN"}}
+{
+  "url": "https://mcp.example.com/mcp",
+  "auth": { "type": "bearer", "tokenEnvVar": "MY_MCP_TOKEN" }
+}
 ```
 
 Set `MY_MCP_TOKEN` in the CLI environment through your secret-management workflow.
@@ -217,9 +235,15 @@ do not put token values in JSON. Omit `auth` for unauthenticated HTTP.
 Authenticated HTTP requires HTTPS except on loopback hosts.
 
 #### Stdio
+
 Replace the executable path with a trusted, installed MCP server:
+
 ```json
-{"command": "/path/to/mcp-server", "args": ["--stdio"], "env": {"API_TOKEN": "MY_MCP_TOKEN"}}
+{
+  "command": "/path/to/mcp-server",
+  "args": ["--stdio"],
+  "env": { "API_TOKEN": "MY_MCP_TOKEN" }
+}
 ```
 
 `args` and `env` are optional. `env` maps child variable names to existing CLI
@@ -308,3 +332,9 @@ Missing execution backends fail; they never fall back to the host. Personal
 memory, credential commands, microphone capture and the user's editor remain
 host-owned. The file picker reads and writes workspace files through the shell;
 the host editor receives a temporary copy, with checked write-back.
+
+## View-mode badge
+
+The built-in `view_mode` extension displays the colored mode badge in the dock.
+It is disabled by default; enable it in `/extensions` when you want the indicator.
+Ctrl+T and `/view` cycle view modes whether the badge is enabled or disabled.

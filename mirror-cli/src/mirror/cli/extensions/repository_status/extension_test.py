@@ -24,11 +24,13 @@ class _Tab:
     self.state: state.State
     self.reads: list[None] = []
     self.changed = asyncio.Event()
+    self.failed = asyncio.Event()
+    self.next_error: Exception | None = None
     context = extension.Context(
       extension.Workspace(
         directory,
         remote=False,
-        shell=shell.Shell(directory, validate=lambda: self.reads.append(None)),
+        shell=shell.Shell(directory, validate=self.read),
       ),
       dispatch=self.dispatch,
       get_state=lambda: self.state,
@@ -52,6 +54,13 @@ class _Tab:
       workspace=str(directory),
       extensions=self.host.initial_states,
     )
+
+  def read(self) -> None:
+    self.reads.append(None)
+    error, self.next_error = self.next_error, None
+    if error is not None:
+      self.failed.set()
+      raise error
 
   def dispatch(self, action: actions.Action) -> None:
     states, pending = self.host.reduce(self.state, action)
@@ -130,6 +139,33 @@ async def test_shared_folder_tabs_keep_visibility_and_refreshes_independent(
   finally:
     await first.host.close()
     await second.host.close()
+    await registry.close()
+
+
+@pytest.mark.asyncio
+async def test_status_timeout_preserves_counts_and_allows_the_next_refresh(
+  registry: extension.ExtensionRegistry, repository: pathlib.Path
+) -> None:
+  tab = _Tab(registry, repository)
+  try:
+    await tab.host.start()
+    await tab.host.foreground()
+    await tab.wait_for_update()
+    previous = tab.state.extensions['core/status']
+
+    tab.next_error = TimeoutError()
+    tab.finish_edit()
+    await asyncio.wait_for(tab.failed.wait(), timeout=3)
+    assert tab.state.extensions['core/status'] == previous
+
+    (repository / 'tracked').write_text('edited\nextra\n')
+    tab.finish_edit()
+    await tab.wait_for_update()
+    observed = tab.state.extensions['core/status']
+    assert isinstance(observed, repository_status.RepositoryStatus)
+    assert observed.additions == 2
+  finally:
+    await tab.host.close()
     await registry.close()
 
 

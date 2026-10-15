@@ -8,6 +8,7 @@ use std::time::Duration;
 use clap::Parser;
 use mirror_sandbox::{SandboxProvider, SandboxStream, SandboxTransport, SandboxTransportError};
 use mirror_sandbox_microsandbox::{sandbox_name, Msb, MsbFailure};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::sandbox_config::{quarantine_path, SandboxConfig};
@@ -32,6 +33,13 @@ enum SandboxCommand {
     Delete { id: Uuid },
 }
 
+#[derive(Serialize)]
+enum ProcessOutcome {
+    Ok(i32),
+    Err(String),
+    Unknown(String),
+}
+
 /// Run `mirror-agent sandbox …`; missing VMs are already stopped or deleted.
 pub async fn run() -> Result<(), Box<dyn Error>> {
     let command = SandboxCommand::parse_from(
@@ -50,7 +58,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         } => {
             let result = stream(&config, &workspace, command)
                 .await
-                .map_err(|error| error.to_string());
+                .unwrap_or_else(|error| ProcessOutcome::Err(error.to_string()));
             std::fs::write(outcome, serde_json::to_vec(&result)?)?;
             // Tokio's stdin reader may still be blocked after a guest exits early.
             std::process::exit(0);
@@ -72,7 +80,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn stream(config: &str, workspace: &Path, command: String) -> Result<i32, Box<dyn Error>> {
+async fn stream(
+    config: &str,
+    workspace: &Path,
+    command: String,
+) -> Result<ProcessOutcome, Box<dyn Error>> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let config: SandboxConfig = serde_json::from_str(config)?;
     let provider = config.provider(workspace).await?;
     // Only preparation may resume a VM; a process launcher must never revive it.
@@ -89,14 +102,25 @@ async fn stream(config: &str, workspace: &Path, command: String) -> Result<i32, 
                         .to_string(),
                 ),
                 timeout: Duration::from_secs(24 * 60 * 60),
+                cancellation: Box::pin(async {
+                    terminate.recv().await;
+                }),
                 stdin: Some(Box::pin(tokio::io::stdin())),
                 stdout: Box::pin(tokio::io::stdout()),
                 stderr: Some(Box::pin(tokio::io::stderr())),
             },
         )
         .await;
-    if matches!(result, Err(SandboxTransportError::OutcomeUnknown(_))) {
-        provider.quarantine(&name).await?;
-    }
-    Ok(result?.exit_code)
+    Ok(match result {
+        Ok(outcome) => ProcessOutcome::Ok(outcome.exit_code),
+        Err(error @ SandboxTransportError::OutcomeUnknown(_)) => {
+            // Fence uncertain execution even if the CLI is no longer alive.
+            let detail = match provider.quarantine(&name).await {
+                Ok(()) => error.to_string(),
+                Err(failure) => format!("{error}; quarantine failed: {failure}"),
+            };
+            ProcessOutcome::Unknown(detail)
+        }
+        Err(error) => ProcessOutcome::Err(error.to_string()),
+    })
 }

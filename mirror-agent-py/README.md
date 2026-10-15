@@ -1,5 +1,8 @@
 # Mirror agent Python bindings
 
+**Not part of the Mirror CLI release.** These embedding bindings are not
+included in the `mirror-agent` PyPI distribution.
+
 This is a Cargo workspace member, not a separately published Python project.
 From the repository root, check it with
 `cargo check --locked -p mirror-agent-python`. Building the extension uses
@@ -12,27 +15,34 @@ This package constructs `ReactAgentService` in-process with an explicit model
 endpoint and caller-supplied tool implementations. It does not execute native
 tools or inspect a host workspace. `Tool.native(name, run)` retains the native
 tool's schema and description while replacing only its execution. Session traffic
-uses the existing `mirror.agent.v1` protobufs rather than a binding-specific protocol:
+uses the existing `mirror.agent.v1` protobufs rather than a binding-specific protocol.
 
-- `Session.send()` accepts an encoded `ClientMessage`.
-- `Session.recv()` returns an encoded `SessionMessage`.
+Construct `AgentService` inside a running asyncio event loop:
 
-`Session.close()` half-closes client input while remaining output drains;
-`AgentService.close()` stops the in-process service and waits for active work.
+- `await service.connect()` opens a session.
+- `await session.send(message_bytes)` accepts an encoded `ClientMessage`.
+- `await session.recv()` returns an encoded `SessionMessage`.
 
-The Python `mirror` package provides the generated protobuf classes. Tool
-functions receive parsed JSON arguments and return a string; raising an exception
-produces a failed tool result. An RL environment can therefore provide tools
-that operate directly on its sandbox without changing Mirror's normal tools.
+`await session.close()` half-closes client input while remaining output drains;
+`await service.close()` stops the in-process service and waits for active work.
+
+The CLI distribution (`mirror-agent` on PyPI) provides generated protobuf
+classes under `mirror.protocol`, but does not include this native extension.
+Tool callbacks must be async functions accepting parsed JSON arguments and
+returning a string, such as `async def run(arguments: dict[str, object]) -> str`;
+raising an exception produces a failed tool result. An RL environment can provide
+tools that operate directly on its sandbox without changing Mirror's normal tools.
 
 `ScriptedModel` runs encoded assistant messages without an HTTP model endpoint.
 Its `request_deltas()` method returns each model request's appended message
 suffix so callers can reconstruct long request histories with linear memory.
 
 Pass the desired tools to `AgentService` and use `AgentConfig`'s
-`custom_system_prompt` to replace the default prompt, including `''` for no
-instructions. The native worker exposes equivalent `tools` and `system_prompt`
-construction options. Bash advertises only `command` and defaults to 600 seconds.
+`custom_system_prompt` to supply the embedding prompt, including `''` for no
+instructions. The native worker's `system_prompt` instead prefixes its workspace
+context; an empty prefix does not disable project instructions or skills. The
+[HTTP server](../mirror-agent/README.md#configure) opts into that context
+separately. The native Bash tool advertises only `command` and defaults to 600 seconds.
 
 `tool_result_max_chars` controls tool-output retention during compaction and
 keeps the normal 2,000-character default when omitted.

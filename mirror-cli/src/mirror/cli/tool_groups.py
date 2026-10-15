@@ -7,6 +7,8 @@ from collections.abc import Iterator
 
 from rich import console, text
 
+from mirror.cli import rendering
+
 _MCP_TOOLS = frozenset({'mcp_search', 'mcp_describe', 'mcp_call'})
 _EXPLORATION_TOOLS = frozenset({
   'read',
@@ -102,7 +104,7 @@ class ToolGroup:
     summary = text.Text(
       style='ui.tool-heading', no_wrap=True, overflow='ellipsis'
     )
-    summary.append('· ', style='dim')
+    summary.append(rendering.icon_prefix('·'), style='dim')
     summary.append(label, style='bold')
     if parts:
       summary.append(' · ' + ', '.join(parts))

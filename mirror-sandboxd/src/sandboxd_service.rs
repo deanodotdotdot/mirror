@@ -1,5 +1,6 @@
-use crate::execution_runtime::ExecutionCommand;
+use crate::execution_runtime::{ExecutionCommand, ExecutionRequest};
 use mirror_sandbox::{egress_update, EgressEvent, EgressUpdate};
+use mirror_sandbox::{run_command_request, RunCommandRequest, RunCommandResponse};
 use mirror_sandbox::{
     sandboxd_server::Sandboxd, CancelRequest, CancelResponse, ExecuteEvent, ExecuteRequest,
 };
@@ -64,16 +65,46 @@ impl Sandboxd for SandboxdService {
     ) -> Result<Response<Self::ExecuteStream>, Status> {
         let (events, receiver) = mpsc::channel(2);
         self.commands
-            .send(ExecutionCommand::Execute {
+            .send(ExecutionCommand::Execute(ExecutionRequest::Tool {
                 request: request.into_inner(),
                 events,
-            })
+            }))
             .await
             .map_err(|_| Status::unavailable("sandboxd execution stopped"))?;
         Ok(Response::new(Box::pin(
             ReceiverStream::new(receiver).map(Ok),
         )))
     }
+    type RunCommandStream =
+        Pin<Box<dyn tokio_stream::Stream<Item = Result<RunCommandResponse, Status>> + Send>>;
+
+    async fn run_command(
+        &self,
+        request: Request<tonic::Streaming<RunCommandRequest>>,
+    ) -> Result<Response<Self::RunCommandStream>, Status> {
+        let mut input = request.into_inner();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), input.message())
+            .await
+            .map_err(|_| Status::deadline_exceeded("command start timed out"))??;
+        let Some(run_command_request::Input::Start(request)) =
+            first.and_then(|request| request.input)
+        else {
+            return Err(Status::invalid_argument("expected command start"));
+        };
+        let (events, receiver) = mpsc::channel(4);
+        self.commands
+            .send(ExecutionCommand::Execute(ExecutionRequest::Command {
+                request,
+                input: Box::new(input),
+                events,
+            }))
+            .await
+            .map_err(|_| Status::unavailable("sandboxd execution stopped"))?;
+        Ok(Response::new(Box::pin(
+            ReceiverStream::new(receiver).map(Ok),
+        )))
+    }
+
     async fn cancel(
         &self,
         request: Request<CancelRequest>,

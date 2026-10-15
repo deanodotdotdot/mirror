@@ -31,6 +31,7 @@ def layout_for(
     choices = sandbox_view.choices(sandbox) if sandbox is not None else ()
     label = 'worktree' if workspace.label == 'creating…' else workspace.label
     preferences = workspace.preferences
+    definition = preferences.definition
     source = sandbox.source.agent if sandbox is not None else None
     return state.State(
       session=state.SessionState(conversation_id=''),
@@ -57,10 +58,10 @@ def layout_for(
         else workspace.notice or f'Creating {label}…',
       ),
       status_bar=state.StatusBarState(
-        source.model if source is not None else preferences.model or '…',
+        source.model if source is not None else definition.model or '…',
         source.reasoning_effort
         if source is not None
-        else preferences.reasoning_effort or 'none',
+        else definition.reasoning_effort or 'none',
         source.approval_mode
         if source is not None
         else (

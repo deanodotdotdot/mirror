@@ -12,6 +12,7 @@ import pytest
 from mirror.protocol import (
   agent_pb2,
   client_pb2,
+  mirror_pb2,
 )
 from prompt_toolkit import buffer, data_structures, mouse_events
 from prompt_toolkit.application import application, current
@@ -27,7 +28,7 @@ from mirror.cli import (
   workspace_application,
   workspaces,
 )
-from mirror.cli.components import component, spinner
+from mirror.cli.components import component
 from mirror.cli.composer import pane, surface
 from mirror.cli.extensions.repository_status import (
   extension as repository_status,
@@ -172,8 +173,9 @@ def _pending(text: str = '') -> workspaces.PendingWorkspace:
     'feature',
     draft=actions.ComposerState(text, len(text)),
     preferences=client_pb2.WorkspacePreferences(
-      model='test-model',
-      reasoning_effort='medium',
+      definition=mirror_pb2.AgentDefinition(
+        model='test-model', reasoning_effort='medium'
+      ),
       approval_mode=agent_pb2.APPROVAL_MODE_AUTO,
     ),
   )
@@ -220,10 +222,7 @@ async def test_pending_status_uses_activity_spinner_and_resizes() -> None:
     view = asyncio.create_task(terminal.activate(_pending(), app))
     try:
       frame = await terminal.containing('Creating feature')
-      indicator = ''.join(
-        fragment[1] for fragment in spinner.render(spinner.Color.PALE_PINK)
-      )
-      assert indicator + ' Creating feature' in frame[-10]
+      assert frame[-10].startswith('.+ Creating feature')
       pipe.send_text('editing\x1b[D')
       await terminal.containing('editing')
       terminal.resize(10, 40)

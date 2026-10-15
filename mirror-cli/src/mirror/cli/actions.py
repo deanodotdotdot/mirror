@@ -318,6 +318,18 @@ class OpenFolder:
 
 
 @dataclasses.dataclass(frozen=True)
+class OpenNewWorkspace:
+  """Choose the kind of workspace to create."""
+
+
+@dataclasses.dataclass(frozen=True)
+class CreateWorkspace:
+  """Create a workspace using the selected kind."""
+
+  kind: str
+
+
+@dataclasses.dataclass(frozen=True)
 class CloseWorkspace:
   """Close the selected workspace without deleting its directory."""
 
@@ -690,6 +702,7 @@ class CommandSelection:
   description: str = ''
   prompt_hint: str | None = None
   arguments_are_optional: bool = False
+  shortcut_action: Action | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1084,6 +1097,8 @@ type Action = (
   | LoadRemoteSessions
   | CreateRemote
   | OpenFolder
+  | OpenNewWorkspace
+  | CreateWorkspace
   | CloseWorkspace
   | CreateWorktree
   | CreateSandbox

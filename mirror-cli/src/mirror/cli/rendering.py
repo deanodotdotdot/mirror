@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import difflib
 import functools
 import io
 import itertools
+import json
 import os
 import re
 import time
@@ -16,6 +18,7 @@ from typing import Any, ClassVar, cast, override
 import pydantic
 from mirror.protocol import agent_pb2
 from rich import box as _box
+from rich import cells as _cells
 from rich import console as _console
 from rich import markdown as _markdown
 from rich import padding as _padding
@@ -37,9 +40,11 @@ ASSISTANT_ICON = '●'
 _RESULT_PREVIEW_MAX_LINES = 3
 _PREVIEW_MAX_CHARS = 1024
 _COMMAND_PREVIEW_MAX_CHARS = 240
+_TOOL_PREVIEW_MAX_CHARS = 16_384
+_TOOL_PREVIEW_MAX_LINES = 200
 _PARTIAL_ARGUMENTS = pydantic.TypeAdapter(dict[str, Any])
-# Fixed icon-gutter width so every turn aligns despite varying glyph widths.
-GUTTER_WIDTH = 2
+# Reserve two icon cells (including Crossfire) and one separator cell.
+GUTTER_WIDTH = 3
 _HUNK_RE = re.compile(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
 
 # Full ECMA-48 escape coverage. Conversation history can contain terminal
@@ -79,6 +84,11 @@ _DIFF_ADD_BG = 'ui.addition'
 _DIFF_DEL_BG = 'ui.deletion'
 
 
+def icon_prefix(icon: str) -> str:
+  """Pad a transcript icon to the shared terminal-cell gutter."""
+  return _cells.set_cell_size(icon, GUTTER_WIDTH)
+
+
 def activity_kind(name: str) -> str:
   return 'agent' if name == 'subagent' else 'tool'
 
@@ -104,7 +114,7 @@ def command_preview(command: str) -> str:
 
 
 def _result_preview(result: str) -> str:
-  text = result.strip()
+  text = _bounded_preview(result).strip()
   if not text:
     return '(no output)'
   lines = text.splitlines()
@@ -122,7 +132,8 @@ def compact_args(arguments_json: str, *, tool_name: str = '') -> str:
   try:
     # Preview long commands and paths before their closing quote arrives.
     arguments = _PARTIAL_ARGUMENTS.validate_json(
-      arguments_json or '{}', experimental_allow_partial='trailing-strings'
+      arguments_json[:_TOOL_PREVIEW_MAX_CHARS] or '{}',
+      experimental_allow_partial='trailing-strings',
     )
   except pydantic.ValidationError:
     return ''
@@ -142,7 +153,7 @@ def compact_args(arguments_json: str, *, tool_name: str = '') -> str:
   ):
     arguments = {
       'calls': ', '.join(
-        f'{name.removeprefix("mcp__").replace("__", ".", 1)}({call.get("arguments", {})})'
+        name.removeprefix('mcp__').replace('__', '.', 1)
         for call in cast(list[pydantic.JsonValue], calls)
         if isinstance(call, dict) and isinstance(name := call.get('name'), str)
       )
@@ -154,20 +165,153 @@ def compact_args(arguments_json: str, *, tool_name: str = '') -> str:
   return _bounded_preview(summary)
 
 
-def approval_args(arguments_json: str, *, tool_name: str) -> str:
-  """Arguments to approve, with a bash command exactly as it will run."""
-  if tool_name == 'bash':
-    try:
-      arguments = _PARTIAL_ARGUMENTS.validate_json(arguments_json or '{}')
-    except pydantic.ValidationError:
-      arguments = {}
-    if isinstance(command := arguments.get('command'), str):
-      return command.strip()
-  return compact_args(arguments_json)
+def _readable_argument(value: str) -> bool:
+  return all(char.isprintable() or char in '\n\t' for char in value)
+
+
+def _approval_file(
+  arguments: Mapping[str, object], *, tool_name: str
+) -> _console.RenderableType | None:
+  path = arguments.get('file_path')
+  old = arguments.get('old_string') if tool_name == 'edit' else ''
+  new = arguments.get('new_string' if tool_name == 'edit' else 'content')
+  if (
+    tool_name not in {'edit', 'write'}
+    or not isinstance(path, str)
+    or not path.isprintable()
+    or not isinstance(old, str)
+    or not isinstance(new, str)
+    or not _readable_argument(old)
+    or not _readable_argument(new)
+  ):
+    return None
+  before, after = old.splitlines(keepends=True), new.splitlines(keepends=True)
+  diff = ''.join(
+    line if line.endswith('\n') else f'{line}\n'
+    for line in difflib.unified_diff(
+      before, after, fromfile=path, tofile=path, n=max(len(before), len(after))
+    )
+  )
+  if not diff and tool_name == 'edit':
+    return None
+  consumed = (
+    {'file_path', 'old_string', 'new_string'}
+    if tool_name == 'edit'
+    else {'file_path', 'content'}
+  )
+  remaining = {
+    key: value for key, value in arguments.items() if key not in consumed
+  }
+  body: _console.RenderableType = (
+    _DiffPanel(diff, show_file_headers=False)
+    if diff
+    else _text.Text('(empty file)', style='ui.muted')
+  )
+  if remaining:
+    body = _console.Group(body, _approval_arguments(remaining))
+  return tool_block(f'{tool_name} {path}', body, wrap=True)
+
+
+def _approval_excerpt(
+  name: str, arguments_json: str
+) -> _console.RenderableType:
+  """Avoid parsing, diffing or highlighting oversized argument payloads."""
+  excerpt = '\n'.join(arguments_json[:4096].split('\n')[:40])
+  body = _text.Text(
+    f'Preview limited · raw excerpt: {len(excerpt):,}/{len(arguments_json):,} characters. '
+    'Approval uses the full call.\n',
+    style='ui.warning',
+  )
+  body.append(
+    excerpt if _readable_argument(excerpt) else json.dumps(excerpt),
+    style='ui.text',
+  )
+  return tool_block(name, body, wrap=True)
+
+
+def approval_body(
+  arguments_json: str, *, tool_name: str
+) -> _console.RenderableType:
+  """Show proposed arguments with bounded work and explicit overflow notices."""
+  name = strip_ansi(tool_name).removeprefix('mcp__').replace('__', ' · ')
+  if (
+    len(arguments_json) > _TOOL_PREVIEW_MAX_CHARS
+    or arguments_json.count('\n') > _TOOL_PREVIEW_MAX_LINES
+  ):
+    return _approval_excerpt(name, arguments_json)
+  try:
+    arguments = _PARTIAL_ARGUMENTS.validate_json(arguments_json or '{}')
+  except pydantic.ValidationError:
+    body = _text.Text(json.dumps(arguments_json))
+  else:
+    formatted = json.dumps(arguments, indent=2)
+    if (
+      len(formatted) > _TOOL_PREVIEW_MAX_CHARS
+      or formatted.count('\n') + formatted.count('\\n')
+      > _TOOL_PREVIEW_MAX_LINES
+    ):
+      return _approval_excerpt(name, arguments_json)
+    if (
+      file_preview := _approval_file(arguments, tool_name=tool_name)
+    ) is not None:
+      return file_preview
+    command = arguments.get('command')
+    if (
+      tool_name == 'bash'
+      and isinstance(command, str)
+      and command
+      and _readable_argument(command)
+    ):
+      arguments.pop('command')
+      code = _syntax.Syntax(
+        command, 'bash', background_color='default', word_wrap=True
+      )
+      if command.isprintable():
+        header = _tool_title(f'{name} ')
+        header.append_text(code.highlight(command)[: len(command)])
+        return tool_block(
+          header,
+          _approval_arguments(arguments) if arguments else None,
+          wrap=True,
+        )
+      body = (
+        _console.Group(code, _approval_arguments(arguments))
+        if arguments
+        else code
+      )
+      return tool_block(name, body, wrap=True)
+    body = _approval_arguments(arguments)
+  return tool_block(name, body, wrap=True)
+
+
+def _approval_arguments(arguments: Mapping[str, object]) -> _text.Text:
+  """Keep named arguments readable without interpreting markup or terminal controls."""
+  text = _text.Text()
+  for key, value in arguments.items():
+    if text:
+      text.append('\n')
+    label = key if key.isprintable() else json.dumps(key)
+    text.append(f'{label}: ', style='ui.muted')
+    display = json.dumps(value, indent=2)
+    if isinstance(value, str) and value and _readable_argument(value):
+      if '\n' in value:
+        ending = '' if value.endswith('\n') else '(no final newline)'
+        display = f'{ending}\n{value}'
+      elif (
+        value.isprintable()
+        and value == value.strip()
+        and value not in {'true', 'false', 'null', 'NaN', 'Infinity'}
+        and value[0] not in '-0123456789[{"'
+      ):
+        display = value
+    text.append(display, style='ui.text')
+  return text
 
 
 def tool_operation(arguments_json: str) -> str:
   """The structured action discriminator of a multiplexed tool, if present."""
+  if len(arguments_json) > _TOOL_PREVIEW_MAX_CHARS:
+    return ''
   try:
     arguments = _PARTIAL_ARGUMENTS.validate_json(arguments_json or '{}')
   except pydantic.ValidationError:
@@ -338,7 +482,7 @@ class UserText:
     text = _text.Text(strip_ansi(self.content).strip(), overflow='fold')
     _skill_completion.highlight_mentions(text, self.skill_names)
     grid = _table.Table.grid(padding=(0, 1), expand=True)
-    grid.add_column(width=1)
+    grid.add_column(width=GUTTER_WIDTH - 1)
     grid.add_column(ratio=1, overflow='fold')
     grid.add_row(_text.Text(PROMPT, style='bold dim'), text)
     # Set the foreground too so the dark fill stays readable on light terminals.
@@ -531,6 +675,19 @@ class _TranscriptMarkdown(_markdown.Markdown):
     'list_item_open': _TranscriptListItem,
   }
 
+  @override
+  def __rich_console__(
+    self, console: _console.Console, options: _console.ConsoleOptions
+  ) -> _console.RenderResult:
+    # markdown-it's maxNesting=20 silently discards the remaining parse input.
+    if any(
+      token.level >= 19 and token.type in ('list_item_open', 'blockquote_open')
+      for token in self.parsed
+    ):
+      yield _text.Text(self.markup, style=self.style)
+      return
+    yield from super().__rich_console__(console, options)
+
 
 @dataclasses.dataclass(frozen=True)
 class _LazyMarkdown:
@@ -652,8 +809,9 @@ class StreamingAnswer:
       )
     self._stable_source_len += offsets[last_line]
     markdown.parsed = markdown.parsed[last_index:]
+    markdown.markup = ''.join(lines[last_line:])
     tail = assistant_render(
-      ''.join(lines[last_line:]),
+      markdown.markup,
       hyperlinks=self._hyperlinks,
       skill_names=self._skill_names,
       continuation=bool(self._stable),
@@ -688,7 +846,7 @@ class Answer:
   def body(self) -> _console.RenderableType:
     """Keep the canonical Rich presentation for non-virtualized output."""
     grid = _table.Table.grid(padding=(0, 1))
-    grid.add_column(width=1)
+    grid.add_column(width=GUTTER_WIDTH - 1)
     # Rich's code-block wrapping inherits the column's overflow policy.
     grid.add_column(overflow='fold')
     grid.add_row(
@@ -717,7 +875,7 @@ def assistant_render(
   markdown: _TranscriptMarkdown | None = None,
   source_offset: int = 0,
 ) -> Answer:
-  """An assistant turn aligned with the user prompt's two-column gutter."""
+  """An assistant turn aligned with the user prompt's shared icon gutter."""
   return Answer(
     strip_ansi(content).strip(),
     hyperlinks,
@@ -779,15 +937,19 @@ def log_text(level: str, text: str) -> _text.Text:
 
 
 def error_text(message: str) -> _text.Text:
-  return _text.Text(f'✗ {strip_ansi(message)}', style='ui.error')
+  return _text.Text(
+    f'{icon_prefix("✗")}{strip_ansi(message)}', style='ui.error'
+  )
 
 
 def interrupt_text() -> _text.Text:
-  return _text.Text('⊘ interrupted by user', style='ui.muted')
+  return _text.Text(f'{icon_prefix("⊘")}interrupted by user', style='ui.muted')
 
 
 def skill_status_text(display: str, status: str) -> _text.Text:
-  text = _text.Text(f'◆ {strip_ansi(status)} ', style='ui.muted')
+  text = _text.Text(
+    f'{icon_prefix("◆")}{strip_ansi(status)} ', style='ui.muted'
+  )
   text.append(strip_ansi(display), style='ui.info')
   return text
 
@@ -830,7 +992,7 @@ def result_summary(
 
   In compact mode only the first line is shown, truncated with an ellipsis.
   """
-  lines = _bounded_preview(strip_ansi(preview)).splitlines() or ['']
+  lines = strip_ansi(_bounded_preview(preview)).splitlines() or ['']
   first = lines[0]
   if compact and len(lines) > 1:
     first = first.rstrip() + '…'
@@ -843,7 +1005,10 @@ def result_summary(
 
 def looks_like_diff(text: str) -> bool:
   """Whether `text` is a unified diff (edit/write output, or `git diff`)."""
-  return any(line.startswith('@@ ') for line in text.splitlines())
+  return any(
+    line.startswith('@@ ')
+    for line in text[:_TOOL_PREVIEW_MAX_CHARS].splitlines()
+  )
 
 
 def _diff_highlighter(
@@ -936,7 +1101,12 @@ class _DiffPanel:
   def __rich_console__(
     self, console: _console.Console, options: _console.ConsoleOptions
   ) -> _console.RenderResult:
-    lines = strip_ansi(self.diff).splitlines()
+    diff = ''.join(
+      self.diff[:_TOOL_PREVIEW_MAX_CHARS].splitlines(keepends=True)[
+        :_TOOL_PREVIEW_MAX_LINES
+      ]
+    )
+    lines = strip_ansi(diff).splitlines()
     styles = {
       '+': console.get_style(_DIFF_ADD_BG),
       '-': console.get_style(_DIFF_DEL_BG),
@@ -953,7 +1123,7 @@ class _DiffPanel:
     table.add_column(no_wrap=True)
     table.add_column(ratio=1, overflow='fold')
     for kind, lineno, code in _diff_rows(
-      self.diff, show_file_headers=self.show_file_headers
+      diff, show_file_headers=self.show_file_headers
     ):
       if kind == 'header':
         table.add_row(' ', _text.Text(code, style='bold', overflow='fold'))
@@ -971,6 +1141,8 @@ class _DiffPanel:
         style=styles[kind],
       )
     yield _CodePanel(table)
+    if len(diff) < len(self.diff):
+      yield _text.Text('Diff preview truncated.', style='ui.warning')
 
 
 type CallHints = dict[str, tuple[str, str, str]]
@@ -1031,7 +1203,7 @@ def tool_block(
   error: bool = False,
   wrap: bool = False,
 ) -> _console.RenderableType:
-  """A tool activity with the transcript's two-column gutter."""
+  """A tool activity with the transcript's shared icon gutter."""
   title = _tool_title(header) if isinstance(header, str) else header.copy()
   title.no_wrap = not wrap
   title.overflow = 'fold' if wrap else 'ellipsis'
@@ -1043,7 +1215,7 @@ def tool_block(
     result.add_row(_text.Text('└', style='dim'), body)
     parts.append(result)
   grid = _table.Table.grid(padding=(0, 1), expand=True)
-  grid.add_column(width=1)
+  grid.add_column(width=GUTTER_WIDTH - 1)
   grid.add_column(ratio=1, overflow='fold')
   grid.add_row(
     _text.Text('✗', style='ui.error')
@@ -1151,7 +1323,11 @@ def tool_result_renderable(
     )
   if error:
     if compact:
-      return None
+      return tool_block(
+        f'{name} {args}'.rstrip(),
+        result_summary(content, style='ui.error'),
+        error=True,
+      )
     return tool_text(
       name,
       args,
@@ -1167,7 +1343,9 @@ def tool_result_renderable(
   # renders as an ordinary result preview.
   if compact and display and looks_like_diff(display):
     paths = [
-      line[4:] for line in display.splitlines() if line.startswith('+++ ')
+      line[4:]
+      for line in display[:_TOOL_PREVIEW_MAX_CHARS].splitlines()
+      if line.startswith('+++ ')
     ]
     if len(paths) == 1:
       label = 'Wrote' if name == 'write' else 'Edited'

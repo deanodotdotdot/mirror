@@ -121,6 +121,18 @@ class OpenFolder:
 
 
 @dataclasses.dataclass(frozen=True)
+class OpenNewWorkspace:
+  """Choose the kind of workspace to create."""
+
+
+@dataclasses.dataclass(frozen=True)
+class CreateWorkspace:
+  """Create a workspace using the selected kind."""
+
+  kind: str
+
+
+@dataclasses.dataclass(frozen=True)
 class CloseWorkspace:
   """Close the selected workspace without deleting its directory."""
 
@@ -244,6 +256,13 @@ class RunSlashCommand:
   """Parse and run one slash command."""
 
   text: str
+
+
+@dataclasses.dataclass(frozen=True)
+class RunShellCommand:
+  """Run a user-entered shell command without starting a model turn."""
+
+  command: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -462,6 +481,8 @@ type CoreEffect = (
   | RecordError
   | ExitApp
   | OpenFolder
+  | OpenNewWorkspace
+  | CreateWorkspace
   | CloseWorkspace
   | CreateManagedWorktree
   | CreateSandboxWorkspace
@@ -481,6 +502,7 @@ type CoreEffect = (
   | SetWorkerApprovalMode
   | SendApprovalDecision
   | RunSlashCommand
+  | RunShellCommand
   | SendQueuedInstruction
   | RunTurn
   | UserPromptSubmitted

@@ -11,7 +11,7 @@ from typing import cast, override
 
 from prompt_toolkit.layout import containers, controls
 
-from mirror.cli import actions, effects, extension, state
+from mirror.cli import actions, effects, extension, shell, state
 
 _REFRESH_DEBOUNCE = 0.2
 _GIT_REFRESH_INTERVAL = 10
@@ -265,14 +265,23 @@ class RepositoryStatusExtension(
       requested.clear()
       if context.dispatch not in self._visible:
         continue
-      system = await _repository_system(context.workspace)
-      if context.dispatch not in self._visible:
+      try:
+        system = await _repository_system(context.workspace)
+        if context.dispatch not in self._visible:
+          continue
+        interval = (
+          _JJ_REFRESH_INTERVAL if system == 'jj' else _GIT_REFRESH_INTERVAL
+        )
+        observed = await _repository_status(context.workspace, system)
+      except (TimeoutError, OSError, shell.ProcessError, ValueError):
+        # A recoverable command failure must not disable the extension.
         continue
-      observed = await _repository_status(context.workspace, system)
-      interval = (
-        _JJ_REFRESH_INTERVAL if system == 'jj' else _GIT_REFRESH_INTERVAL
-      )
-      if observed != context.get_state().extensions[self.id()]:
+      current = context.get_state().extensions[self.id()]
+      if isinstance(observed, _Loading) and isinstance(
+        current, RepositoryStatus
+      ):
+        continue
+      if observed != current:
         self.dispatch(context, StatusChanged(observed))
 
   @override

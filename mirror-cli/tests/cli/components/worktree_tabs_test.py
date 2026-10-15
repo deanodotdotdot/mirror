@@ -12,7 +12,7 @@ from mirror.cli import (
   state,
   workspace_tags,
 )
-from mirror.cli.components import breathing_dots, selector, worktree_tabs
+from mirror.cli.components import selector, spinner, worktree_tabs
 
 
 @dataclasses.dataclass
@@ -101,8 +101,8 @@ def test_worktree_component_hides_single_tab() -> None:
   assert worktree_tabs.render_tabs((workspace, other), workspace.identity)
 
 
-@pytest.mark.parametrize('elapsed', [0, 0.65])
-def test_render_tabs_creating_uses_breathing_dots(
+@pytest.mark.parametrize('elapsed', [0, 0.2])
+def test_render_tabs_creating_uses_working_spinner(
   elapsed: float, frozen_ui_time: freezegun_api.FrozenDateTimeFactory
 ) -> None:
   tabs = (
@@ -119,8 +119,9 @@ def test_render_tabs_creating_uses_breathing_dots(
   )
   frozen_ui_time.tick(elapsed)
   rendered = worktree_tabs.render_tabs(tabs, tabs[0].identity)
-  assert rendered[4:6] == breathing_dots.render(
-    style='class:worktree-tab-selected class:worktree-running'
+  assert rendered[4:6] == spinner.render(
+    spinner.Color.LIGHT_GREEN,
+    style='class:worktree-tab-selected class:worktree-running',
   )
   overline, row = formatted_text.fragment_list_to_text(rendered).split('\n')
   assert overline == '▁' * utils.get_cwidth(row.split('  other')[0])
@@ -136,16 +137,16 @@ def test_workspace_choices_creating_animates_when_rendered(
   initial = selector.render_choices(
     state.MenuState(), choices, title='Workspaces'
   )
-  frozen_ui_time.tick(0.65)
+  frozen_ui_time.tick(0.2)
   advanced = selector.render_choices(
     state.MenuState(), choices, title='Workspaces'
   )
 
-  assert '·●  feature' in formatted_text.fragment_list_to_text(initial)
-  assert '●·  feature' in formatted_text.fragment_list_to_text(advanced)
+  assert '.+  feature' in formatted_text.fragment_list_to_text(initial)
+  assert '*:  feature' in formatted_text.fragment_list_to_text(advanced)
   assert (
-    'class:menu-selected class:worktree-running class:activity-spinner-highlight',
-    '·',
+    'class:menu-selected class:worktree-running class:ui.success',
+    '*',
   ) in advanced
 
 

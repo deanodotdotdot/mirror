@@ -344,7 +344,7 @@ class ConnectionsExtension(extension.Extension[None, _Effect, None]):
     return (
       commands.CommandDef(
         'connect',
-        'Connect a service on the Mirror server or this machine',
+        'Connect a service',
         self._connect_command,
         arguments=commands.OptionalArguments('[service]'),
       ),

@@ -71,12 +71,11 @@ async def open_url(url: str) -> None:
 class TerminalClear(enum.Enum):
   """How a paint treats what is already on the terminal.
 
-  `KEEP` prints under existing content (live turns). `SCREEN` is the usual
-  Ctrl+L sense: erase the visible display and leave saved scrollback alone.
+  `KEEP` prints under existing content (live turns). `SCREEN` erases the
+  visible display and leaves saved scrollback alone.
   Startup, session switches, and worktree tab changes use this too.
   `SCROLLBACK` does the same visible erase, then CSI 3J to drop saved lines.
-  `/clear` is the path that asks for it. `--flush-scrollback` promotes every
-  `SCREEN` paint to `SCROLLBACK`.
+  `--flush-scrollback` promotes every `SCREEN` paint to `SCROLLBACK`.
   """
 
   KEEP = 'keep'
