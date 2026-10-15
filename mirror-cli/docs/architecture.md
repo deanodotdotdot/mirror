@@ -31,7 +31,7 @@ the replacement.
 - Completion preserves identity, order, and selection.
 - `/workspaces`: preserve query/highlight; mark removed rows.
 - Footer: overflow counts; `Tab` / `Shift+Tab` navigation.
-- Activation: viewport-sized history; `Ctrl+L` expands to scrollback limit.
+- History: application-owned viewport; scrolling and resizing repaint automatically.
 - Shutdown: drain creation/deletion; close agents.
 
 ## Source map

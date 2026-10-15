@@ -236,6 +236,7 @@ async fn probe<P: SandboxTransport>(
                     command: format!("{SANDBOXD_PATH} context"),
                     workdir: Some(workspace.to_string()),
                     timeout: PROBE_TIMEOUT,
+                    cancellation: Box::pin(std::future::pending()),
                     stdin: None,
                     stdout: Box::pin(stdout),
                     stderr: None,
@@ -250,9 +251,13 @@ async fn probe<P: SandboxTransport>(
         }
         serde_json::from_slice(&output).map_err(|error| error.to_string())
     };
-    tokio::time::timeout(PROBE_TIMEOUT, capture)
-        .await
-        .map_err(|_| "sandbox context probe exceeded its deadline".to_string())?
+    // The stream owns its deadline and needs time to confirm process-group cleanup.
+    tokio::time::timeout(
+        PROBE_TIMEOUT + mirror_sandbox::CANCEL_ANSWER_TIMEOUT + Duration::from_secs(5),
+        capture,
+    )
+    .await
+    .map_err(|_| "sandbox context probe exceeded its deadline".to_string())?
 }
 
 async fn ensure_running<P: SandboxProvider>(provider: &P, name: &str) -> Result<(), String> {

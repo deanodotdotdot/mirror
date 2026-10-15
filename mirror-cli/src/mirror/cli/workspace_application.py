@@ -263,8 +263,13 @@ class WorkspaceApplication(application.Application[str | None]):
 
 
 def terminal_bindings() -> key_bindings.KeyBindings:
-  """Suspend the foreground shell job without ending the application."""
+  """Core terminal bindings shared by workspace views."""
   bindings = key_bindings.KeyBindings()
+
+  @bindings.add('c-l', save_before=lambda _: False)
+  def ignore_redraw(event: key_processor.KeyPressEvent) -> None:
+    # Mask prompt_toolkit's clear-screen fallback, including in modal views.
+    del event
 
   @bindings.add('c-z', save_before=lambda _: False)
   def suspend(event: key_processor.KeyPressEvent) -> None:

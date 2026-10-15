@@ -1,6 +1,6 @@
 """Composer-token adapters for the shared selector renderer."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import override
 
 from prompt_toolkit.formatted_text import StyleAndTextTuples
@@ -21,6 +21,8 @@ def choices_changed(
   available_commands: Sequence[commands.CommandDef],
 ) -> actions.CompletionChanged:
   """Snapshot completion inputs when the composer or command catalog changes."""
+  if text.lstrip().startswith('!'):
+    return actions.CompletionChanged((), ())
   hint = (
     commands.command_named(text[1:-1], available_commands)
     if text.startswith('/') and text.endswith(' ')
@@ -51,10 +53,17 @@ def _command_selection(
     description=command.description,
     prompt_hint=command.prompt_hint,
     arguments_are_optional=command.arguments_are_optional,
+    shortcut_action=command.shortcut_action,
   )
 
 
 class Completion(component.Component):
+  def __init__(
+    self,
+    shortcut_hint: Callable[[actions.Action | None], str] = lambda _: '',
+  ) -> None:
+    self._shortcut_hint = shortcut_hint
+
   @override
   def render(self, state: state.State) -> containers.AnyContainer:
     if state.selector.active:
@@ -77,6 +86,9 @@ class Completion(component.Component):
           command.name,
           f'{"" if not state.activity.busy or command.available_when_busy else LOCK}/{command.completion}',
           command.description,
+          shortcut=self._shortcut_hint(command.shortcut_action)
+          if not state.activity.busy or command.available_when_busy
+          else '',
         )
         for command in matches
       )
@@ -89,6 +101,7 @@ class Completion(component.Component):
         title=title,
         query=needle,
         width=state.layout.columns,
+        wrap_details=not skills,
       )
       if choices
       else []

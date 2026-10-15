@@ -10,8 +10,6 @@ import sys
 import uuid
 from collections.abc import Mapping, Sequence
 
-from rich import console as _console
-
 from mirror import config as _config
 from mirror import distribution, workspace
 from mirror.cli import (
@@ -19,9 +17,7 @@ from mirror.cli import (
   cli_store,
   noninteractive,
   onboarding,
-  reflection,
   showcase,
-  themes,
   worktrees,
 )
 from mirror.cli import logging as _logging
@@ -58,18 +54,18 @@ def _workspace_model() -> _models.ModelOption | None:
   overlay = overlays.get(current.id) or overlays.get(
     workspace.resolve_cwd(current.path)
   )
-  if overlay is None or not overlay.preferences.HasField('model'):
+  if overlay is None or not overlay.preferences.definition.HasField('model'):
     return None
-  preferences = overlay.preferences
-  configured = _models.find_model(preferences.model)
+  definition = overlay.preferences.definition
+  configured = _models.find_model(definition.model)
   return _models.ModelOption(
-    preferences.model,
+    definition.model,
     configured.label,
-    api=preferences.model_api
-    if preferences.HasField('model_api')
+    api=definition.model_api
+    if definition.HasField('model_api')
     else configured.api,
-    base_url=preferences.model_base_url
-    if preferences.HasField('model_base_url')
+    base_url=definition.model_base_url
+    if definition.HasField('model_base_url')
     else configured.base_url,
   )
 
@@ -83,28 +79,6 @@ def _custom_endpoint(
     or args.model_base_url
     or (os.environ.get(base_env) if base_env else None)
   )
-
-
-def _key_env(api: str) -> str:
-  """The environment variable holding the API key for a wire protocol."""
-  if api == 'reflection':
-    return 'REFLECTION_API_KEY'
-  if api == 'openai-responses':
-    return 'OPENAI_API_KEY'
-  if api == 'anthropic-messages':
-    return 'ANTHROPIC_API_KEY'
-  return 'OPENROUTER_API_KEY'
-
-
-def _base_env(api: str) -> str | None:
-  """The environment variable holding the base URL for a wire protocol."""
-  if api == 'reflection':
-    return None
-  if api == 'openai-responses':
-    return 'OPENAI_BASE_URL'
-  if api == 'anthropic-messages':
-    return 'ANTHROPIC_BASE_URL'
-  return 'OPENROUTER_BASE_URL'
 
 
 def _agent_database_path(configured: str | None) -> pathlib.Path:
@@ -199,7 +173,7 @@ def _parse_args() -> argparse.Namespace:
   parser.add_argument(
     '--reasoning-effort',
     choices=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
-    default='max',
+    default=None,
     help='Reasoning effort for model requests (default: max).',
   )
   parser.add_argument(
@@ -313,8 +287,8 @@ def _parse_args() -> argparse.Namespace:
     type=int,
     default=1000,
     help=(
-      'Maximum terminal lines to paint when drawing history (on resume, '
-      'session switch, or Ctrl+L re-render). Older history stays loaded and '
+      'Maximum terminal lines to paint when drawing history (on resume '
+      'or session switch). Older history stays loaded and '
       'is omitted from the screen with a crop indicator. Set to 0 for no '
       'limit (default: 1000).'
     ),
@@ -324,8 +298,8 @@ def _parse_args() -> argparse.Namespace:
     action=argparse.BooleanOptionalAction,
     default=False,
     help=(
-      'On every screen replace (startup, session switch, Ctrl+L, worktree '
-      'tab), also drop saved terminal scrollback. `/clear` already does this. '
+      'On every screen replace (startup, session switch, worktree '
+      'tab), also drop saved terminal scrollback. '
       'Default: keep scrollback.'
     ),
   )
@@ -337,8 +311,13 @@ def _parse_args() -> argparse.Namespace:
   parser.add_argument(
     'command',
     nargs='?',
-    choices=['exec'],
-    help='exec runs one new local session without a TUI; approvals fail rather than prompt.',
+    metavar='PROMPT|exec|acp',
+    help=(
+      'A prompt or exec runs one new local session without a TUI; approvals '
+      'fail rather than prompt. acp serves the Agent Client Protocol on '
+      'stdin/stdout for clients such as Omnigent or Zed; approvals are '
+      'forwarded to the client.'
+    ),
   )
   parser.add_argument(
     'prompt',
@@ -349,14 +328,35 @@ def _parse_args() -> argparse.Namespace:
       'piped stdin alongside an argument is appended as a <stdin> block.'
     ),
   )
-  args = parser.parse_intermixed_args()
+  # Python 3.12's intermixed parser can discard -- before a leading-dash prompt.
+  args, remaining = parser.parse_known_args()
+  if remaining:
+    args = parser.parse_intermixed_args()
+  if args.command is not None and args.command not in ('exec', 'acp'):
+    if args.prompt is not None:
+      parser.error('expected one prompt; quote prompts containing spaces')
+    args.prompt = args.command
+    args.command = 'exec'
+  args.reasoning_effort_override = args.reasoning_effort is not None
+  if args.reasoning_effort is None:
+    args.reasoning_effort = 'max'
+  for flag, value in (
+    ('--max-iterations', args.max_iterations),
+    ('--max-tokens', args.max_tokens),
+    ('--context-window', args.context_window),
+    ('--compaction-threshold', args.compaction_threshold),
+  ):
+    if value is not None and value < 0:
+      parser.error(f'{flag} cannot be negative')
   if args.scrollback_limit < 0:
     # A negative cap would crop past the start of the history and show nothing.
     parser.error('--scrollback-limit cannot be negative (0 means no limit)')
-  if args.command == 'exec':
+  if args.command == 'acp' and args.prompt is not None:
+    parser.error('acp takes no prompt; the client sends prompts over stdio')
+  if args.command in ('exec', 'acp'):
     if args.api_key is not None:
       parser.error(
-        'exec requires provider credentials from the environment or saved login, not --api-key'
+        f'{args.command} requires provider credentials from the environment or saved login, not --api-key'
       )
     if any((
       args.trust_extensions,
@@ -365,12 +365,17 @@ def _parse_args() -> argparse.Namespace:
       args.conversation_id,
       args.continue_recent,
     )):
-      parser.error('exec does not load extensions or resume existing sessions')
+      parser.error(
+        f'{args.command} does not load extensions or resume existing sessions'
+      )
     if args.log_level == 'debug':
-      parser.error('exec does not support credential-sensitive debug logs')
+      parser.error(
+        f'{args.command} does not support credential-sensitive debug logs'
+      )
     worker_workspace = os.environ.get('MIRROR_WORKSPACE')
     if (
-      worker_workspace is not None
+      args.command == 'exec'
+      and worker_workspace is not None
       and pathlib.Path(worker_workspace).resolve() != pathlib.Path.cwd()
     ):
       parser.error('exec uses the current directory; unset MIRROR_WORKSPACE')
@@ -382,7 +387,7 @@ def _parse_args() -> argparse.Namespace:
     args.approval_mode = (
       'auto' if _settings().get('approval_mode') == 'auto' else 'approve'
     )
-  elif args.command != 'exec':
+  elif args.command not in ('exec', 'acp'):
     _config.save_approval_mode(args.approval_mode)
   # Explicit flags win over the config file's model entry.
   explicit_api = args.api is not None
@@ -547,44 +552,31 @@ def main(logs: _logging.Logs | None = None) -> None:
   # What to authenticate is what the worker will build: the startup model's own
   # protocol when its entry names one, and the session flag for the rest.
   api = args.model_api or args.api
-  # Needs an API key for the selected endpoint or a base url for self-hosted
-  key_env = _key_env(api)
-  base_env = _base_env(api)
-  has_key = bool((args.api_key or os.environ.get(key_env, '')).strip())
-  has_custom_endpoint = _custom_endpoint(args, base_env)
-  if api == 'reflection':
-    if (
-      has_custom_endpoint
-      and has_custom_endpoint.rstrip('/') != reflection.BASE_URL
-    ):
-      raise SystemExit(
-        'mirror: --api reflection uses the Reflection endpoint; use --api openai-chat-completions for custom endpoints'
-      )
-  elif (
-    api not in ('openai-codex-responses', 'anthropic-messages')
-    and not has_key
-    and not has_custom_endpoint
-  ):
+  # Interactive validation belongs inside the UI so /model can repair it.
+  if args.command in ('exec', 'acp'):
     try:
-      theme_name = themes.saved(_config.Config(_config.default_path()).read())
-    except (OSError, ValueError):
-      theme_name = themes.effective('dark')
-    err = _console.Console(
-      stderr=True,
-      highlight=False,
-      theme=themes.rich_theme(theme_name),
+      _models.validate_connection(
+        api, args.base_url or args.model_base_url or ''
+      )
+    except ValueError as error:
+      raise SystemExit(f'mirror: {error}') from None
+  if args.command == 'acp':
+    # Only the ACP server needs this module; keep it off the TUI's startup path.
+    from mirror.cli import acp
+
+    _database_paths(args.database)
+    raise SystemExit(
+      acp.run(
+        _worker_command(),
+        lambda conversation_id: _worker_config(
+          args,
+          conversation_id,
+          create_session=True,
+          allow_workspace_mismatch=False,
+        ),
+        reasoning_effort=args.reasoning_effort,
+      )
     )
-    err.print('[ui.error.bold]mirror:[/ui.error.bold] no API key found.')
-    err.print(
-      f'Export [ui.info]{key_env}[/ui.info].'
-      if args.command == 'exec'
-      else f'Export [ui.info]{key_env}[/ui.info] or pass [ui.info]--api-key[/ui.info].'
-    )
-    err.print(
-      'To use a keyless self-hosted endpoint instead, pass '
-      '[ui.info]--base-url[/ui.info].'
-    )
-    raise SystemExit(1)
   if args.command == 'exec':
     onboarding.ensure_consent(
       pathlib.Path.cwd(), confirm=noninteractive.require_interactive_consent
@@ -606,7 +598,7 @@ def main(logs: _logging.Logs | None = None) -> None:
   onboarding.ensure_consent(pathlib.Path.cwd())
   onboarding.ensure_install_id()
   if args.api_key:
-    os.environ[key_env] = args.api_key
+    os.environ[_models.key_env(api)] = args.api_key
   tui_database, agent_database = _database_paths(args.database)
   with cli_store.Store(tui_database, import_from=agent_database) as store:
     conversation_id, create_session, allow_mismatch = _resolve_conversation(

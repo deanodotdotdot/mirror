@@ -138,7 +138,7 @@ def test_prefixes_require_unambiguous_command_only_arguments(
     (('./cat', 'first.txt'), ('./cat', 'first.txt')),
   ],
 )
-def test_suggested_rule_only_broadens_file_viewer_prefixes(
+def test_suggested_rule_uses_explicit_command_families(
   argv: tuple[str, ...],
   expected: tuple[str, ...],
 ) -> None:

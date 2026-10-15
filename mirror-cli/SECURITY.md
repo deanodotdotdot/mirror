@@ -14,7 +14,7 @@ are not guaranteed to receive backports. Please keep Mirror updated.
 Report suspected vulnerabilities privately by emailing
 [developers@reflection.ai](mailto:developers@reflection.ai).
 
-Do not use `/feedback` or public GitHub issues to report vulnerabilities.
+Do not use public GitHub issues to report vulnerabilities.
 
 Include:
 
@@ -37,7 +37,8 @@ by email.
 
 ## Security boundaries
 
-Mirror runs tools locally with your account's permissions. It is not a sandbox.
+By default, Mirror runs tools locally with your account's permissions. Manual
+approval is not a sandbox.
 
 The working directory does not limit which files or network services tools can
 access. Manual approval controls tool execution; it does not provide filesystem

@@ -7,7 +7,14 @@ import shlex
 
 from mirror import workspace
 from mirror.cli import actions as _actions
-from mirror.cli import commands, effects, rendering, selection, tool_approvals
+from mirror.cli import (
+  bash_approvals,
+  commands,
+  effects,
+  rendering,
+  selection,
+  tool_approvals,
+)
 from mirror.cli import state as _state
 from mirror.cli.composer import skill_completion
 
@@ -140,28 +147,31 @@ def _sync_approval_selector(
     return state, ()
   choices = (selection.Choice('approve', 'Approve'),)
   if request.remember is not None:
-    label = (
-      f'Approve and always allow commands starting with `{shlex.join(request.remember.argv)}`'
-      if isinstance(request.remember, tool_approvals.ArgvPrefixApproval)
-      else 'Approve and remember this exact call'
-    )
-    choices += (
-      selection.Choice(
-        'remember',
-        label,
-        detail='Local Bash in this workspace; literal arguments only, no shell operators'
-        if isinstance(request.remember, tool_approvals.ArgvPrefixApproval)
-        else 'Exact arguments only; no command-family rule',
-      ),
-    )
+    label, detail = 'Remember', 'This exact call'
+    if isinstance(request.remember, tool_approvals.ArgvPrefixApproval):
+      label = 'Always allow'
+      detail = f'Prefix: {shlex.join(request.remember.argv)} · this workspace'
+      if (
+        len(detail) > 120
+        and request.remember
+        in bash_approvals.prefixes(request.args, request.remember.scope)[:1]
+      ):
+        detail = 'This command + literal args · this workspace'
+    choices += (selection.Choice('remember', label, detail=detail),)
   choices += (selection.Choice('reject', 'Reject'),)
+  name = (
+    rendering
+    .strip_ansi(request.name)
+    .removeprefix('mcp__')
+    .replace('__', ' · ')
+  )
   return _reduce(
     state,
     _actions.OpenSelector(
       selection.Selector(
         id=f'approval:{request.call_id}',
-        title='Tool approval',
-        header=f'{rendering.strip_ansi(request.name)}({rendering.strip_ansi(request.args)})',
+        title=f'Approve {name}?',
+        header=rendering.approval_body(request.args, tool_name=request.name),
         choices=choices,
         on_select=lambda value: _actions.DecideApproval(
           value in ('approve', 'remember'),
@@ -449,6 +459,14 @@ def _reduce(
           effects.EmitError('workspace supervision is unavailable'),
         )
       return state, (effects.OpenFolder(path),)
+    case _actions.OpenNewWorkspace() | _actions.CreateWorkspace():
+      if not state.supervised:
+        return state, (
+          effects.EmitError('workspace supervision is unavailable'),
+        )
+      if isinstance(action, _actions.CreateWorkspace):
+        return state, (effects.CreateWorkspace(action.kind),)
+      return state, (effects.OpenNewWorkspace(),)
     case _actions.CloseWorkspace():
       if not state.supervised:
         return state, (
@@ -966,6 +984,18 @@ def _reduce(
         if state.lifecycle.failure is not None and not state.activity.busy:
           return state, (effects.RetryWorker(),)
         return state, ()
+      if instruction.startswith('!'):
+        if not state.lifecycle.started:
+          return state, (
+            effects.EmitText(
+              'Wait for the workspace to finish loading before running Bash.',
+              style='ui.warning',
+            ),
+          )
+        return _clear_composer(state), (
+          effects.ResetComposer(append_to_history=True),
+          effects.RunShellCommand(instruction[1:].lstrip()),
+        )
       if commands.looks_like_slash_command(state.composer.text):
         return _clear_composer(state), (
           effects.ResetComposer(),

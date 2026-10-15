@@ -77,7 +77,7 @@ def test_render_tip_waits_fifteen_seconds(
   frozen_ui_time.tick(14)
   assert _render(plugin, current) is None
   frozen_ui_time.tick(1)
-  assert _render(plugin, current) == '  └ Tip: Only tip'
+  assert _render(plugin, current) == '   └ Tip: Only tip'
 
 
 @pytest.mark.parametrize('name', themes.NAMES)
@@ -122,7 +122,7 @@ def test_render_tip_stays_fixed_through_tool_steps(
   )
   frozen_ui_time.tick(15)
   first = _render(plugin, current)
-  assert first in ('  └ Tip: First tip', '  └ Tip: Second tip')
+  assert first in ('   └ Tip: First tip', '   └ Tip: Second tip')
 
   frozen_ui_time.tick(60)
   current = _dispatch(
@@ -144,7 +144,7 @@ def test_render_tip_finishes_without_a_completion_tip(
     actions.TurnStarted(observed_at=time.monotonic()),
   )
   frozen_ui_time.tick(15)
-  assert _render(plugin, current) == '  └ Tip: Only tip'
+  assert _render(plugin, current) == '   └ Tip: Only tip'
 
   current = _dispatch(plugin, current, actions.SubmitInstruction('Next prompt'))
   current = _dispatch(plugin, current, actions.TurnFinished())
@@ -177,7 +177,7 @@ def test_render_tip_changes_on_next_turn_without_repeating(
 
   frozen_ui_time.tick(15)
   second = _render(plugin, current)
-  assert second in ('  └ Tip: First tip', '  └ Tip: Second tip')
+  assert second in ('   └ Tip: First tip', '   └ Tip: Second tip')
   assert second != first
 
 
@@ -207,13 +207,13 @@ def test_render_tip_restarts_delay_when_queued_input_is_consumed(
   assert _render(plugin, current) is None
   frozen_ui_time.tick(15)
   second = _render(plugin, current)
-  assert second in ('  └ Tip: First tip', '  └ Tip: Second tip')
+  assert second in ('   └ Tip: First tip', '   └ Tip: Second tip')
   assert second != first
 
 
 @pytest.mark.parametrize(
   ('tips', 'expected'),
-  [((), None), (('Only tip',), '  └ Tip: Only tip')],
+  [((), None), (('Only tip',), '   └ Tip: Only tip')],
 )
 def test_render_tip_handles_small_catalogs(
   tips: tuple[str, ...],
@@ -246,7 +246,7 @@ def test_render_tip_hides_removed_contributions_until_next_turn(
     actions.TurnStarted(observed_at=time.monotonic()),
   )
   frozen_ui_time.tick(15)
-  assert _render(plugin, current) == '  └ Tip: Old tip'
+  assert _render(plugin, current) == '   └ Tip: Old tip'
 
   current = dataclasses.replace(current, extension_tips=('New tip',))
   assert _render(plugin, current) is None
@@ -255,7 +255,7 @@ def test_render_tip_hides_removed_contributions_until_next_turn(
     plugin, current, actions.TurnStarted(observed_at=time.monotonic())
   )
   frozen_ui_time.tick(15)
-  assert _render(plugin, current) == '  └ Tip: New tip'
+  assert _render(plugin, current) == '   └ Tip: New tip'
 
 
 def test_render_tip_ignores_replayed_turns(

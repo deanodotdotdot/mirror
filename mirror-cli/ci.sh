@@ -146,5 +146,7 @@ else
   test_paths=(src tests extensions)
 fi
 # Tests bypass the launcher; keep its gRPC fork handlers disabled here too.
+# Report the stuck test and its stacks before the enclosing CI job times out.
 env -u OPENROUTER_API_KEY PYTHONDONTWRITEBYTECODE=1 GRPC_ENABLE_FORK_SUPPORT=0 \
-  "$VENV_DIR/bin/pytest" -q -p no:cacheprovider "${test_paths[@]}"
+  "$VENV_DIR/bin/pytest" -v -p no:cacheprovider \
+  -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true "${test_paths[@]}"

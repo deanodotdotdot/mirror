@@ -317,7 +317,7 @@ def test_code_copy_control_has_top_and_right_insets() -> None:
   button = _hover_code(view, content)
   lines = _text(content).splitlines()
   assert button == data_structures.Point(37, 1)
-  assert not lines[0].removeprefix('● ┃').strip()
+  assert not lines[0].removeprefix('●  ┃').strip()
   assert lines[1].endswith(' ⧉  ')
   assert 'body' in lines[2]
 
@@ -542,6 +542,10 @@ def test_group_break_survives_an_intervening_invisible_record() -> None:
     if isinstance(block.renderable, tool_groups.ToolGroup)
   ]
   assert len(groups) == 2
+  view = transcript_view.TranscriptView(source.blocks, lambda: ())
+  assert _text(view.create_content(80, 20)).rstrip() == (
+    '·  Explored · 1 read\n\n·  Explored · 1 read'
+  )
   actual = rendering.render_blocks(
     [block.renderable for block in source.blocks()], 80
   )
@@ -606,7 +610,7 @@ def test_viewport_keeps_character_styles_when_coalescing_ansi_fragments(
     assert actual_cells + [('', ' ')] * (80 - len(actual_cells)) == (
       expected_cells + [('', ' ')] * (80 - len(expected_cells))
     )
-  assert content.line_count == len(expected_rows) + 2
+  assert content.line_count == len(expected_rows) + 1
 
 
 def test_user_header_sticks_after_crossing_the_top_and_changes_by_turn() -> (
@@ -676,7 +680,7 @@ def test_finalization_retains_the_occurrence_of_repeated_prose_after_resize(
   live = [rendering.assistant_render(answer, hyperlinks=False)]
   view = transcript_view.TranscriptView(source.blocks, lambda: live)
   view.create_content(80, 8)
-  view.scroll(-13)
+  view.scroll(-12)
   before = _text(view.create_content(80, 8))
   assert 'Repeated paragraph.' in before.splitlines()[0]
   context = next(
@@ -751,18 +755,18 @@ def test_paging_with_a_sticky_header_does_not_skip_conversation_rows() -> None:
 @pytest.mark.parametrize(
   ('message', 'width', 'expected'),
   [
-    ('Short', 20, '› Short'),
-    ('123456', 8, '› 123456'),
-    ('abcdefghijklmnopqrstuvwxyz', 12, '› abcdefghi…'),
+    ('Short', 20, '›  Short'),
+    ('123456', 8, '›  1234…'),
+    ('abcdefghijklmnopqrstuvwxyz', 12, '›  abcdefgh…'),
     (
       ' first\tline\r\n second\vthird\ffourth\u2028last ',
       40,
-      '› first line second third fourth last',
+      '›  first line second third fourth last',
     ),
-    ('你好世界继续', 10, '› 你好世…'),
-    ('e\u0301' * 12, 8, '› ' + 'e\u0301' * 5 + '…'),
-    ('🙂' * 8, 8, '› 🙂🙂…'),
-    ('\x1b[31mFirst\x1b[0m\nSecond', 20, '› First Second'),
+    ('你好世界继续', 10, '›  你好世…'),
+    ('e\u0301' * 12, 8, '›  ' + 'e\u0301' * 4 + '…'),
+    ('🙂' * 8, 8, '›  🙂🙂…'),
+    ('\x1b[31mFirst\x1b[0m\nSecond', 20, '›  First Second'),
     ('Narrow', 1, '…'),
     ('Narrow', 2, '›…'),
     ('Narrow', 3, '›…'),
@@ -795,19 +799,19 @@ def test_sticky_summary_uses_one_terminal_row(
 
 @pytest.mark.parametrize(
   ('message', 'expected'),
-  [('👩\u200d💻' * 8, '› 👩\u200d💻…'), ('✈️' * 8, '› ✈️✈️…')],
+  [('👩\u200d💻' * 8, '›  👩\u200d💻…'), ('✈️' * 8, '›  ✈️✈️…')],
 )
 def test_sticky_summary_keeps_emoji_sequences_whole(
   message: str, expected: str
 ) -> None:
   source = _source()
-  source.extend([_user(message), _answer('answer', 'ANSWER\n\n' * 20, 2)])
+  source.extend([_user(message), _answer('answer', 'TEXT\n\n' * 20, 2)])
   view = transcript_view.TranscriptView(source.blocks, lambda: ())
   header = _text(view.create_content(8, 6)).splitlines()[0]
   assert header == expected
   assert utils.get_cwidth(header) <= 8
   assert cells.cell_len(header) <= 8
-  assert 'ANSWER' in _paint(view, 8, 6).display[3]
+  assert 'TEXT' in _paint(view, 8, 6).display[2]
 
 
 @pytest.mark.parametrize('height', [1, 2])
@@ -818,7 +822,7 @@ def test_sticky_summary_leaves_no_extra_padding_in_short_terminals(
   source.extend([_user('Long message\n' * 20), _answer('answer', 'ANSWER', 2)])
   view = transcript_view.TranscriptView(source.blocks, lambda: ())
   frame = _paint(view, 12, height)
-  assert frame.display[0] == '› Long mess…'
+  assert frame.display[0] == '›  Long mes…'
   assert view.create_content(12, height).line_count == height
 
 
@@ -834,7 +838,7 @@ def test_sticky_summary_is_quiet_but_normal_user_message_is_unchanged(
   )
   summary = _paint(view, 40, 12, name)
   assert (
-    summary.display[0].rstrip() == '› FIRST LINE SECOND LINE with original…'
+    summary.display[0].rstrip() == '›  FIRST LINE SECOND LINE with original…'
   )
   assert summary.buffer[0][2].italics
   assert summary.buffer[0][2].bg == 'default'
@@ -847,8 +851,8 @@ def test_sticky_summary_is_quiet_but_normal_user_message_is_unchanged(
   view.first()
   original = _paint(view, 40, 12, name)
   assert original.display[0].strip() == ''
-  assert original.display[1].rstrip() == '› FIRST LINE'
-  assert original.display[2].rstrip() == '  SECOND LINE with original spacing'
+  assert original.display[1].rstrip() == '›  FIRST LINE'
+  assert original.display[2].rstrip() == '   SECOND LINE with original spacing'
   assert not original.buffer[1][2].italics
   assert source.entries()[0].chat.user.content == message
   view.scroll(10)
@@ -891,7 +895,7 @@ def test_sticky_summary_resizes_without_moving_streaming_content() -> None:
   view.scroll(-13)
   before = _paint(view, 60, 8)
   narrow = _paint(view, 22, 8)
-  assert narrow.display[0] == '› A long request with…'
+  assert narrow.display[0] == '›  A long request wit…'
   assert narrow.display[1].strip() == ''
   assert [row.rstrip() for row in narrow.display[2:]] == [
     row.rstrip() for row in before.display[2:]
@@ -976,9 +980,9 @@ def test_scrolling_under_a_sticky_header_moves_by_the_requested_rows() -> None:
     _pinned_conversation().blocks, lambda: ()
   )
   following = _text(view.create_content(80, 20))
-  assert 'ROW 049' in following.splitlines()[6]
+  assert 'ROW 048' in following.splitlines()[6]
   view.scroll(-3)
-  assert 'ROW 046' in _text(view.create_content(80, 20)).splitlines()[6]
+  assert 'ROW 045' in _text(view.create_content(80, 20)).splitlines()[6]
   assert view.reading
 
 
@@ -1067,6 +1071,7 @@ def test_view_mode_change_replaces_cached_presentation() -> None:
     skill_names=frozenset(),
     get_rewind_entry_id=lambda: None,
   )
+  source.append(_user('Request'))
   entry = _answer('answer', 'Visible answer')
   entry.chat.assistant.reasoning_content = 'Detailed reasoning'
   source.append(entry)
@@ -1076,7 +1081,13 @@ def test_view_mode_change_replaces_cached_presentation() -> None:
   mode = actions.ViewMode.FOCUS
   changed = _text(view.create_content(80, 20))
   assert 'Detailed reasoning' not in changed
-  assert 'Visible answer' in changed
+  assert [line.rstrip() for line in changed.splitlines()] == [
+    '',
+    '›  Request',
+    '',
+    '',
+    '●  Visible answer',
+  ]
   mode = actions.ViewMode.DETAIL
   assert _text(view.create_content(80, 20)) == before
 

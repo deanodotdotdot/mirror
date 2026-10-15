@@ -4,18 +4,17 @@ syntax = "proto3";
 package mirror.agent.v1;
 
 import "mirror/protocol/agent.proto";
+import "mirror/protocol/mirror.proto";
 
 message WorkspacePreferences {
-  optional string reasoning_effort = 1;
+  // Moved into `definition` under the same numbers; the CLI migrates
+  // preferences saved with them.
+  reserved 1, 3 to 5, 7, 8;
+  reserved "reasoning_effort", "model", "system_prompt";
+  reserved "tools_allowlist", "model_api", "model_base_url";
+
   optional ApprovalMode approval_mode = 2;
-  optional string model = 3;
-  optional string system_prompt = 4;
-  message ToolAllowlist {
-    repeated string names = 1;
-  }
-  optional ToolAllowlist tools_allowlist = 5;
   repeated string extensions = 6;
-  optional string model_api = 7;
-  optional string model_base_url = 8;
   optional string tag_id = 9;
+  mirror.v1.AgentDefinition definition = 10;
 }

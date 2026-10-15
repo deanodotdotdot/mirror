@@ -2,6 +2,10 @@
 mod egress_connector;
 mod egress_runtime;
 mod execution_runtime;
+mod process_supervision;
+mod run_command;
+pub use process_supervision::*;
+pub use run_command::*;
 mod java_truststore;
 mod repository;
 mod run_once;

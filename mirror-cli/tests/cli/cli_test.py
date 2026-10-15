@@ -117,6 +117,9 @@ from mirror.cli.extensions.user_extensions import extension as _user_extension
 from mirror.cli.extensions.view_mode import extension as _view_mode
 from mirror.cli.extensions.vim import extension as vim_extension
 
+# History cancellation waits for any in-flight SQLite operation.
+_APP_SHUTDOWN_TIMEOUT = 5
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('remote', [False, True])
@@ -655,15 +658,20 @@ async def test_streamed_text_repaints_without_periodic_refresh(
     # No periodic task starts. Incoming tokens must request their own redraws.
     repl._app.refresh_interval = 0
     rendered = asyncio.Event()
+    expected = ''
 
     def after_render(_: _application.Application[str | None]) -> None:
-      rendered.set()
+      if expected in '\n'.join(
+        _screen_lines(terminal.getvalue(), cols=100, rows=24)
+      ):
+        rendered.set()
 
     repl._app.after_render += after_render
     running = asyncio.create_task(repl._app.run_async())
     try:
       await asyncio.wait_for(rendered.wait(), timeout=1)
       rendered.clear()
+      expected = 'First streamed words'
       repl._handle_message(_stream_content('First streamed words'))
       await asyncio.wait_for(rendered.wait(), timeout=1)
       assert 'First streamed words' in '\n'.join(
@@ -671,6 +679,7 @@ async def test_streamed_text_repaints_without_periodic_refresh(
       )
 
       rendered.clear()
+      expected = 'First streamed words and the next chunk'
       repl._handle_message(_stream_content(' and the next chunk'))
       await asyncio.wait_for(rendered.wait(), timeout=1)
       assert 'First streamed words and the next chunk' in '\n'.join(
@@ -678,7 +687,7 @@ async def test_streamed_text_repaints_without_periodic_refresh(
       )
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=1)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
 
 
@@ -723,20 +732,27 @@ async def test_fullscreen_tool_preview_repaints_before_message_finishes(
     repl.dispatch(_actions.TurnStarted())
     repl._app.refresh_interval = 0
     rendered = asyncio.Event()
+    expected = ''
 
     def after_render(_: _application.Application[str | None]) -> None:
-      rendered.set()
+      if expected in '\n'.join(_screen_lines(terminal.getvalue(), rows=24)):
+        rendered.set()
 
     repl._app.after_render += after_render
+    # SQLite cancellation waits for I/O; finish it before timing UI shutdown.
+    async with contextlib.aclosing(repl._input.history.load()) as history:
+      await anext(history, None)
     running = asyncio.create_task(repl._app.run_async())
     try:
       await asyncio.wait_for(rendered.wait(), timeout=1)
       rendered.clear()
+      expected = label
       repl._handle_message(_stream_tool_call(index=0, name='bash'))
       await asyncio.wait_for(rendered.wait(), timeout=1)
       assert label in '\n'.join(_screen_lines(terminal.getvalue(), rows=24))
 
       rendered.clear()
+      expected = 'rg --files'
       repl._handle_message(
         _stream_tool_call(index=0, arguments='{"command":"rg --files')
       )
@@ -746,7 +762,7 @@ async def test_fullscreen_tool_preview_repaints_before_message_finishes(
       )
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=1)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
 
 
@@ -2266,7 +2282,7 @@ async def test_theme_rendered_views_repaint_consistently(
         'picker': 'Themes',
         'extensions': 'Extension colors',
         'conversation': 'Plain text',
-        'approval': 'Tool approval',
+        'approval': 'Approve bash?',
         'diff': '+ new = 3',
       }[view] in '\n'.join(switched.display)
       stream.seek(0)
@@ -2373,7 +2389,7 @@ async def test_completion_surface_excludes_welcome_decoration(
     stream,
   ):
     repl._input.text = '/'
-    assert '/help' in _assert_menu_surface(repl, stream, 'Commands')
+    assert '/clear' in _assert_menu_surface(repl, stream, 'Commands')
 
 
 @pytest.mark.asyncio
@@ -2971,7 +2987,7 @@ async def test_supervisor_error_is_emitted_during_replay(
   repl.show_error('drop failed')
   await asyncio.gather(*tuple(repl._app._background_tasks))
 
-  assert emitted == ['✗ drop failed\n']
+  assert emitted == ['✗  drop failed\n']
 
 
 @pytest.mark.asyncio
@@ -3195,18 +3211,18 @@ async def test_failed_worker_keeps_commands_available(
       switched.append((conversation_id, create))
       repl._app.exit()
 
-    async def enter_new_command() -> None:
+    async def enter_clear_command() -> None:
       await asyncio.sleep(0.05)
-      pipe.send_text('/new\r')
+      pipe.send_text('/clear\r')
 
     monkeypatch.setattr(repl, '_switch_session', switch)
     repl._app.pre_run_callables.append(
-      lambda: repl._app.create_background_task(enter_new_command())
+      lambda: repl._app.create_background_task(enter_clear_command())
     )
 
     assert (
       _fragments_text(_component_text(_failure.Failure().render(repl._state)))
-      == 'Agent failed to load. Press Enter to try loading again'
+      == 'Agent failed to load. Press Enter to try loading again, or /model to change model'
     )
     await asyncio.wait_for(repl.activate(show_context=False), timeout=2)
 
@@ -3751,12 +3767,12 @@ def test_user_text_prefixes_prompt_and_tints_known_skills() -> None:
   screen.set_mode(pyte.modes.LNM)
   pyte.Stream(screen).feed(_rendering.renderable_to_ansi(rendered, 40))
 
-  assert screen.display[1].rstrip() == '› $create-tool please'
+  assert screen.display[1].rstrip() == '›  $create-tool please'
   tint = themes.rich_theme().styles['ui.info'].color
   assert tint is not None
-  assert screen.buffer[1][2].fg == tint.get_truecolor().hex.lstrip('#')
-  assert screen.buffer[1][15].fg == 'white'
-  assert screen.buffer[1][2].bg == screen.buffer[1][15].bg
+  assert screen.buffer[1][3].fg == tint.get_truecolor().hex.lstrip('#')
+  assert screen.buffer[1][16].fg == 'white'
+  assert screen.buffer[1][3].bg == screen.buffer[1][16].bg
 
 
 @pytest.mark.parametrize('width', [12, 80])
@@ -3772,10 +3788,10 @@ def test_user_text_shades_full_width_with_vertical_padding(width: int) -> None:
 
   assert screen.display[:5] == [
     ' ' * width,
-    '› hello'.ljust(width),
+    '›  hello'.ljust(width),
     ' ' * width,
     ' ' * width,
-    '● reply'.ljust(width),
+    '●  reply'.ljust(width),
   ]
   background = screen.buffer[1][2].bg
   assert background != 'default'
@@ -3792,17 +3808,17 @@ def test_user_text_shades_full_width_with_vertical_padding(width: int) -> None:
 @pytest.mark.parametrize(
   ('content', 'expected'),
   [
-    ('one two three four', ['› one two', '  three', '  four']),
-    ('first\n\nsecond', ['› first', '', '  second']),
-    ('a\tb', ['› a       b']),
-    ('a\n\tb', ['› a', '          b']),
-    ('abcdefghijk', ['› abcdefghi', '  jk']),
-    ('你好你好你好', ['› 你好你好', '  你好']),
-    ('**literal**', ['› **literal', '  **']),
-    ('before\x1b[31mred\x1b[0m', ['› beforered']),
+    ('one two three four', ['›  one two', '   three', '   four']),
+    ('first\n\nsecond', ['›  first', '', '   second']),
+    ('a\tb', ['›  a', '   b']),
+    ('a\n\tb', ['›  a', '', '   b']),
+    ('abcdefghijk', ['›  abcdefgh', '   ijk']),
+    ('你好你好你好', ['›  你好你好', '   你好']),
+    ('**literal**', ['›  **litera', '   l**']),
+    ('before\x1b[31mred\x1b[0m', ['›  beforere', '   d']),
   ],
 )
-def test_user_text_wraps_in_a_two_column_gutter(
+def test_user_text_wraps_in_the_shared_icon_gutter(
   content: str, expected: list[str]
 ) -> None:
   rendered = _rendering.renderable_to_ansi(_rendering.user_text(content), 12)
@@ -4161,7 +4177,7 @@ def test_log_records_are_drawn() -> None:
 def test_a_user_message_keeps_its_prompt_glyph() -> None:
   rendered = _handle(_repl(), _delta({'role': 'user', 'content': 'hi'}))
   assert rendered is not None
-  assert _screen_lines(_rendering.renderable_to_ansi(rendered, 80)) == ['› hi']
+  assert _screen_lines(_rendering.renderable_to_ansi(rendered, 80)) == ['›  hi']
 
 
 def test_a_loaded_skill_is_drawn_under_the_message_that_named_it() -> None:
@@ -4179,9 +4195,9 @@ def test_a_loaded_skill_is_drawn_under_the_message_that_named_it() -> None:
   lines = _render_to_text(_console.Group(user, skill)).splitlines()
   assert [line.rstrip() for line in lines] == [
     '',
-    '› $create-tool',
+    '›  $create-tool',
     '',
-    '◆ loaded $create-tool',
+    '◆  loaded $create-tool',
   ]
 
 
@@ -4436,7 +4452,7 @@ async def test_activity_resumes_after_assistant_message_before_turn_finishes(
 
     repl._handle_message(_turn_completed())
     assert not repl._state.activity.busy
-    assert 'Worked for' in _fragments_text(_render_activity(repl))
+    assert _fragments_text(_render_activity(repl)).startswith('●  Worked for')
   finally:
     await repl.close()
 
@@ -4468,7 +4484,7 @@ async def test_activity_resumes_when_reasoning_follows_streamed_content(
     )
     repl._handle_message(_turn_completed())
     assert not repl._state.activity.busy
-    assert 'Worked for' in _fragments_text(_render_activity(repl))
+    assert _fragments_text(_render_activity(repl)).startswith('●  Worked for')
   finally:
     await repl.close()
 
@@ -4633,7 +4649,7 @@ def test_skill_read_preview_gains_path_and_settles_as_loaded() -> None:
     )
   )
   pending = _pending.render(repl._state)
-  assert '◆ loading $prs' in _ansi_text(pending)
+  assert '◆  loading $prs' in _ansi_text(pending)
 
   _handle(
     repl,
@@ -4656,7 +4672,7 @@ def test_skill_read_preview_gains_path_and_settles_as_loaded() -> None:
   result = {'role': 'tool', 'tool_call_id': 'c1', 'content': 'instructions'}
   rendered = _handle(repl, _delta(result))
   assert rendered is not None
-  assert _render_to_text(rendered).strip() == '◆ loaded $prs'
+  assert _render_to_text(rendered).strip() == '◆  loaded $prs'
 
 
 def test_stream_aborted_clears_pending_tool_call() -> None:
@@ -4688,7 +4704,7 @@ def test_streaming_edit_gutter_has_consistent_terminal_width() -> None:
 
   first_line = _ansi_text(_pending.render(repl._state)).splitlines()[0]
 
-  assert first_line.startswith('· ')
+  assert first_line.startswith('·  ')
   assert _pt_utils.get_cwidth(first_line) == _cells.cell_len(first_line)
   assert 'edit(mirror-agent/src/local/agent_local_service_test.rs' in first_line
 
@@ -4768,7 +4784,7 @@ async def test_submit_renders_next_frame_before_transport_ack(
       with _current.set_app(repl._app):
         repl._app.renderer.render(repl._app, repl._app.layout)
       lines = _screen_lines(terminal.getvalue(), cols=80, rows=30)
-      assert any('› optimistic hello' in line for line in lines)
+      assert any('›  optimistic hello' in line for line in lines)
       assert not any('pending' in line for line in lines)
       message_id = repl._state.turn.submitted_inputs[0][0]
       repl._handle_message(
@@ -5016,7 +5032,7 @@ async def test_first_submission_keeps_its_frame_through_worker_start_and_ack(
         ''.join(cell.data for row in frame for cell in row).count('FIRST') == 1
         for frame in [optimistic, *terminal.frames]
       )
-      assert terminal.screen.display[message_row].startswith('› FIRST MESSAGE')
+      assert terminal.screen.display[message_row].startswith('›  FIRST MESSAGE')
       assert repl._input.text == ''
       assert repl._state.turn.pending_instructions == ()
     finally:
@@ -5334,6 +5350,8 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
 
     repl._app.after_render += after_render
     active = asyncio.create_task(repl.activate(show_context=False))
+    # Exit inside `set_app`: leaving it clears the session's application, and
+    # the final frame would then build a `DummyApplication` per `get_app()`.
     with _current.set_app(repl._app):
       try:
         await asyncio.wait_for(rendered.wait(), timeout=2)
@@ -5369,7 +5387,7 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
         assert 'Working' in _fragments_text(_render_activity(repl))
       finally:
         repl._app.exit()
-        await asyncio.wait_for(active, timeout=2)
+        await asyncio.wait_for(active, timeout=_APP_SHUTDOWN_TIMEOUT)
         await repl.close()
         await registry.close()
 
@@ -5382,10 +5400,10 @@ async def test_activity_is_message_aligned_above_prompt_with_delayed_tip(
   assert lines[prompt_index - 1] == ''
   assert lines[prompt_index + 1] == ''
   assert activity_index < prompt_index - 1
-  assert lines[activity_index].index('Working') == (_rendering.GUTTER_WIDTH + 2)
-  assert lines[activity_index + 1].startswith('  └ Tip: ')
-  assert lines[activity_index + 1].index('Tip:') == lines[activity_index].index(
-    'Working'
+  assert lines[activity_index].index('Working') == _rendering.GUTTER_WIDTH
+  assert lines[activity_index + 1].startswith('   └ Tip: ')
+  assert lines[activity_index + 1].index('Tip:') == (
+    lines[activity_index].index('Working') + 2
   )
   assert activity_index + 2 < prompt_index
   assert 'running tool…' not in _fragments_text(_render_footer(repl))
@@ -5850,14 +5868,16 @@ async def test_ctrl_shift_z_csi_u_redoes_composer_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rerender_keys_do_not_clear_composer_redo() -> None:
+async def test_ctrl_l_and_view_toggle_preserve_composer_redo() -> None:
   registry = extension.ExtensionRegistry()
-  await registry.register(_view_mode.ViewModeExtension(), None)
+  await registry.register(
+    _view_mode.ViewModeExtension(), None, overrides={'enabled': True}
+  )
   with (
     _input_defaults.create_pipe_input() as pipe,
     _current.create_app_session(input=pipe, output=_output_base.DummyOutput()),
   ):
-    repl = _repl(extension_registry=registry)
+    repl = _repl(extension_registry=registry, fullscreen=True)
     repl._terminal.console = _console.Console(
       record=True, width=80, theme=themes.rich_theme()
     )
@@ -5880,12 +5900,12 @@ def test_slash_menu_navigation_and_completion() -> None:
   assert text.splitlines()[1].startswith(
     f' Commands  (1/{len(repl.get_available_commands())})'
   )
-  assert ' › /help' in text
+  assert ' › /clear' in text
   assert 'move · Enter' not in text
   assert text.endswith('▾')
   _move_completion(repl, 1)
   _complete_selection(repl)
-  assert repl._input.text == '/status '
+  assert repl._input.text == '/close '
 
 
 def test_completion_escape_resets_composer_through_an_effect() -> None:
@@ -5905,7 +5925,7 @@ def test_selection_actions_move_and_accept_completion() -> None:
   repl.dispatch(_actions.MoveSelection(1))
   repl.dispatch(_actions.AcceptSelection())
 
-  assert repl._input.text == '/status '
+  assert repl._input.text == '/close '
 
 
 def test_selection_actions_move_and_accept_picker() -> None:
@@ -5977,7 +5997,7 @@ async def test_selector_number_keys_or_search_preserve_composer(
       assert repl._input_window.preferred_height(80, 20).preferred == 1
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
 
 
@@ -6082,23 +6102,25 @@ def test_slash_menu_prompt_preview() -> None:
   repl = _repl()
   repl._input.text = '/'
   assert _completion_preview(repl) == [
-    ('class:slash-autocomplete', 'help'),
+    ('class:slash-autocomplete', 'clear'),
     ('class:slash-preview-action', '  ↵'),
   ]
 
 
 @pytest.mark.asyncio
-async def test_new_command_closes_slash_menu_before_switch() -> None:
+async def test_clear_command_closes_slash_menu_before_switch() -> None:
   repl = _repl()
   repl._input.text = '/'
-  new_index = next(
+  clear_index = next(
     index
-    for index, command in enumerate(_commands.COMMANDS)
-    if command.name == 'new'
+    for index, command in enumerate(
+      _commands.menu_commands('/', repl.get_available_commands()) or ()
+    )
+    if command.name == 'clear'
   )
   repl.dispatch(
     _actions.MoveCompletionRequested(
-      new_index,
+      clear_index,
       skill_count=0,
       command_count=len(repl.get_available_commands()),
     )
@@ -6228,7 +6250,11 @@ def test_slash_menu_keeps_locked_commands_while_busy() -> None:
   assert names == {command.name for command in repl.get_available_commands()}
   # Navigate to clear and confirm the row lock + prompt busy hint.
   clear_index = next(
-    i for i, c in enumerate(_commands.COMMANDS) if c.name == 'clear'
+    i
+    for i, c in enumerate(
+      _commands.menu_commands('/', repl.get_available_commands()) or ()
+    )
+    if c.name == 'clear'
   )
   repl.dispatch(
     _actions.MoveCompletionRequested(
@@ -6302,14 +6328,14 @@ async def test_commands_and_completion_follow_extension_load_and_unload() -> (
     await registry.load(
       pathlib.Path(cli.__file__).with_name('extensions') / 'inference_controls'
     )
-    repl._input.text = '/reason'
-    assert 'reasoning' in {c.name for c in repl.get_available_commands()}
-    assert 'reasoning' in ''.join(
+    repl._input.text = '/eff'
+    assert 'effort' in {c.name for c in repl.get_available_commands()}
+    assert 'effort' in ''.join(
       text for _, text in _component_text(completion.render(repl._state))
     )
     await registry.unload('core/inference-controls')
-    assert 'reasoning' not in {c.name for c in repl.get_available_commands()}
-    assert 'reasoning' not in ''.join(
+    assert 'effort' not in {c.name for c in repl.get_available_commands()}
+    assert 'effort' not in ''.join(
       text for _, text in _component_text(completion.render(repl._state))
     )
   finally:
@@ -6327,7 +6353,7 @@ async def test_enter_opens_reasoning_selector_instead_of_editing_arguments() -> 
   )
   repl = _repl(extension_registry=registry)
   await repl._extension_host.start()
-  repl._input.text = '/reason'
+  repl._input.text = '/eff'
 
   try:
     _submit(repl)
@@ -6864,8 +6890,8 @@ async def test_rewind_picker_keeps_down_out_of_the_task_list(
 @pytest.mark.parametrize(
   ('view_mode', 'tool_label'),
   [
-    (_actions.ViewMode.DEFAULT, '· bash ls'),
-    (_actions.ViewMode.DETAIL, '· bash(ls)'),
+    (_actions.ViewMode.DEFAULT, '·  bash ls'),
+    (_actions.ViewMode.DETAIL, '·  bash(ls)'),
   ],
 )
 async def test_rewind_preview_hides_unanswered_calls_from_the_tail(
@@ -7429,7 +7455,9 @@ async def test_opening_resume_picker_closes_slash_menu(
   repl._input.text = '/'
   resume_index = next(
     index
-    for index, command in enumerate(_commands.COMMANDS)
+    for index, command in enumerate(
+      _commands.menu_commands('/', repl.get_available_commands()) or ()
+    )
     if command.name == 'resume'
   )
   repl.dispatch(
@@ -7595,8 +7623,8 @@ async def test_resume_picker_reads_sessions_off_the_event_loop(
 async def test_session_switch_replaces_the_visible_screen(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  # Empty and used conversations both keep saved scrollback; `/clear` is the
-  # flush. The visible screen is replaced either way.
+  # Empty and used conversations both keep saved scrollback.
+  # The visible screen is replaced either way.
   empty = _repl()
   _record_restarts(empty, monkeypatch)
   paints = _capture_paints(empty, monkeypatch)
@@ -8035,8 +8063,8 @@ def test_compact_subagent_result_shows_only_completion_status() -> None:
   assert rendered is not None
   text = _render_to_text(rendered)
   assert [line.rstrip() for line in text.splitlines()] == [
-    '· Subagent',
-    '  └ Complete',
+    '·  Subagent',
+    '   └ Complete',
   ]
 
 
@@ -8049,7 +8077,7 @@ def test_compact_mode_preserves_background_command_output() -> None:
 
   assert rendered is not None
   text = _render_to_text(rendered)
-  assert '· Ran background task 1234' in text
+  assert '·  Ran background task 1234' in text
   assert '└ line one … (+2 lines)' in text
   assert 'line two' not in text
   assert 'line three' not in text
@@ -8120,12 +8148,13 @@ async def test_approval_prompt_round_trip() -> None:
   assert selector is not None
   assert [choice.label for choice in selector.choices] == [
     'Approve',
-    'Approve and always allow commands starting with `ls`',
+    'Always allow',
     'Reject',
   ]
   assert repl._state.approval.request is not None
   prompt = '\n'.join(_render_approval(repl))
-  assert 'bash(ls)' in prompt
+  assert 'Approve bash?' in prompt
+  assert '·  bash ls' in prompt.splitlines()
   assert '› 1. Approve' in prompt  # Approve selected by default.
 
   repl.dispatch(_actions.MoveSelection(2))  # Move down to "Reject".
@@ -8159,11 +8188,9 @@ def test_approval_prompt_wraps_the_exact_bash_command() -> None:
     _approval_requested('gc-1', 'bash', json.dumps({'command': command}))
   )
   lines = _render_approval(repl)
-  assert lines[1:4] == [
-    '· bash(cd /workspace/project && bazel',
-    '  test //project/toolbox/mirror:all',
-    '          git push origin HEAD)',
-  ]
+  prompt = '\n'.join(lines)
+  assert 'Approve bash?' in prompt
+  assert ' '.join(command.split()) in ' '.join(prompt.split())
   assert '› 1. Approve' in '\n'.join(lines[3:])
   assert '3. Reject' in '\n'.join(lines[3:])
 
@@ -8278,7 +8305,7 @@ async def test_ctrl_j_k_navigate_completion_without_editing(
       assert repl._input.text == 'ordinary\n'
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
 
 
 class _BindingExtension(extension.Extension[None, None, None]):
@@ -8634,18 +8661,26 @@ async def test_up_arrow_recalls_persistent_history(
       record=True, width=80, theme=themes.rich_theme()
     )
 
-    async def interact() -> None:
-      await asyncio.sleep(0.1)
-      pipe.send_text('\x1b[A')  # Up arrow.
-      await asyncio.sleep(0.1)
-      # Current session's prompt comes first, not the other session's.
-      assert repl._input.text == 'old persistent prompt'
-      repl._app.exit()
+    loaded = asyncio.Event()
+    pressed = asyncio.Event()
 
-    repl._app.pre_run_callables.append(
-      lambda: repl._app.create_background_task(interact())
-    )
-    await asyncio.wait_for(_run_repl(repl), timeout=10)
+    def after_render(_: _application.Application[str | None]) -> None:
+      if repl._history.get_strings() and not repl._state.session.replaying:
+        loaded.set()
+
+    repl._app.after_render += after_render
+    repl._app.key_processor.after_key_press += lambda _: pressed.set()
+    running = asyncio.create_task(asyncio.wait_for(_run_repl(repl), timeout=10))
+    try:
+      await asyncio.wait_for(loaded.wait(), timeout=10)
+      pipe.send_text('\x1b[A')  # Up arrow.
+      await asyncio.wait_for(pressed.wait(), timeout=10)
+      # Keep assertions in the test task, outside the UI exception handler.
+      assert repl._input.text == 'old persistent prompt'
+    finally:
+      running.cancel()
+      with contextlib.suppress(asyncio.CancelledError):
+        await running
 
 
 def test_session_opened_reloads_history_without_dropping_a_draft() -> None:
@@ -8838,7 +8873,7 @@ async def test_exploration_retains_detail_row_until_visible_text() -> None:
   assert 'Working' in _fragments_text(_render_activity(repl))
   assert repl._state.activity.busy
   repl._handle_message(_turn_completed())
-  assert 'Worked for' in _fragments_text(_render_activity(repl))
+  assert _fragments_text(_render_activity(repl)).startswith('●  Worked for')
   assert not repl._state.activity.busy
   await _settle(repl)
 
@@ -8846,37 +8881,37 @@ async def test_exploration_retains_detail_row_until_visible_text() -> None:
 @pytest.mark.parametrize(
   ('content', 'display', 'error', 'expected'),
   [
-    ('[Completed in 0.0s]', 'rm -- test.txt', False, ['· Ran rm -- test.txt']),
+    ('[Completed in 0.0s]', 'rm -- test.txt', False, ['·  Ran rm -- test.txt']),
     (
       'echo hello\n[Completed in 0.0s]',
       'echo hello',
       False,
-      ['· Ran echo hello', '  └ echo hello'],
+      ['·  Ran echo hello', '   └ echo hello'],
     ),
     (
       'Exit code: 1\nfailed assertion\n[Completed in 0.4s]',
       'pytest',
       False,
-      ['✗ Ran pytest · exit 1', '  └ failed assertion'],
+      ['✗  Ran pytest · exit 1', '   └ failed assertion'],
     ),
     (
       'Command timed out after 60000ms\nPartial stdout:\nwaiting\n'
       '[Completed in 60.0s]',
       'sleep 60',
       True,
-      ['✗ Ran sleep 60 · timed out', '  └ waiting'],
+      ['✗  Ran sleep 60 · timed out', '   └ waiting'],
     ),
     (
       'Command timed out after 5ms\n[Completed in 0.0s]',
       'cat log',
       False,
-      ['· Ran cat log', '  └ Command timed out after 5ms'],
+      ['·  Ran cat log', '   └ Command timed out after 5ms'],
     ),
     (
       'Timed out.\nExit code: -1',
       'sleep 60',
       False,
-      ['✗ Ran sleep 60 · timed out'],
+      ['✗  Ran sleep 60 · timed out'],
     ),
   ],
 )
@@ -8926,7 +8961,7 @@ async def test_compact_groups_results_live_and_in_history() -> None:
   repl._handle_message(_exploration_result('read', success=False))
 
   live = _ansi_text(_pending.render(repl._state))
-  assert live.splitlines()[0].rstrip() == '· Explored · 1 read, 1 search'
+  assert live.splitlines()[0].rstrip() == '·  Explored · 1 read, 1 search'
   assert 'raw tool output' not in live
   assert not repl._terminal.emit_buffer
   assert _pending.rows(repl._state) == 2
@@ -8991,7 +9026,7 @@ def _assert_tool_follows_message(frame: str, label: str) -> None:
 @pytest.mark.parametrize(
   ('view_mode', 'status'),
   [
-    (_actions.ViewMode.DEFAULT, '· Running'),
+    (_actions.ViewMode.DEFAULT, '·  Running'),
     (_actions.ViewMode.DETAIL, 'running…'),
   ],
 )
@@ -9034,7 +9069,7 @@ async def test_fullscreen_tool_status_stays_in_conversation_until_result(
         _approval_requested('bash', 'bash', '{"command":"rg --files"}')
       )
       waiting = _frame_text(repl, terminal)
-      assert 'Tool approval' in waiting
+      assert 'Approve bash?' in waiting
       assert status not in waiting
       repl.dispatch(_actions.ClearApproval('bash'))
       resumed = _frame_text(repl, terminal)
@@ -9081,11 +9116,11 @@ async def test_fullscreen_exploration_stays_grouped_through_completion() -> (
       )
     )
     pending = _frame_text(repl, terminal)
-    assert pending.count('· Exploring') == 1
+    assert pending.count('·  Exploring') == 1
     assert 'Reading final.py · 4 running' in pending
     assert 'alpha' not in pending
     assert 'beta' not in pending
-    _assert_tool_follows_message(pending, '· Exploring')
+    _assert_tool_follows_message(pending, '·  Exploring')
 
     repl._handle_message(
       _tool_batch_final((
@@ -9096,19 +9131,19 @@ async def test_fullscreen_exploration_stays_grouped_through_completion() -> (
       ))
     )
     running = _frame_text(repl, terminal)
-    assert running.count('· Exploring') == 1
+    assert running.count('·  Exploring') == 1
     assert 'Reading final.py · 4 running' in running
     assert 'alpha' not in running
     assert 'beta' not in running
-    _assert_tool_follows_message(running, '· Exploring')
+    _assert_tool_follows_message(running, '·  Exploring')
 
     repl._handle_message(_exploration_result('ls'))
     partial = _frame_text(repl, terminal)
-    assert partial.count('· Exploring') == 1
+    assert partial.count('·  Exploring') == 1
     assert 'Explored' not in partial
     assert '1 directory scan' in partial
     assert '3 running' in partial
-    _assert_tool_follows_message(partial, '· Exploring')
+    _assert_tool_follows_message(partial, '·  Exploring')
 
     repl._handle_message(
       _delta({'role': 'tool', 'tool_call_id': 'find-1', 'content': 'found'})
@@ -9121,14 +9156,14 @@ async def test_fullscreen_exploration_stays_grouped_through_completion() -> (
     assert completed.count('Explored') == 1
     assert '1 read, 2 searches, 1 directory scan' in completed
     assert 'Read final.py' in completed
-    _assert_tool_follows_message(completed, '· Explored')
+    _assert_tool_follows_message(completed, '·  Explored')
 
     repl._handle_message(_turn_completed())
     settled = _frame_text(repl, terminal)
     assert settled.count('Explored') == 1
     assert '1 read, 2 searches, 1 directory scan' in settled
     assert 'running' not in settled
-    _assert_tool_follows_message(settled, '· Explored')
+    _assert_tool_follows_message(settled, '·  Explored')
 
 
 @pytest.mark.asyncio
@@ -9286,17 +9321,17 @@ def test_assistant_table_has_one_blank_line_and_aligned_gutter(
     line.rstrip() for line in _rendering.strip_ansi(rendered).splitlines()
   ]
   assert lines == [
-    '● Overview.',
+    '●  Overview.',
     '',
-    '  ┌───────────────┬──────────────┐',
-    '  │ Folder        │ Purpose      │',
-    '  ├───────────────┼──────────────┤',
-    '  │ mirror-cli/   │ Terminal UI  │',
-    '  ├───────────────┼──────────────┤',
-    '  │ mirror-agent/ │ Agent worker │',
-    '  └───────────────┴──────────────┘',
+    '   ┌───────────────┬──────────────┐',
+    '   │ Folder        │ Purpose      │',
+    '   ├───────────────┼──────────────┤',
+    '   │ mirror-cli/   │ Terminal UI  │',
+    '   ├───────────────┼──────────────┤',
+    '   │ mirror-agent/ │ Agent worker │',
+    '   └───────────────┴──────────────┘',
     '',
-    '  Next steps.',
+    '   Next steps.',
   ]
 
 
@@ -9331,7 +9366,7 @@ def test_result_summary_compact_truncates_to_one_line() -> None:
     .splitlines()[1]
     .strip()
   )
-  assert narrow == '└ ' + 'x' * 35 + '…'
+  assert narrow == '└ ' + 'x' * 34 + '…'
   assert wide == f'└ {long_line}'
 
 
@@ -9557,10 +9592,11 @@ def test_compact_bash_wraps_command_and_ellipsizes_output() -> None:
   )
   plain = _rendering.strip_ansi(_rendering.renderable_to_ansi(rendered, 30))
   assert [line.rstrip() for line in plain.splitlines()] == [
-    '· Ran cd /workspace/project &&',
-    '  bazel test',
-    '  //project/toolbox/mirror:all',
-    '  └ 界界界界界界界界界界界界 …',
+    '·  Ran cd /workspace/project',
+    '   && bazel test',
+    '   //project/toolbox/mirror:al',
+    '   l',
+    '   └ 界界界界界界界界界界界界…',
   ]
 
 
@@ -9576,11 +9612,11 @@ def test_compact_bash_bounds_a_long_command() -> None:
   )
   plain = _rendering.strip_ansi(_rendering.renderable_to_ansi(rendered, 80))
   assert [line.rstrip() for line in plain.splitlines()] == [
-    '✗ Ran echo',
-    '  ' + 'x' * 78,
-    '  ' + 'x' * 78,
-    '  ' + 'x' * 78,
-    '  … · exit 1',
+    '✗  Ran echo',
+    '   ' + 'x' * 77,
+    '   ' + 'x' * 77,
+    '   ' + 'x' * 77,
+    '   xxx… · exit 1',
   ]
 
 
@@ -9596,8 +9632,8 @@ def test_compact_bash_failure_has_one_line_preview() -> None:
   )
   plain = _rendering.strip_ansi(_rendering.renderable_to_ansi(rendered, 80))
   assert [line.rstrip() for line in plain.splitlines()] == [
-    '✗ Ran pytest · exit 1',
-    '  └ first … (+3 lines)',
+    '✗  Ran pytest · exit 1',
+    '   └ first … (+3 lines)',
   ]
 
 
@@ -9620,10 +9656,11 @@ def test_compact_running_bash_wraps_its_command() -> None:
   )
   rendered = _rendering.strip_ansi(_ansi_text(_pending.render(repl._state)))
   assert [line.rstrip() for line in rendered.splitlines()] == [
-    '· Running cd /workspace/project && bazel',
-    '  test //project/toolbox/mirror:all',
+    '·  Running cd /workspace/project &&',
+    '   bazel test',
+    '   //project/toolbox/mirror:all',
   ]
-  assert _pending.rows(repl._state) == 2
+  assert _pending.rows(repl._state) == 3
 
 
 def test_compact_unanswered_bash_wraps_its_command() -> None:
@@ -9637,8 +9674,8 @@ def test_compact_unanswered_bash_wraps_its_command() -> None:
   )
   plain = _rendering.strip_ansi(_rendering.renderable_to_ansi(rendered, 40))
   assert [line.rstrip() for line in plain.splitlines()] == [
-    '· bash cd /workspace/project && bazel',
-    '  test //project/toolbox/mirror:all',
+    '·  bash cd /workspace/project && bazel',
+    '   test //project/toolbox/mirror:all',
   ]
 
 
@@ -9654,9 +9691,9 @@ def test_expanded_bash_wraps_a_long_command() -> None:
   )
   plain = _rendering.strip_ansi(_rendering.renderable_to_ansi(rendered, 40))
   assert [line.rstrip() for line in plain.splitlines()] == [
-    '· bash(cd /workspace/project && bazel',
-    '  test //project/toolbox/mirror:all)',
-    '  └ ok',
+    '·  bash(cd /workspace/project && bazel',
+    '   test //project/toolbox/mirror:all)',
+    '   └ ok',
   ]
 
 
@@ -9821,7 +9858,6 @@ async def test_the_view_command_redraws_the_history_like_the_key_does(
   # Density is a property of the drawn history, so asking for it redraws,
   # whichever way it was asked for. Nothing is written to say it changed.
   registry = extension.ExtensionRegistry()
-  await registry.register(_view_mode.ViewModeExtension(), None)
   repl = _repl(extension_registry=registry)
   await repl._extension_host.start()
   paints = _capture_paints(repl, monkeypatch)
@@ -9848,7 +9884,6 @@ async def test_changing_density_mid_turn_redraws_history(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   registry = extension.ExtensionRegistry()
-  await registry.register(_view_mode.ViewModeExtension(), None)
   repl = _repl(extension_registry=registry)
   await repl._extension_host.start()
   paints = _capture_paints(repl, monkeypatch)
@@ -10450,7 +10485,7 @@ async def test_activation_uses_live_dimensions_after_inactive_resize(
 
 
 @pytest.mark.asyncio
-async def test_width_change_hints_to_redraw_instead_of_rerendering(
+async def test_inline_width_change_does_not_advertise_manual_redraw(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl, output = _resize_repl(monkeypatch)
@@ -10468,7 +10503,7 @@ async def test_width_change_hints_to_redraw_instead_of_rerendering(
   assert paints == []
   assert relayouts == [True]
   assert repl._state.status_bar.resize_dirty
-  assert 'Ctrl+L to redraw' in ''.join(text for _, text in _render_footer(repl))
+  assert 'Ctrl+L' not in ''.join(text for _, text in _render_footer(repl))
   assert repl._terminal.console.width == 120
   assert repl._state.session.history_width == 80
 
@@ -10515,7 +10550,7 @@ async def test_resize_does_not_relayout_the_prompt_until_settle(
 
 
 @pytest.mark.asyncio
-async def test_resize_back_to_original_width_still_hints(
+async def test_resize_back_to_original_width_stays_dirty(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   # Intermediate widths rewrap on-screen ANSI even if the drag ends where it
@@ -10538,7 +10573,7 @@ async def test_resize_back_to_original_width_still_hints(
 
 
 @pytest.mark.asyncio
-async def test_ctrl_l_rerenders_without_cycling_view_mode(
+async def test_rerender_action_preserves_view_mode(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl, _output = _resize_repl(monkeypatch)
@@ -10558,7 +10593,7 @@ async def test_ctrl_l_rerenders_without_cycling_view_mode(
 
 
 @pytest.mark.asyncio
-async def test_ctrl_l_clears_the_redraw_hint(
+async def test_rerender_action_clears_resize_dirty(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl, output = _resize_repl(monkeypatch)
@@ -10596,7 +10631,6 @@ async def test_ctrl_t_cycles_view_mode_and_rerenders(
   expected: _actions.ViewMode,
 ) -> None:
   registry = extension.ExtensionRegistry()
-  await registry.register(_view_mode.ViewModeExtension(), None)
   repl = _repl(extension_registry=registry)
   await repl._extension_host.start()
   paints = _capture_paints(repl, monkeypatch)
@@ -10743,7 +10777,7 @@ def test_answer_without_reasoning_has_no_reasoning_label() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ctrl_l_is_ignored_while_a_turn_is_in_progress(
+async def test_rerender_action_is_ignored_while_a_turn_is_in_progress(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl, _output = _resize_repl(monkeypatch)
@@ -10760,27 +10794,35 @@ async def test_ctrl_l_is_ignored_while_a_turn_is_in_progress(
 
 
 @pytest.mark.asyncio
-async def test_slash_clear_flushes_scrollback_and_repaints(
+async def test_slash_clear_starts_new_conversation(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl = _repl()
   paints = _capture_paints(repl, monkeypatch)
-  _seed_history(repl, ['first ask'])
-  await _settle(repl)
-  paints.clear()
+  await repl.start()
+  try:
+    _seed_history(repl, ['first ask'])
+    await _settle(repl)
+    paints.clear()
 
-  await repl._run_slash('/clear')
-  await _settle(repl)
+    await repl._run_slash('/clear')
+    await _settle(repl)
 
-  assert len(paints) == 1
-  ansi, clear = paints[0]
-  assert clear is _terminal_mod.TerminalClear.SCROLLBACK
-  assert 'first ask' in ansi
-  assert 'Screen cleared' in ansi
+    assert repl._state.session.conversation_id != 'conv-1'
+    assert repl._transcript.entries() == ()
+    assert not repl._state.session.has_user_message
+    assert not repl._state.activity.busy
+    assert len(paints) == 1
+    ansi, clear = paints[0]
+    assert clear is _terminal_mod.TerminalClear.SCREEN
+    assert 'first ask' not in ansi
+    assert 'New conversation' in ansi
+  finally:
+    await repl.close()
 
 
 @pytest.mark.asyncio
-async def test_flush_scrollback_promotes_ctrl_l_to_drop_saved_lines(
+async def test_flush_scrollback_promotes_rerender_to_drop_saved_lines(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   repl, _output = _resize_repl(monkeypatch)
@@ -11441,7 +11483,7 @@ async def test_extension_approval_advances_through_two_extensions(
       }
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
       await registry.close()
 
@@ -11580,7 +11622,7 @@ async def test_selector_dispatches_the_selected_choice() -> None:
   await repl._extension_host.start()
 
   try:
-    await repl._run_slash('/reasoning')
+    await repl._run_slash('/effort')
     selector = repl._state.selector.selector
     assert selector is not None
     selected = repl._selector_choice()
@@ -11661,14 +11703,15 @@ async def test_mcp_tools_share_one_group_live_and_in_history() -> None:
   )
 
   live = _ansi_text(_pending.render(repl._state))
-  assert live.splitlines()[0].rstrip() == '· mcp · 2 search, 1 describe'
-  assert "└ Call slack.send_message({'message': 'hello'})" in live
+  assert live.splitlines()[0].rstrip() == '·  mcp · 2 search, 1 describe'
+  assert '└ Call slack.send_message' in live
+  assert 'hello' not in live
   assert 'Using mcp' in _fragments_text(_render_activity(repl))
 
   repl._handle_message(_exploration_result('mcp_call'))
   live = _ansi_text(_pending.render(repl._state))
   assert live.splitlines()[0].rstrip() == (
-    '· mcp · 2 search, 1 describe, 1 call'
+    '·  mcp · 2 search, 1 describe, 1 call'
   )
   assert not repl._terminal.emit_buffer
 
@@ -11678,13 +11721,13 @@ async def test_mcp_tools_share_one_group_live_and_in_history() -> None:
   assert (
     _rendering.strip_ansi(emitted).strip()
     == _rendering.strip_ansi(history).strip()
-    == '· mcp · 2 search, 1 describe, 1 call'
+    == '·  mcp · 2 search, 1 describe, 1 call'
   )
   repl.dispatch(_actions.SetViewMode(_actions.ViewMode.DETAIL))
   await _settle(repl)
   transcript = _rendering.strip_ansi(repl._render_history())
   assert 'mcp_call(' in transcript
-  assert "slack.send_message({'message': 'hello'})" in transcript
+  assert 'slack.send_message' in transcript
 
 
 @pytest.mark.parametrize(
@@ -11693,11 +11736,11 @@ async def test_mcp_tools_share_one_group_live_and_in_history() -> None:
     (
       '{"calls":[{"name":"mcp__slack__search","arguments":{}},'
       '{"name":"mcp__linear__search","arguments":{}}]}',
-      'slack.search({}), linear.search({})',
+      'slack.search, linear.search',
     ),
     (
       '{"calls":[{"name":"mcp__slack__search","arguments":',
-      'slack.search({})',
+      'slack.search',
     ),
     ('{"calls":[null,{}, {"name":1}]}', ''),
   ],
@@ -11715,7 +11758,7 @@ def test_namespaced_tool_presentation_is_provider_neutral() -> None:
   assert tool_groups.status_label('extension:calendar') == 'Using calendar'
   group = tool_groups.result(name, success=True)
   assert group is not None
-  assert group.summary().plain == '· calendar · 1 search'
+  assert group.summary().plain == '·  calendar · 1 search'
 
 
 class _PickerExtension(_StartupExtension):
@@ -11795,14 +11838,14 @@ async def test_worktree_activation_defers_older_history_until_redraw(
 
   assert 'entry 199' in paints[0][0]
   assert 'entry 0' not in paints[0][0]
-  assert 'Ctrl+L to restore history' in paints[0][0]
+  assert 'earlier entries not shown' in paints[0][0]
   assert len(repl.transcript_entries()) == 200
 
   await repl._rerender()
 
   assert 'entry 0' in paints[-1][0]
   assert 'entry 199' in paints[-1][0]
-  assert 'Ctrl+L to restore history' not in paints[-1][0]
+  assert 'earlier entries not shown' not in paints[-1][0]
 
 
 @pytest.mark.asyncio
@@ -11825,7 +11868,7 @@ async def test_first_worktree_replay_uses_short_activation_paint(
   assert not paints[0][0]
   assert 'entry 199' in paints[-1][0]
   assert 'entry 0' not in paints[-1][0]
-  assert 'Ctrl+L to restore history' in paints[-1][0]
+  assert 'earlier entries not shown' in paints[-1][0]
 
 
 @pytest.mark.asyncio
@@ -12519,7 +12562,7 @@ async def test_remembered_approval_skips_prompt_after_restart(
   sent: list[agent_pb2.ClientMessage] = []
   repl._send_request = sent.append
   repl._handle_message(_approval_requested('first', name, arguments))
-  assert '2. Approve and remember' in '\n'.join(_render_approval(repl))
+  assert '2. Remember' in '\n'.join(_render_approval(repl))
   assert _actions.AcceptSelection(1) in {
     binding.action
     for binding in _keymap.defaults(
@@ -12771,6 +12814,9 @@ async def test_interrupt_stops_continuous_streaming(
       await repl._client.start(replay=False)
       repl.dispatch(_actions.WorkerStarted())
       repl._worker_ready.set()
+      # SQLite cancellation waits for I/O; finish it before timing UI shutdown.
+      async with contextlib.aclosing(repl._input.history.load()) as history:
+        await anext(history, None)
       pipe = repl._app.input
       assert isinstance(pipe, _input_base.PipeInput)
       screen = cli._workspace_application.WorkspaceApplication(
@@ -12822,7 +12868,7 @@ async def test_interrupt_stops_continuous_streaming(
       finally:
         if screen.is_running and not screen.is_done:
           screen.exit()
-        await asyncio.wait_for(running, 2)
+        await asyncio.wait_for(running, _APP_SHUTDOWN_TIMEOUT)
   finally:
     await server.stop(0)
 
@@ -12912,7 +12958,7 @@ async def test_approval_cancel_interrupts_remote_turn_without_reject_and_retry(
       assert repl._input.text == 'unfinished draft'
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
       await server.stop(0)
 
@@ -12991,7 +13037,7 @@ async def test_approval_uses_shared_selector_shortcuts(
       assert repl._input.text == 'unfinished draft'
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
 
 
@@ -13013,7 +13059,7 @@ async def test_selected_prefix_approves_varying_literal_arguments_after_restart(
     choice.label for choice in repl._state.selector.filtered_choices()
   ] == [
     'Approve',
-    'Approve and always allow commands starting with `git status`',
+    'Always allow',
     'Reject',
   ]
   assert not path.exists()
@@ -13099,10 +13145,7 @@ def test_prefix_grant_does_not_allow_unsupported_shell_calls(
   assert isinstance(
     repl._state.approval.request.remember, tool_approvals.ToolApproval
   )
-  assert (
-    repl._state.selector.filtered_choices()[1].label
-    == 'Approve and remember this exact call'
-  )
+  assert repl._state.selector.filtered_choices()[1].label == 'Remember'
   assert [
     choice.value for choice in repl._state.selector.filtered_choices()
   ] == ['approve', 'remember', 'reject']
@@ -13136,10 +13179,7 @@ def test_remote_shell_keeps_exact_matching(tmp_path: pathlib.Path) -> None:
   assert isinstance(
     repl._state.approval.request.remember, tool_approvals.ToolApproval
   )
-  assert (
-    repl._state.selector.filtered_choices()[1].label
-    == 'Approve and remember this exact call'
-  )
+  assert repl._state.selector.filtered_choices()[1].label == 'Remember'
 
   assert [
     choice.value for choice in repl._state.selector.filtered_choices()
@@ -13211,7 +13251,7 @@ async def test_prefix_approval_requires_only_one_selection(
       assert repl._input.text == 'unfinished draft'
     finally:
       repl._app.exit()
-      await asyncio.wait_for(running, timeout=2)
+      await asyncio.wait_for(running, timeout=_APP_SHUTDOWN_TIMEOUT)
       await repl.close()
 
 
@@ -13264,8 +13304,8 @@ async def test_remember_saves_only_the_displayed_full_prefix(
   repl._handle_message(
     _approval_requested('call', 'bash', json.dumps({'command': command}))
   )
-  assert repl._state.selector.filtered_choices()[1].label == (
-    f'Approve and always allow commands starting with `{label}`'
+  assert repl._state.selector.filtered_choices()[1].detail == (
+    f'Prefix: {label} · this workspace'
   )
   repl.dispatch(_actions.AcceptSelection(1))
   await _settle(repl)
@@ -13793,9 +13833,7 @@ async def test_cat_command_choice_persists_and_matches_other_literal_arguments(
   assert choices[2].value == 'reject'
   assert len(choices) == 3
   assert choices[1].value == 'remember'
-  assert (
-    choices[1].label == 'Approve and always allow commands starting with `cat`'
-  )
+  assert choices[1].detail == 'Prefix: cat · this workspace'
   assert not path.exists()
   repl.dispatch(_actions.AcceptSelection(1))
   await _settle(repl)
@@ -14030,6 +14068,10 @@ async def test_fullscreen_aborted_stream_is_retained_after_its_preview_closes(
     repl.dispatch(_actions.SetReplaying(False), _actions.TurnStarted())
     repl._handle_message(_stream_content('PARTIAL ABORTED ANSWER'))
     repl._handle_message(_stream_aborted())
+    repl._handle_message(
+      _runtime(agent_pb2.RuntimeDelta(turn_interrupted=empty_pb2.Empty()))
+    )
+    repl._handle_message(_turn_completed())
     assert repl._stream_pane.preview is None
     visible = _rendering.strip_ansi(
       _rendering.render_blocks(
@@ -14037,7 +14079,40 @@ async def test_fullscreen_aborted_stream_is_retained_after_its_preview_closes(
         80,
       )
     )
-    assert 'PARTIAL ABORTED ANSWER' in visible
+    assert visible.count('PARTIAL ABORTED ANSWER') == 1
+    assert visible.index('PARTIAL ABORTED ANSWER') < visible.index(
+      '⊘  interrupted by user'
+    )
+    assert not repl.transcript_entries()
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('active', [True, False])
+async def test_fullscreen_turn_interrupted_without_stream_aborted(
+  active: bool,
+) -> None:
+  repl = _repl(fullscreen=True, active=active)
+  try:
+    repl.dispatch(_actions.SetReplaying(False), _actions.TurnStarted())
+    repl._handle_message(_stream_content('PARTIAL ANSWER'))
+    repl._handle_message(
+      _runtime(agent_pb2.RuntimeDelta(turn_interrupted=empty_pb2.Empty()))
+    )
+    assert repl._stream_pane.preview is None
+    before_completion = repl._transcript.blocks()
+    repl._handle_message(_turn_completed())
+    assert repl._transcript.blocks() == before_completion
+    visible = _rendering.strip_ansi(
+      _rendering.render_blocks(
+        [block.renderable for block in repl._transcript.blocks()], 80
+      )
+    )
+    assert visible.count('PARTIAL ANSWER') == 1
+    assert visible.index('PARTIAL ANSWER') < visible.index(
+      '⊘  interrupted by user'
+    )
     assert not repl.transcript_entries()
   finally:
     await repl.close()
@@ -14189,7 +14264,7 @@ async def test_fullscreen_approval_is_visible_in_the_assembled_dock(
       ''.join(frame.data_buffer[y][x].char for x in range(columns))
       for y in range(rows)
     )
-    assert 'Tool approval' in visible
+    assert 'Approve bash?' in visible
     assert '1. Approve' in visible
     assert '3. Reject' in visible
     assert 'Esc' in visible
@@ -14330,6 +14405,7 @@ async def test_fullscreen_approval_command_scrolls_without_losing_choices() -> (
   repl = _repl(fullscreen=True, output=output)
 
   def paint() -> tuple[list[str], _mouse_handlers.MouseHandlers]:
+    repl._app.render_counter += 1
     size = output.get_size()
     frame = _screen.Screen()
     handlers = _mouse_handlers.MouseHandlers()
@@ -14372,14 +14448,14 @@ async def test_fullscreen_approval_command_scrolls_without_losing_choices() -> (
         )
       )
       scrolled, _ = paint()
-      assert 'LINE_000' not in '\n'.join(scrolled)
-      assert 'LINE_001' in '\n'.join(scrolled)
+      assert '·  bash' not in '\n'.join(scrolled)
+      assert 'LINE_000' in '\n'.join(scrolled)
       assert '1. Approve' in '\n'.join(scrolled)
       assert '3. Reject' in '\n'.join(scrolled)
       output.size = _data_structures.Size(rows=20, columns=60)
       repl.dispatch(_actions.TerminalResized(columns=60))
       resized, _ = paint()
-      assert 'LINE_001' in '\n'.join(resized)
+      assert 'LINE_000' in '\n'.join(resized)
       assert '1. Approve' in '\n'.join(resized)
       assert '3. Reject' in '\n'.join(resized)
   finally:

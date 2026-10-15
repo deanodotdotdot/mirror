@@ -8,11 +8,10 @@ from typing import override
 from prompt_toolkit.layout import containers, controls
 
 from mirror import config
-from mirror.cli import actions, commands, extension, state
+from mirror.cli import actions, commands, extension, rendering, state
 from mirror.cli.extensions.settings import setting_template
 
 CORE_TIPS = (
-  'Ctrl+L redraws the screen',
   '/worktree opens a new workspace on a fresh Git worktree',
   '/folder <path> opens an existing folder as a workspace',
   'Use /extensions to turn extensions on and off',
@@ -21,7 +20,7 @@ CORE_TIPS = (
   'Ctrl+J adds a new line without sending',
   '/workspaces finds and switches between open workspaces',
   '/resume reopens an earlier conversation when idle',
-  'Use /new to start a fresh conversation',
+  'Use /clear to start a fresh conversation',
   'When idle, /rewind branches from a past turn',
   '/close closes an idle workspace without deleting it',
   '/tag gives a workspace an icon',
@@ -185,7 +184,9 @@ class TipsExtension(extension.Extension[_State, _SetVisibility, None]):
     ):
       return None
     return containers.Window(
-      controls.FormattedTextControl(f'  └ Tip: {extension_state.tip}'),
+      controls.FormattedTextControl(
+        f'{" " * rendering.GUTTER_WIDTH}└ Tip: {extension_state.tip}'
+      ),
       height=1,
       wrap_lines=False,
       style='class:ui.muted',

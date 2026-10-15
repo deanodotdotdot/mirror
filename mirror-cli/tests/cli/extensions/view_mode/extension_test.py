@@ -1,4 +1,4 @@
-"""View controls remain optional extension UI, independent of turn activity."""
+"""The optional view badge does not own the always-available view controls."""
 
 from __future__ import annotations
 
@@ -41,12 +41,7 @@ def test_view_command(
   context = commands.CommandContext(
     'model', 'medium', 'conversation', busy, '/workspace'
   )
-  plugin = view_mode.ViewModeExtension()
-  assert plugin.slash_commands()[0].id is commands.CommandId.VIEW
-  assert (
-    commands.dispatch(f'/view {argument}', context, plugin.slash_commands())
-    == expected
-  )
+  assert commands.dispatch(f'/view {argument}', context) == expected
 
 
 @pytest.mark.parametrize(
@@ -89,9 +84,8 @@ def test_badge_has_only_mode_name_on_colored_background(
   assert f'class:ui.{role}' in painted.data_buffer[0][1].style
   assert plugin.render_region() is extension.RenderRegion.STATUS_RIGHT
   assert plugin.status_separator() == ' '
-  assert plugin.keybindings() == (
-    keymap.Binding(('c-t',), actions.CycleViewMode()),
-  )
+  assert plugin.keybindings() == ()
+  assert plugin.slash_commands() == ()
   switching = dataclasses.replace(
     current,
     session=dataclasses.replace(
@@ -101,20 +95,18 @@ def test_badge_has_only_mode_name_on_colored_background(
   assert plugin.render(switching, plugin.initial_state()) is None
 
 
-def test_core_does_not_supply_view_controls() -> None:
+def test_core_supplies_view_controls_without_badge() -> None:
   current = state.State(
     activity=state.ActivityState(),
     status_bar=state.StatusBarState('model', 'medium', 'auto'),
     session=state.SessionState('conversation'),
     lifecycle=state.LifecycleState(active=True),
   )
-  assert 'view' not in {command.name for command in commands.COMMANDS}
+  assert 'view' in {command.name for command in commands.COMMANDS}
   bindings = keymap.defaults(
     current, completion_visible=False, modal_active=False, can_focus_tasks=False
   )
-  assert not any(
-    isinstance(binding.action, actions.CycleViewMode) for binding in bindings
-  )
+  assert keymap.Binding(('c-t',), actions.CycleViewMode()) in bindings
 
 
 def test_view_mode_defaults_to_default_view() -> None:
@@ -122,3 +114,12 @@ def test_view_mode_defaults_to_default_view() -> None:
     state.StatusBarState('model', 'medium', 'auto').view_mode
     is actions.ViewMode.DEFAULT
   )
+
+
+@pytest.mark.asyncio
+async def test_badge_is_disabled_by_default_and_can_be_enabled() -> None:
+  registry = extension.ExtensionRegistry()
+  plugin = view_mode.ViewModeExtension()
+  assert not await registry.register(plugin, None)
+  assert await registry.register(plugin, None, overrides={'enabled': True})
+  await registry.close()

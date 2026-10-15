@@ -29,6 +29,7 @@ import grpc.aio
 from mirror.protocol import (
   agent_pb2,
   client_pb2,
+  mirror_pb2,
 )
 from prompt_toolkit import buffer as _buffer
 from prompt_toolkit import cursor_shapes as _cursor_shapes
@@ -354,6 +355,7 @@ class _Repl:
         if fullscreen
         else None,
         skip_first_queued=self._initial_input_pending,
+        shortcut_hint=self._keymap.shortcut_hint,
       ),
       'banner': _banner.Banner(
         self._session_directory(),
@@ -619,7 +621,9 @@ class _Repl:
         else:
           self._app.exit(result=result)
       case (
-        _effects.OpenFolder()
+        _effects.OpenNewWorkspace()
+        | _effects.CreateWorkspace()
+        | _effects.OpenFolder()
         | _effects.CloseWorkspace()
         | _effects.CreateManagedWorktree()
         | _effects.CreateSandboxWorkspace()
@@ -680,6 +684,10 @@ class _Repl:
         self._send_request(request)
       case _effects.RunSlashCommand(text):
         return self._app.create_background_task(self._run_slash(text))
+      case _effects.RunShellCommand(command):
+        return self._app.create_background_task(
+          self._run_shell_command(command)
+        )
       case _effects.SendQueuedInstruction(instruction):
         self._send_instruction(instruction)
         _statsig_client.get().log_event(
@@ -993,6 +1001,26 @@ class _Repl:
       ),
     )
 
+  async def _run_shell_command(self, command: str) -> None:
+    """Run Bash through the current workspace's tool executor, not the model."""
+    if not command:
+      return
+    conversation_id = self.conversation_id
+    client = self._client
+    try:
+      result = await self.call_tool('bash', {'command': command})
+    except (grpc.aio.AioRpcError, RuntimeError) as error:
+      renderable = _rendering.error_text(str(error))
+    else:
+      renderable = _rendering.tool_block(
+        f'! {command}',
+        _text.Text(_rendering.strip_ansi(result.content)),
+        error=not result.success,
+        wrap=True,
+      )
+    if self.conversation_id == conversation_id and self._client is client:
+      self.dispatch(_actions.ShowText(renderable))
+
   async def call_tool(
     self, name: str, arguments: Mapping[str, object]
   ) -> _host_tools.ToolResult:
@@ -1300,6 +1328,8 @@ class _Repl:
     selected = await self._authenticate_model(option, initial=False)
     if selected is not None:
       self._apply_model(selected)
+      if self._state.lifecycle.failure is not None:
+        await self._retry_worker()
 
   def _switch_remote_model(self, model_id: str, api: str) -> None:
     """Commit a server model selection, which needs no local credentials."""
@@ -1885,7 +1915,6 @@ class _Repl:
       ),
       full_screen=self._fullscreen,
       min_redraw_interval=1 / _MAX_REDRAW_FPS,
-      max_render_postpone_time=0 if self._fullscreen else 0.01,
       refresh_interval=0.1,
     )
 
@@ -1994,14 +2023,11 @@ class _Repl:
 
   def _live_tool_blocks(self) -> tuple[_console.RenderableType, ...]:
     """Keep live and retained tool output consistent with the scrollback view."""
-    approval = self._state.approval.request
+    if self._state.approval.request is not None:
+      return ()
     return _pending.renderables(
       self._state.status_bar.view_mode,
-      tuple(
-        call
-        for call in self._state.stream.running
-        if approval is None or call.call_id != approval.call_id
-      ),
+      self._state.stream.running,
       self._state.stream.pending,
       self._state.tool_group,
     )
@@ -2319,7 +2345,7 @@ class _Repl:
       request = _actions.ApprovalRequest(
         call_id=call.id,
         name=name,
-        args=_rendering.approval_args(call.function.arguments, tool_name=name),
+        args=call.function.arguments,
         remember=remember if self._tool_approvals.available else None,
       )
       self.dispatch(_actions.ApprovalRequested(request))
@@ -2432,6 +2458,8 @@ class _Repl:
       self._stream_pane.clear_pending()
       self._record_decoration(_rendering.error_text(delta.turn_error.message))
     elif kind == 'turn_interrupted':
+      if self._stream_pane.preview is not None:
+        self._abort_stream()
       self._stream_pane.clear_pending()
       self._record_decoration(_rendering.interrupt_text())
     elif kind == 'turn_completed':
@@ -2594,11 +2622,6 @@ class _Repl:
       include_welcome_notices=not self._live_notices(),
       theme_name=_themes.current(
         self._state.extensions, self._state.extension_themes
-      ),
-      cropped_history_hint=(
-        'Ctrl+L to restore history up to --scrollback-limit'
-        if viewport_only
-        else None
       ),
     )
     self.dispatch(_actions.HistoryRendered(width))
@@ -2866,6 +2889,11 @@ class _Repl:
     launch_configuration = launch_configuration.updated({
       'approval_mode': self._state.status_bar.approval_mode,
     })
+    if self._remote_endpoint is None:
+      inference = launch_configuration.inference_config(
+        self.model, self.reasoning_effort, remote=False
+      )
+      _models.validate_connection(inference.api, inference.base_url)
     self._extension_host.validate_selection()
     self._host_tools_registry.validate_selection()
     self._host_tools_registry.worker_starting()
@@ -3223,8 +3251,12 @@ class _Repl:
     self._app.erase_when_done = False
     self.dispatch(_actions.SetActive(True))
     try:
-      # Accept raw input before the first visible frame, not just run_async's redraw.
-      with self._app.input.raw_mode():
+      # Supervised views must not restore raw mode after their owner has exited.
+      with (
+        contextlib.nullcontext()
+        if screen is not None
+        else self._app.input.raw_mode()
+      ):
         self._app.prepare_for_run()
         self._paint_activation(show_context=show_context, label=label)
 
@@ -3448,7 +3480,8 @@ async def _activate_pending(
     before_render=replaced,
   )
   app.ttimeoutlen = 0.05
-  with app.input.raw_mode():
+  # Only standalone views own terminal modes; the supervisor already owns them.
+  with contextlib.nullcontext() if screen is not None else app.input.raw_mode():
     if screen is None:
       app.prepare_for_run()
       app.output.erase_screen()
@@ -3618,6 +3651,12 @@ async def handle_workspace_effect(
 ) -> None:
   """Apply an emitted workspace command at the composition root."""
   match effect:
+    case _effects.OpenNewWorkspace():
+      agent.dispatch(_actions.OpenSelector(controller.new_workspace_selector()))
+    case _effects.CreateWorkspace(kind):
+      identity = await controller.create_workspace(kind)
+      if await controller.select_workspace(identity):
+        agent.handoff('workspace')
     case _effects.OpenFolder(path):
       source = controller.selected
       if not isinstance(source, _workspaces.AgentWorkspace):
@@ -3764,8 +3803,10 @@ async def _activate_workspace(
       notice='Preparing sandbox…',
       draft=workspace.draft or _actions.ComposerState(),
       preferences=client_pb2.WorkspacePreferences(
-        model=agent.model,
-        reasoning_effort=agent.reasoning_effort,
+        definition=mirror_pb2.AgentDefinition(
+          model=agent.model,
+          reasoning_effort=agent.reasoning_effort,
+        ),
         approval_mode=agent_pb2.APPROVAL_MODE_AUTO
         if agent.approval_mode == 'auto'
         else agent_pb2.APPROVAL_MODE_HITL,
@@ -3987,7 +4028,6 @@ async def run_tui(
     screen = _workspace_application.WorkspaceApplication(
       full_screen=True,
       min_redraw_interval=1 / _MAX_REDRAW_FPS,
-      max_render_postpone_time=0,
       refresh_interval=0.1,
       mouse_support=True,
     )

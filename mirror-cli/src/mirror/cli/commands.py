@@ -57,7 +57,6 @@ class CommandId(enum.Enum):
   HELP = 'help'
   STATUS = 'status'
   RESUME = 'resume'
-  NEW = 'new'
   RENAME = 'rename'
   TAG = 'tag'
   REWIND = 'rewind'
@@ -94,6 +93,8 @@ class CommandDef:
   available_when_busy: bool = False
   hidden: bool = False
   extension_id: str | None = None
+  # Reference the action, never a default key that configuration can replace.
+  shortcut_action: actions.Action | None = None
 
   def names(self) -> tuple[str, ...]:
     return (self.name, *self.aliases)
@@ -214,7 +215,7 @@ def _handle_resume(_: CommandContext, args: str) -> actions.Action:
   return actions.ResumeSession(args)
 
 
-def _handle_new(_: CommandContext, args: str) -> actions.Action:
+def _handle_clear(_: CommandContext, args: str) -> actions.Action:
   del args
   return actions.NewSession()
 
@@ -289,14 +290,24 @@ def _handle_extensions_remove(_: CommandContext, args: str) -> actions.Action:
   return actions.RemoveExtension()
 
 
-def _handle_clear(_: CommandContext, args: str) -> actions.Action:
-  del args
-  return actions.ClearScreen()
-
-
 def _handle_quit(_: CommandContext, args: str) -> actions.Action:
   del args
   return actions.QuitApp()
+
+
+def _handle_view(context: CommandContext, args: str) -> actions.Action:
+  del context
+  token = args.strip().lower()
+  if not token:
+    return actions.CycleViewMode()
+  try:
+    mode = actions.ViewMode(token)
+  except ValueError:
+    modes = ', '.join(mode.value for mode in actions.ViewMode)
+    return actions.ShowText(
+      f'Unknown view mode: {args}. Modes: {modes}', style='ui.warning'
+    )
+  return actions.SetViewMode(mode)
 
 
 COMMANDS: tuple[CommandDef, ...] = (
@@ -309,7 +320,7 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'status',
-    'Show model, session and conversation ids, and working directory',
+    'Show session details',
     _handle_status,
     id=CommandId.STATUS,
     available_when_busy=True,
@@ -322,14 +333,8 @@ COMMANDS: tuple[CommandDef, ...] = (
     arguments=OptionalArguments('[reference]'),
   ),
   CommandDef(
-    'new',
-    'Start a new conversation',
-    _handle_new,
-    id=CommandId.NEW,
-  ),
-  CommandDef(
     'tag',
-    'Choose or customize a workspace icon; Ctrl+S cycles tags',
+    'Choose or customize a workspace icon',
     _handle_tag,
     id=CommandId.TAG,
     arguments=OptionalArguments('[options]'),
@@ -354,6 +359,7 @@ COMMANDS: tuple[CommandDef, ...] = (
     'Search and switch between workspaces',
     _handle_workspaces,
     id=CommandId.WORKSPACES,
+    shortcut_action=actions.OpenWorkspaces(),
     available_when_busy=True,
   ),
   CommandDef(
@@ -366,13 +372,13 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'close',
-    'Close this workspace without deleting its directory',
+    'Close workspace, keeping files',
     _handle_close,
     id=CommandId.CLOSE,
   ),
   CommandDef(
     'worktree',
-    'Create a worktree workspace from the latest main',
+    'Create a worktree workspace from the remote default branch',
     _handle_worktree,
     id=CommandId.WORKTREE,
     arguments=OptionalArguments('[name]'),
@@ -381,7 +387,7 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'sandbox',
-    'Create a workspace whose tools run in a local microVM',
+    'Create a sandboxed workspace',
     _handle_sandbox,
     id=CommandId.SANDBOX,
     arguments=OptionalArguments('[name]'),
@@ -390,7 +396,7 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'drop',
-    'Delete this managed environment and close its agent',
+    'Delete this managed workspace',
     _handle_drop,
     id=CommandId.DROP,
   ),
@@ -399,6 +405,15 @@ COMMANDS: tuple[CommandDef, ...] = (
     'Enable or disable extensions',
     _handle_extensions,
     id=CommandId.EXTENSIONS,
+    available_when_busy=True,
+  ),
+  CommandDef(
+    'view',
+    'Cycle view: detail, default, focus',
+    _handle_view,
+    id=CommandId.VIEW,
+    shortcut_action=actions.CycleViewMode(),
+    arguments=OptionalArguments('[mode]'),
     available_when_busy=True,
   ),
   CommandDef(
@@ -431,7 +446,7 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'clear',
-    'Flush terminal scrollback and redraw (conversation is preserved)',
+    'Start a new conversation',
     _handle_clear,
     id=CommandId.CLEAR,
   ),
@@ -461,7 +476,10 @@ def menu_commands(
     return None
   commands_to_search = COMMANDS if available is None else available
   return selection.fuzzy_matches(
-    tuple(command for command in commands_to_search if not command.hidden),
+    sorted(
+      (command for command in commands_to_search if not command.hidden),
+      key=lambda command: command.name.casefold(),
+    ),
     query,
     CommandDef.names,
   )

@@ -4,7 +4,7 @@ from rich import cells
 from mirror.cli import rendering, state, stream
 
 
-@pytest.mark.parametrize('width', [10, 32, 80])
+@pytest.mark.parametrize('width', [11, 32, 80])
 def test_code_panel_keeps_content_and_fits_terminal(width: int) -> None:
   rendered = rendering.strip_ansi(
     rendering.renderable_to_ansi(
@@ -45,7 +45,7 @@ def test_heading_is_left_aligned_and_reasoning_stays_separate() -> None:
   lines = output.splitlines()
   assert lines[0].rstrip() == 'Thoughts'
   assert not lines[1].strip()
-  assert '\n  Answer' in output or '● Answer' in output
+  assert '\n   Answer' in output or '●  Answer' in output
 
 
 @pytest.mark.parametrize('theme_name', ['dark', 'light', 'terminal', 'mono'])

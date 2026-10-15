@@ -16,6 +16,7 @@ from typing import Self
 from google.protobuf import message as protobuf_message
 from mirror.protocol import (
   client_pb2,
+  mirror_pb2,
 )
 
 from mirror import workspace
@@ -126,6 +127,9 @@ class Store:
       pathlib.Path(path) if path is not None else default_database_path()
     )
     self.path.parent.mkdir(parents=True, exist_ok=True)
+    if self.path != pathlib.Path(':memory:'):
+      # SQLite copies the database mode to new journal/WAL/SHM files.
+      os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600))
     self._db = sqlite3.connect(self.path, timeout=5)
     self._db.row_factory = sqlite3.Row
     self._db.execute('PRAGMA foreign_keys = ON')
@@ -601,12 +605,23 @@ class Store:
 
   @staticmethod
   def _preferences(value: bytes) -> client_pb2.WorkspacePreferences:
+    """Decode stored preferences, moving pre-`definition` fields into it.
+
+    `AgentDefinition` reuses the field numbers those fields had, so decoding
+    old bytes as a definition recovers them.
+    """
     try:
-      return client_pb2.WorkspacePreferences.FromString(bytes(value))
+      preferences = client_pb2.WorkspacePreferences.FromString(bytes(value))
+      if not preferences.HasField('definition'):
+        legacy = mirror_pb2.AgentDefinition.FromString(bytes(value))
+        legacy.DiscardUnknownFields()
+        if legacy.ListFields():
+          preferences.definition.CopyFrom(legacy)
     except (protobuf_message.DecodeError, TypeError) as error:
       raise ValueError(
         'Cannot restore corrupt workspace configuration'
       ) from error
+    return preferences
 
   def worktree_overlays(
     self, repository_key: str

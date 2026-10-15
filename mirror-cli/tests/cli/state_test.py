@@ -1055,3 +1055,22 @@ def test_server_models_are_picked_only_in_remote_tabs() -> None:
   assert reducer.reduce(_state(), pick)[1] == (
     _effects.EmitError('server models are picked from a remote tab'),
   )
+
+
+@pytest.mark.parametrize(
+  ('action', 'effect'),
+  [
+    (actions.OpenNewWorkspace(), _effects.OpenNewWorkspace()),
+    (actions.CreateWorkspace('normal'), _effects.CreateWorkspace('normal')),
+    (actions.CreateWorkspace('worktree'), _effects.CreateWorkspace('worktree')),
+  ],
+)
+def test_workspace_shortcuts_require_supervision(
+  action: actions.Action, effect: _effects.Effect
+) -> None:
+  _, emitted = reducer.reduce(_state(worktree_supervised=True), action)
+  assert emitted == (effect,)
+  _, emitted = reducer.reduce(_state(), action)
+  assert emitted == (
+    _effects.EmitError('workspace supervision is unavailable'),
+  )

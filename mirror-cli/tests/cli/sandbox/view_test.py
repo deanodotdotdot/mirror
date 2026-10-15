@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import pathlib
 import sys
+from collections.abc import Iterator
 from unittest import mock
 
 import pyte
 import pytest
 from prompt_toolkit import buffer, data_structures
-from prompt_toolkit.application import current
+from prompt_toolkit.application import current, dummy
+from prompt_toolkit.input import base as input_base
 from prompt_toolkit.input import defaults
 from prompt_toolkit.layout import containers, mouse_handlers, screen
 from prompt_toolkit.output import base, vt100
@@ -17,8 +20,8 @@ from prompt_toolkit.output import base, vt100
 from mirror.cli import (
   actions,
   cli,
-  pending_view,
   extension,
+  pending_view,
   rendering,
   state,
   workspace_application,
@@ -30,6 +33,23 @@ from mirror.cli.extensions.repository_status import (
   extension as repository_status,
 )
 from mirror.cli.sandbox import setup as sandbox_setup
+
+
+@contextlib.contextmanager
+def _pending_session(output: base.Output) -> Iterator[input_base.PipeInput]:
+  """Open a piped app session with one application current until the view runs.
+
+  The CLI activates a pending view on its running workspace screen. Without an
+  application current, each `get_app()` while the view builds its layout
+  constructs a fresh `DummyApplication` with every default key binding, and
+  the few hundred calls spend seconds of a test's bound before a key is read.
+  """
+  with (
+    defaults.create_pipe_input() as pipe,
+    current.create_app_session(input=pipe, output=output),
+    current.set_app(dummy.DummyApplication()),
+  ):
+    yield pipe
 
 
 @pytest.mark.asyncio
@@ -78,10 +98,7 @@ async def test_pending_sandbox_owns_approval_and_navigation(
     'run_async',
     without_sequence_timeout,
   )
-  with (
-    defaults.create_pipe_input() as pipe,
-    current.create_app_session(input=pipe, output=base.DummyOutput()),
-  ):
+  with _pending_session(base.DummyOutput()) as pipe:
     pipe.send_text(keys)
     result = await asyncio.wait_for(
       cli._activate_pending(pending, containers.Window(height=0)), 3
@@ -115,10 +132,7 @@ async def test_pending_sandbox_can_leave_running_or_failed_setup(
     error='startup failed' if failed else None,
     draft=actions.ComposerState('unfinished draft', 4),
   )
-  with (
-    defaults.create_pipe_input() as pipe,
-    current.create_app_session(input=pipe, output=base.DummyOutput()),
-  ):
+  with _pending_session(base.DummyOutput()) as pipe:
     pipe.send_text('\t')
     assert (
       await asyncio.wait_for(
@@ -181,11 +195,8 @@ async def test_pending_sandbox_renders_live_phase_and_spinner(
   monkeypatch.setattr(
     workspace_application.WorkspaceApplication, 'run_async', observe
   )
-  monkeypatch.setattr(spinner, 'render', lambda *args, **kwargs: [('', 'SPIN')])
-  with (
-    defaults.create_pipe_input() as pipe,
-    current.create_app_session(input=pipe, output=output),
-  ):
+  monkeypatch.setattr(spinner, 'render', lambda *args, **kwargs: [('', '*+')])
+  with _pending_session(output) as pipe:
     task = asyncio.create_task(
       cli._activate_pending(
         pending, containers.Window(height=0), extension_registry=registry
@@ -201,7 +212,7 @@ async def test_pending_sandbox_renders_live_phase_and_spinner(
       activity_row = next(
         i
         for i, line in enumerate(screen.display)
-        if 'SPIN Starting sandbox' in line
+        if '*+ Starting sandbox' in line
       )
       assert not screen.display[activity_row + 1].strip(' ⠂')
       assert screen.display[activity_row + 3].strip() == rendering.PROMPT
@@ -215,7 +226,7 @@ async def test_pending_sandbox_renders_live_phase_and_spinner(
       await asyncio.wait_for(frame.wait(), 3)
       screen = pyte.Screen(columns, rows)
       pyte.Stream(screen).feed(terminal.getvalue().decode())
-      assert 'SPIN Loading workspace' in '\n'.join(screen.display)
+      assert '*+ Loading workspace' in '\n'.join(screen.display)
       pipe.send_text('draft for the sandbox\t')
       assert await asyncio.wait_for(task, 3) == 'next'
       assert pending.draft == actions.ComposerState('draft for the sandbox', 21)
@@ -249,10 +260,7 @@ async def test_cached_sandbox_offers_empty_or_repository_copy(
     False,
   )
   pending = workspaces.SandboxWorkspace('sandbox', '◇ cached', source=source)
-  with (
-    defaults.create_pipe_input() as pipe,
-    current.create_app_session(input=pipe, output=base.DummyOutput()),
-  ):
+  with _pending_session(base.DummyOutput()) as pipe:
     pipe.send_text(keys)
     assert (
       await asyncio.wait_for(

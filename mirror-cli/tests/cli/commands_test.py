@@ -25,9 +25,9 @@ def test_path_guard() -> None:
 
 
 def test_menu_commands() -> None:
-  assert [c.name for c in commands.menu_commands('/') or ()] == [
+  assert [c.name for c in commands.menu_commands('/') or ()] == sorted(
     c.name for c in commands.COMMANDS
-  ]
+  )
   assert [c.name for c in commands.menu_commands('/he') or ()] == ['help']
   assert {c.name for c in commands.menu_commands('/ex') or ()} == {
     'quit',
@@ -92,7 +92,7 @@ def test_dispatch_help_sorts_builtin_and_extension_commands() -> None:
   )
   assert [
     command.name for command in commands.menu_commands('/', available) or ()
-  ] == ['quit', 'help', 'zulu', 'alpha']
+  ] == ['alpha', 'help', 'quit', 'zulu']
 
 
 def test_alias_override_matches_dispatch_completion_and_help() -> None:
@@ -206,9 +206,7 @@ def test_dispatch_outcomes() -> None:
 
   assert isinstance(commands.dispatch('/quit', _context()), actions.QuitApp)
   assert isinstance(commands.dispatch('/exit', _context()), actions.QuitApp)
-  assert isinstance(
-    commands.dispatch('/clear', _context()), actions.ClearScreen
-  )
+  assert isinstance(commands.dispatch('/clear', _context()), actions.NewSession)
 
   unknown = commands.dispatch('/nope', _context())
   assert isinstance(unknown, actions.ShowText) and unknown.style == 'ui.error'
@@ -228,7 +226,11 @@ def test_session_command_outcomes() -> None:
     actions.ResumeSession('abc123')
   )
   assert commands.dispatch('/resume', _context()) == actions.ResumeSession()
-  assert commands.dispatch('/new', _context()) == actions.NewSession()
+  assert commands.dispatch('/clear', _context()) == actions.NewSession()
+  assert commands.command_named('new') is None
+  assert commands.dispatch('/new', _context()) == actions.ShowText(
+    'Unknown command: /new. Type /help.', style='ui.error'
+  )
   assert commands.dispatch('/worktree', _context()) == actions.CreateWorktree()
   assert commands.dispatch('/worktree release-prep', _context()) == (
     actions.CreateWorktree('release-prep')
@@ -267,11 +269,7 @@ def test_busy_gates_commands() -> None:
     commands.dispatch('/worktree', _context(busy=True))
     == actions.CreateWorktree()
   )
-  for text in (
-    '/resume c1',
-    '/new',
-    '/drop',
-  ):
+  for text in ('/resume c1', '/drop'):
     outcome = commands.dispatch(text, _context(busy=True))
     assert isinstance(outcome, actions.ShowText)
     assert 'unavailable' in outcome.text

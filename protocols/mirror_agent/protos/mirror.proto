@@ -35,6 +35,12 @@ service MirrorRuntime {
   rpc BeginOAuthConnection(BeginOAuthConnectionRequest) returns (BeginOAuthConnectionResponse);
   rpc WaitOAuthConnection(WaitOAuthConnectionRequest) returns (WaitOAuthConnectionResponse);
   rpc ListProviders(ListProvidersRequest) returns (ListProvidersResponse);
+  // Saved agents belong to the caller; another principal's agents read as not found.
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+  rpc GetAgent(GetAgentRequest) returns (GetAgentResponse);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc UpdateAgent(UpdateAgentRequest) returns (UpdateAgentResponse);
+  rpc DeleteAgent(DeleteAgentRequest) returns (DeleteAgentResponse);
 }
 
 service McpGatewayService {
@@ -210,3 +216,90 @@ message Provider {
   string display_name = 2;
   ProviderSignIn sign_in = 3;
 }
+
+// How an agent behaves, shared by local workspaces and saved hosted agents.
+// Unset fields inherit the starting client's defaults.
+message AgentDefinition {
+  // Field numbers match the fields `mirror.agent.v1.WorkspacePreferences`
+  // held before it embedded this message, so the CLI can decode preferences
+  // it saved earlier as a definition. The reserved numbers are its other
+  // fields at the time.
+  reserved 2, 6;
+
+  // A level name such as `high`, or a non-negative integer token budget.
+  optional string reasoning_effort = 1;
+  optional string model = 3;
+  optional string system_prompt = 4;
+  message ToolAllowlist {
+    repeated string names = 1;
+  }
+  // This field is not supported yet for saved agents.
+  optional ToolAllowlist tools_allowlist = 5;
+  // A wire protocol name such as `openai-responses`. This field is not
+  // supported yet for saved agents.
+  optional string model_api = 7;
+  // This field is not supported yet for saved agents.
+  optional string model_base_url = 8;
+}
+
+message Agent {
+  string id = 1;
+  string name = 2;
+  // Increments on every applied update; `UpdateAgent` checks it.
+  uint32 revision = 3;
+  AgentDefinition definition = 4;
+}
+
+message CreateAgentRequest {
+  // Client-chosen UUID. Retrying with the same name and definition returns the
+  // agent created first; reusing it for anything else is `ALREADY_EXISTS`.
+  string agent_id = 1;
+  string name = 2;
+  AgentDefinition definition = 3;
+}
+
+message CreateAgentResponse {
+  Agent agent = 1;
+}
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+message GetAgentResponse {
+  Agent agent = 1;
+}
+
+message ListAgentsRequest {
+  uint64 offset = 1;
+  uint32 limit = 2;
+}
+
+message ListAgentsResponse {
+  // Definitions omit `system_prompt`, so a page stays small; `GetAgent`
+  // returns the full definition.
+  repeated Agent agents = 1;
+  uint64 total = 2;
+}
+
+// Replaces the agent's name and definition.
+message UpdateAgentRequest {
+  string agent_id = 1;
+  // The revision the update is based on. A retry of an applied update returns
+  // the agent unchanged; any other stale revision is `ABORTED`.
+  uint32 expected_revision = 2;
+  string name = 3;
+  // Required: an omitted definition is `INVALID_ARGUMENT`, not a reset.
+  AgentDefinition definition = 4;
+}
+
+message UpdateAgentResponse {
+  Agent agent = 1;
+}
+
+// Deleting an agent that does not exist succeeds, so retries are safe.
+message DeleteAgentRequest {
+  string agent_id = 1;
+}
+
+message DeleteAgentResponse {}

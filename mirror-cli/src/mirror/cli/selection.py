@@ -6,6 +6,7 @@ import dataclasses
 from collections.abc import Awaitable, Callable, Sequence
 
 from prompt_toolkit import formatted_text
+from rich import console
 
 from mirror.cli.components import fuzzy_score
 
@@ -40,6 +41,8 @@ class Choice:
   status: str | None = None
   # Presentation only: headings never become selectable values.
   section: str = ''
+  # A trailing column when the fixed-width row has room.
+  shortcut: str = ''
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,5 +71,5 @@ class Selector[ActionT]:
   # When set, Left and Right call this with the highlighted choice's value and
   # -1 or 1, so a choice can step through values without another selector.
   on_adjust: Callable[[str, int], ActionT] | None = None
-  # Wrapped context above the choices, scrollable in a bounded viewport.
-  header: str = ''
+  # Context above the choices, scrollable in a bounded viewport.
+  header: console.RenderableType = ''

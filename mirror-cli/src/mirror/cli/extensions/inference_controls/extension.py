@@ -415,7 +415,7 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
   def tips(self) -> tuple[str, ...]:
     return (
       '/model picks a different model for the next request',
-      '/reasoning adjusts how much the model reasons',
+      '/effort adjusts how much the model reasons',
     )
 
   @override
@@ -428,7 +428,7 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
       ),
       commands.CommandDef(
         'logout',
-        'Remove the saved Reflection API key (not environment credentials)',
+        'Remove the saved Reflection API key',
         _logout,
       ),
       commands.CommandDef(
@@ -439,7 +439,7 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
         available_when_busy=True,
       ),
       commands.CommandDef(
-        'reasoning',
+        'effort',
         'Set reasoning effort',
         _set_reasoning,
         arguments=commands.OptionalArguments('[effort]'),

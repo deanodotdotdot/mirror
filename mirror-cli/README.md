@@ -15,7 +15,7 @@ features include:
 - **[Beam and other models](#providers-and-models).** Switch providers or use a compatible self-hosted endpoint.
 - **[Opt-in memory](#memory).** Keep preferences and useful repository context across sessions.
 - **[Project instructions](#project-instructions) and [skills](#skills).** Give the agent your conventions and reusable task procedures.
-- **[MCP and Python extensions](docs/extensions.md).** Connect external tools and customize commands, shortcuts, and terminal widgets.
+- **[MCP and Python extensions](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/extensions.md).** Connect external tools and customize commands, shortcuts, and terminal widgets.
 
 Mirror CLI is still in development. Please [share your feedback](#feedback-and-contributions)
 to help us improve it.
@@ -26,17 +26,16 @@ to help us improve it.
 
 ## Install
 
-Install a supplied release wheel with
-[uv](https://docs.astral.sh/uv/getting-started/installation/). Replace the path
-with the wheel for your platform:
+Install with [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-uv tool install '/path/to/mirror-<version>-py3-none-<platform>.whl'
+uv tool install mirror-agent
 mirror --version
 ```
 
 Release wheels include the native agent executable and ripgrep. You do not need
-Rust or a separate agent installation to use one.
+Rust or a separate agent installation to use one. The `mirror-agent-py` Python
+embedding bindings are not part of this release and are not included in the package.
 
 The public PyPI package named `mirror` is unrelated. Do not install Mirror with
 `uv tool install mirror` or `pip install mirror`.
@@ -55,28 +54,31 @@ cd mirror
 ```
 
 This builds and runs your checkout without replacing the installed `mirror`.
-Rerun after editing. See [development checks](docs/building.md#run-checks).
+Rerun after editing. See [development checks](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/building.md#run-checks).
 
 ### Updates
 
 - Requires `uv` on `PATH`; interactive installs check PyPI and ask first.
 - Accept → verified side-by-side install; launch immediately and on later runs.
 - Decline/failure → current version. Original installation and user data stay intact.
-- `--no-update`: skip checking. `--update`: retry with a longer timeout.
+- `--no-update`: skip checking, but still use a newer cached release.
+- `--update`: retry with a longer timeout.
 - `MIRROR_SKIP_UPDATE=1`: bypass checks and cached releases.
+- Cache: `$XDG_DATA_HOME/mirror/releases/public`, default `~/.local/share/mirror/releases/public`.
 - Noninteractive runs: no checks/prompts. Source checkouts: no opt-in.
 
 ### Requirements
 
-| Requirement | Supported |
-| --- | --- |
-| macOS | macOS 15 or later on Apple Silicon |
-| Linux | x86-64 or ARM64, with glibc 2.28 or later |
-| Python | 3.12 or later; uv can download a compatible interpreter |
+| Requirement  | Supported                                                      |
+| ------------ | -------------------------------------------------------------- |
+| macOS        | macOS 15 or later on Apple Silicon                             |
+| Linux        | x86-64 or ARM64, with glibc 2.28 or later                      |
+| Python       | 3.12 or later; uv can download a compatible interpreter        |
 | Model access | Credentials for a supported provider, or a compatible endpoint |
 
-Native Windows is not supported. Git or Jujutsu is needed for repository
-worktree management; Mirror can also work in a plain directory.
+Native Windows is not supported. Local shell tools require `/bin/bash`.
+Git or Jujutsu is needed for repository worktree management; Mirror can also
+work in a plain directory.
 
 ## Quick start
 
@@ -84,7 +86,7 @@ Start Mirror in the directory you want it to work in:
 
 ```bash
 cd /path/to/your/project
-mirror --api reflection --approval-mode approve
+mirror
 ```
 
 Create an API key at
@@ -106,10 +108,9 @@ Find why the parser accepts an empty identifier. Fix it, add a regression test,
 and run the relevant tests.
 ```
 
-Review tool requests as they appear and inspect the resulting changes. The
-example explicitly selects manual approval. This is also the default unless
-automatic approval was previously saved in your configuration. Use
-`/settings` → **CLI mode** to change it while Mirror is running.
+Review tool requests as they appear and inspect the resulting changes. Manual
+approval is the default unless automatic approval was previously saved in your
+configuration. Use `/settings` → **CLI mode** to change it while Mirror is running.
 
 Press `Escape` to interrupt active work, then give a revised instruction. Type
 `/` to browse commands, `/help` for help, and `/model` to choose another model.
@@ -126,14 +127,14 @@ calling a model or running real tools.
 Select a provider with `--api` and a model with `--model`. Exporting a provider's
 API key alone does not select that provider.
 
-| Provider | `--api` value | Authentication |
-| --- | --- | --- |
-| Reflection | `reflection` | `/login`, a saved Reflection key, or `REFLECTION_API_KEY` |
-| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
-| OpenAI Responses | `openai-responses` | `OPENAI_API_KEY` |
-| Anthropic Messages | `anthropic-messages` | `ANTHROPIC_API_KEY` |
-| ChatGPT plan through Codex | `openai-codex-responses` | Existing Codex CLI login |
-| Custom Chat Completions endpoint | `openai-chat-completions` | Endpoint-specific; `--api-key` if required |
+| Provider                         | `--api` value             | Authentication                                            |
+| -------------------------------- | ------------------------- | --------------------------------------------------------- |
+| Reflection                       | `reflection`              | `/login`, a saved Reflection key, or `REFLECTION_API_KEY` |
+| OpenRouter                       | `openrouter`              | `OPENROUTER_API_KEY`                                      |
+| OpenAI Responses                 | `openai-responses`        | `OPENAI_API_KEY`                                          |
+| Anthropic Messages               | `anthropic-messages`      | `ANTHROPIC_API_KEY`                                       |
+| ChatGPT plan through Codex       | `openai-codex-responses`  | Existing Codex CLI login                                  |
+| Custom Chat Completions endpoint | `openai-chat-completions` | Endpoint-specific; `--api-key` if required                |
 
 For example, with OpenRouter:
 
@@ -163,10 +164,10 @@ mirror --api openai-codex-responses
 Mirror reads `~/.codex/auth.json` by default. Set `MIRROR_CODEX_AUTH_PATH` to use
 another credential file. An OpenAI API key does not replace that plan login.
 
-Inside a conversation, `/model` opens the model picker and `/reasoning` selects
+Inside a conversation, `/model` opens the model picker and `/effort` selects
 reasoning effort. Model and reasoning changes apply to the next model request.
 Each workspace keeps its own selection. You can add named models and custom
-endpoints in [`~/.mirror/models.json`](docs/configuration.md#model-picker).
+endpoints in [`~/.mirror/models.json`](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md#model-picker).
 
 Without an explicit provider, a saved selection, or configured model routing,
 Mirror uses Reflection. A custom endpoint selects Chat Completions instead.
@@ -251,7 +252,7 @@ mirror --continue
 
 `--continue` resumes the most recent conversation in each worktree. Use
 `/resume` to browse saved conversations, or `/resume <id-or-prefix>` to choose
-one directly. `/new` starts a fresh conversation in the current workspace.
+one directly. `/clear` starts a fresh conversation in the current workspace.
 
 `/rewind` branches conversation history from an earlier message. It does not
 undo changes to files; use version control or backups for that.
@@ -270,9 +271,9 @@ In a Git or Jujutsu repository, create another workspace:
 /worktree parser-fix
 ```
 
-Mirror creates a separate checkout from `origin/main` and starts its own agent.
-This requires access to the repository's `origin` remote and its `main` branch.
-Local edits in the current checkout are not copied to the new worktree.
+Mirror starts a separate checkout and agent from the default branch of `origin`
+(or the sole remote). Fetching is best-effort; offline it uses the cached default
+or local committed revision. Local edits are not copied.
 
 Give the new agent its task, then use `Tab` and `Shift+Tab` to switch worktree
 tabs. Agents keep working when you switch tabs. `/workspaces` opens a searchable
@@ -296,65 +297,103 @@ sandbox's VM and clone after you confirm. To bring the agent's commits into your
 own checkout, run `git fetch ~/.mirror/sandboxes/<name> mirror/<name>` there; treat
 the clone like a repository from someone else, since the VM can change any file
 in it. Its Git config can run commands, so do not run Git inside the clone;
-Mirror's status line and checkpoints skip it too. [Configuration](docs/configuration.md#sandbox-workspaces)
+Mirror's status line and checkpoints skip it too. [Configuration](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md#sandbox-workspaces)
 covers the image, allowlist and VM size.
 
 ### Command reference
 
-| Task | Command |
-| --- | --- |
-| Show help | `/help` |
-| Select a model or reasoning effort | `/model`, `/reasoning` |
-| Sign in to Reflection or remove its saved key | `/login`, `/logout` |
-| Start or resume a conversation | `/new`, `/resume [id-or-prefix]` |
-| Name the current worktree | `/rename <alias>` |
-| Branch conversation history | `/rewind` |
-| Compact context | `/compact` |
-| Create or switch workspaces | `/worktree [name]`, `/workspaces` |
-| Open an existing directory | `/folder <path>` |
-| Create a [sandbox workspace](#sandbox-workspaces) | `/sandbox [name]` |
-| Close a workspace without deleting files | `/close` |
-| Choose or edit [workspace tags](docs/workspace-tags.md) | `/tag` |
-| Show session information | `/status` |
-| Choose tool approval mode | `/settings` → **CLI mode** |
-| Change transcript detail | `/view` |
-| Open a file in your editor | `/editor` |
-| Turn memory on or off | `/settings` → Memory |
-| Check or import memories | `/memory`, `/memory import` |
-| Manage service connections | `/connect`, `/connections`, `/disconnect` |
-| Manage extensions | `/extensions`, `/extensions-add`, `/extensions-update`, `/extensions-remove` |
-| Clear terminal scrollback | `/clear` |
-| Exit | `/quit` or `/exit` |
+| Task                                                                                                                  | Command                                                                      |
+| --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Show help                                                                                                             | `/help`                                                                      |
+| Select a model or reasoning effort                                                                                    | `/model`, `/effort`                                                          |
+| Sign in to Reflection or remove its saved key                                                                         | `/login`, `/logout`                                                          |
+| Start or resume a conversation                                                                                        | `/clear`, `/resume [id-or-prefix]`                                           |
+| Name the current worktree                                                                                             | `/rename <alias>`                                                            |
+| Branch conversation history                                                                                           | `/rewind`                                                                    |
+| Compact context                                                                                                       | `/compact`                                                                   |
+| Create or switch workspaces                                                                                           | `/worktree [name]`, `/workspaces`                                            |
+| Open an existing directory                                                                                            | `/folder <path>`                                                             |
+| Create a [sandbox workspace](#sandbox-workspaces)                                                                     | `/sandbox [name]`                                                            |
+| Close a workspace without deleting files                                                                              | `/close`                                                                     |
+| Choose or edit [workspace tags](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/workspace-tags.md) | `/tag`                                                                       |
+| Show session information                                                                                              | `/status`                                                                    |
+| Cycle tool approval mode                                                                                              | `/approvals`                                                                 |
+| Change transcript detail                                                                                              | `/view`                                                                      |
+| Open a file in your editor                                                                                            | `/editor`                                                                    |
+| Turn memory on or off                                                                                                 | `/settings` → Memory                                                         |
+| Check or import memories                                                                                              | `/memory`, `/memory import`                                                  |
+| Manage service connections                                                                                            | `/connect`, `/connections`, `/disconnect`                                    |
+| Manage extensions                                                                                                     | `/extensions`, `/extensions-add`, `/extensions-update`, `/extensions-remove` |
+| Exit                                                                                                                  | `/quit` or `/exit`                                                           |
 
 Extension commands appear when the relevant extension is enabled. Run
 `mirror --help` for the full list of launch flags.
 
 ### Keyboard shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Enter` | Send the prompt |
-| `Ctrl+J` | Insert a newline when command completion is closed |
-| `Escape` | Interrupt work or dismiss a menu |
-| `Tab` / `Shift+Tab` | Switch worktree tabs when a picker or completion menu is closed |
-| `Ctrl+R` | Browse prompt history |
-| `Ctrl+P` | Open the editor picker |
-| `Ctrl+T` | Cycle transcript detail |
-| `Ctrl+S` | Cycle the current workspace tag |
-| `Ctrl+O` | Open the workspace picker |
-| `F2` | Toggle tool approval mode |
-| `Ctrl+C` | Dismiss a menu, clear a draft, interrupt work, or quit when idle |
-| `Ctrl+D` | Quit immediately |
+Type `/` to see shortcuts in the command menu's last column. Hints reflect your
+keybinding overrides. For example, `/approvals` cycles tool approval mode and
+shows F2 by default.
+
+| Key                 | Action                                                           |
+| ------------------- | ---------------------------------------------------------------- |
+| `Enter`             | Send the prompt                                                  |
+| `Ctrl+J`            | Insert a newline when command completion is closed               |
+| `Escape`            | Interrupt work or dismiss a menu                                 |
+| `Tab` / `Shift+Tab` | Switch worktree tabs when a picker or completion menu is closed  |
+| `Ctrl+R`            | Browse prompt history                                            |
+| `Ctrl+P`            | Open the editor picker                                           |
+| `Ctrl+T`            | Cycle transcript detail                                          |
+| `Ctrl+S`            | Cycle the current workspace tag                                  |
+| `Ctrl+O`            | Open the workspace picker                                        |
+| `F2`                | Toggle tool approval mode                                        |
+| `Ctrl+C`            | Dismiss a menu, clear a draft, interrupt work, or quit when idle |
+| `Ctrl+D`            | Quit immediately                                                 |
 
 Shortcuts depend on the active menu or prompt. You can change them in
-[`~/.mirror/keybindings.json`](docs/configuration.md#keybindings).
+[`~/.mirror/keybindings.json`](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md#keybindings).
 
 ## Noninteractive use
 
+First open Mirror interactively in that directory to accept the usage and
+folder notices. Provide credentials through the environment or a saved login.
+`exec` cannot prompt or approve tools: calls requiring approval fail unless you
+deliberately select automatic approval with `--approval-mode auto`.
+
+Passing a prompt is shorthand for `mirror exec PROMPT`. Both run one session
+without the TUI and exit after printing the answer:
+
 ```bash
+mirror 'Explain this project' > answer.md
 mirror exec 'Explain this project' > answer.md
 mirror exec < prompt.txt
 ```
+
+## Use Mirror from an ACP client
+
+`mirror acp` serves the [Agent Client Protocol](https://agentclientprotocol.com)
+on stdin/stdout, so clients such as [Omnigent](https://github.com/omnigent-ai/omnigent)
+or Zed can drive Mirror as a coding agent. Each client session starts its own
+agent worker in the client's working directory; prompts stream back as text,
+thinking, and tool calls, tool approvals are forwarded to the client, and
+cancelling a prompt interrupts the turn. Model flags such as `--model` and
+`--reasoning-effort` apply as they do for `exec`.
+
+```yaml
+# ~/.omnigent/config.yaml
+acp:
+  agents:
+    - name: Mirror
+      command: mirror acp
+      inject_system_prompt: false
+```
+
+Then run `omni run --harness acp:mirror`. Like `exec`, `mirror acp` requires
+provider credentials from the environment or a saved login, and the usage and
+folder notices must already be accepted interactively for the directory.
+A model saved for a worktree applies from the directory `mirror acp` is
+launched in, not from each session's `cwd`, so start it in the project it
+should serve.
 
 ## Customize Mirror
 
@@ -390,6 +429,7 @@ For example, create `.agents/skills/review-api/SKILL.md`:
 name: review-api
 description: Review API changes for compatibility and error handling.
 ---
+
 Check request validation, response compatibility, and failure paths.
 Identify the relevant tests and report any missing coverage.
 ```
@@ -410,7 +450,7 @@ turn first. `/memory` shows its status. The memory store lives at
 `/memory import` imports memories from Claude Code and Codex on this machine.
 Memory files are stored locally, and relevant memories are included in model
 context. Remote sessions do not have memory. See the
-[memory configuration guide](docs/configuration.md#memory) for source selection
+[memory configuration guide](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md#memory) for source selection
 and storage details.
 
 ### MCP connections
@@ -434,7 +474,7 @@ then use `/connect <name>`. Each file is one server definition, without an
 
 Mirror supports stdio and Streamable HTTP, including OAuth and bearer
 credentials. CLI-hosted MCP tools are exposed to local agent sessions; remote
-sessions use their server-owned tools. See [Extensions and MCP](docs/extensions.md)
+sessions use their server-owned tools. See [Extensions and MCP](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/extensions.md)
 for authentication, tool selection, and timeouts.
 
 ### Extensions
@@ -446,19 +486,19 @@ tools. Put local Python extensions under `~/.mirror/extensions/` or a project's
 
 External extensions require consent before import and run with your account's
 permissions. Only enable code you trust. See the
-[extension guide](docs/extensions.md) for installation, authoring, and examples.
+[extension guide](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/extensions.md) for installation, authoring, and examples.
 
 ### Configuration files
 
-| Location | Purpose |
-| --- | --- |
-| `~/.mirror/config.json` | Extension settings and saved approval preferences |
-| `~/.mirror/models.json` | Model picker entries and provider routing |
-| `~/.mirror/keybindings.json` | Keyboard shortcut overrides |
-| `~/.mirror/AGENTS.md` | Global instructions |
-| `~/.mirror/tool_approvals.json` | Remembered tool approvals |
+| Location                        | Purpose                                           |
+| ------------------------------- | ------------------------------------------------- |
+| `~/.mirror/config.json`         | Extension settings and saved approval preferences |
+| `~/.mirror/models.json`         | Model picker entries and provider routing         |
+| `~/.mirror/keybindings.json`    | Keyboard shortcut overrides                       |
+| `~/.mirror/AGENTS.md`           | Global instructions                               |
+| `~/.mirror/tool_approvals.json` | Remembered tool approvals                         |
 
-See [Configuration](docs/configuration.md) for formats, precedence, and supported
+See [Configuration](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md) for formats, precedence, and supported
 configuration overrides.
 
 ## Local data and safety
@@ -474,16 +514,16 @@ instructions, memories, and tool results, to the selected provider. Connected
 MCP servers and web services receive their tool requests. Review access before
 using Mirror with sensitive repositories.
 
-| Location | Contents |
-| --- | --- |
-| `~/.mirror/state.db` | Agent conversations |
-| `~/.mirror/state.db.locks/` | Locks for conversations open in a worker |
-| `~/.mirror/cli.db` | CLI history and workspace settings |
-| `~/.mirror/sandboxes/<name>/` | Sandbox workspace directories |
-| `~/.mirror/logs/<conversation-id>/` | Worker logs |
-| `~/.mirror/reflection_api_key` | Saved Reflection API key |
-| `~/.mirror/mcp/credentials/` | MCP credentials |
-| `~/.mirror/memory/` | Local memory store, when enabled |
+| Location                            | Contents                                 |
+| ----------------------------------- | ---------------------------------------- |
+| `~/.mirror/state.db`                | Agent conversations                      |
+| `~/.mirror/state.db.locks/`         | Locks for conversations open in a worker |
+| `~/.mirror/cli.db`                  | CLI history and workspace settings       |
+| `~/.mirror/sandboxes/<name>/`       | Sandbox workspace directories            |
+| `~/.mirror/logs/<conversation-id>/` | Worker logs                              |
+| `~/.mirror/reflection_api_key`      | Saved Reflection API key                 |
+| `~/.mirror/mcp/credentials/`        | MCP credentials                          |
+| `~/.mirror/memory/`                 | Local memory store, when enabled         |
 
 Conversation history, memories, and logs may contain sensitive information.
 Use `--database <path>` to select another agent database. Resuming a conversation
@@ -492,47 +532,45 @@ in only one worker at a time.
 
 Report suspected vulnerabilities privately to
 [developers@reflection.ai](mailto:developers@reflection.ai). See
-[SECURITY.md](SECURITY.md) for report scope and security boundaries.
+[SECURITY.md](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/SECURITY.md) for report scope and security boundaries.
 
 ## Upgrade and troubleshooting
 
-Exit Mirror and install the new supplied release wheel directly:
+Exit Mirror and upgrade the installed tool:
 
 ```bash
-uv tool install '/path/to/mirror-<version>-py3-none-<platform>.whl'
+uv tool upgrade mirror-agent
 mirror --version
 ```
-
-Use `--force` when replacing a wheel with the same package version. Avoid
-registry upgrades for the unrelated PyPI `mirror` package.
 
 Configuration and conversations live outside the tool installation in
 `~/.mirror/`. Back up that directory with Mirror stopped before changing
 versions if you need a recovery point. Restart with `mirror --continue`.
-An older executable may not understand state written by a newer release;
-reinstalling it is not a database rollback.
+To run an older installation without selecting a newer cached release, use
+`MIRROR_SKIP_UPDATE=1 mirror --continue`. An older executable may not understand
+state written by a newer release; reinstalling it is not a database rollback.
 
-| Problem | Check |
-| --- | --- |
-| `mirror: command not found` | Run `uv tool update-shell`, then restart your shell. |
-| Missing provider credentials | Select the intended `--api`; use `/login` for Reflection or provide that provider's credentials. |
-| ChatGPT plan authentication fails | Check the Codex login and the selected credential file. |
-| `/worktree` fails | Check Git or Jujutsu, access to `origin`, and the remote `main` branch. |
-| Conversation is already open | Close the Mirror process using it before resuming it elsewhere. |
-| An MCP tool or extension is missing | Check `/connections` or `/extensions` and the corresponding guide. |
-| Installation or upgrade fails | Resolve the reported network or permission error and retry; keep `~/.mirror/` for recovery. |
+| Problem                             | Check                                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `mirror: command not found`         | Run `uv tool update-shell`, then restart your shell.                                             |
+| Missing provider credentials        | Select the intended `--api`; use `/login` for Reflection or provide that provider's credentials. |
+| ChatGPT plan authentication fails   | Check the Codex login and the selected credential file.                                          |
+| `/worktree` fails                   | Check Git or Jujutsu, access to `origin`, and the remote `main` branch.                          |
+| Conversation is already open        | Close the Mirror process using it before resuming it elsewhere.                                  |
+| An MCP tool or extension is missing | Check `/connections` or `/extensions` and the corresponding guide.                               |
+| Installation or upgrade fails       | Resolve the reported network or permission error and retry; keep `~/.mirror/` for recovery.      |
 
 ## Documentation
 
-| Guide | What it covers |
-| --- | --- |
-| [Reflection API docs](https://developers.reflection.ai/introduction) | API access, authentication, models, and provider guides |
-| [Configuration](docs/configuration.md) | Providers, model routing, instructions, approvals, keybindings, and memory |
-| [Extensions and MCP](docs/extensions.md) | Service connections, custom servers, extension management, and authoring |
-| [Architecture](docs/architecture.md) | CLI, native worker, state, and conversation lifecycle |
-| [Terminal themes](docs/themes.md) | Palette roles, `/themes`, and live refresh |
-| [Workspace tags](docs/workspace-tags.md) | Tag workspaces and filter the picker |
-| [Develop from source](docs/building.md) | Run local changes, test, and build a wheel |
+| Guide                                                                                                  | What it covers                                                             |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| [Reflection API docs](https://developers.reflection.ai/introduction)                                   | API access, authentication, models, and provider guides                    |
+| [Configuration](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/configuration.md)   | Providers, model routing, instructions, approvals, keybindings, and memory |
+| [Extensions and MCP](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/extensions.md) | Service connections, custom servers, extension management, and authoring   |
+| [Architecture](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/architecture.md)     | CLI, native worker, state, and conversation lifecycle                      |
+| [Terminal themes](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/themes.md)        | Palette roles, `/themes`, and live refresh                                 |
+| [Workspace tags](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/workspace-tags.md) | Tag workspaces and filter the picker                                       |
+| [Develop from source](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/docs/building.md)  | Run local changes, test, and build a wheel                                 |
 
 The source includes a Python terminal client and a Rust agent worker. Release
 wheels bundle both. The build guide explains how to build your own copy from
@@ -542,23 +580,23 @@ the full exported source checkout.
 
 We welcome bug reports and feature requests through
 [GitHub issues](https://github.com/reflection-oss/mirror/issues). Search existing
-issues first, then use `/feedback` in the CLI or the
+issues first, then use the
 [GitHub issue form](https://github.com/reflection-oss/mirror/issues/new/choose).
-`/feedback` opens that form. Include your Mirror version, operating system,
+Include your Mirror version, operating system,
 terminal, reproduction steps, and relevant errors. Remove secrets and private
 information before posting.
 
 For now, we are not accepting external code or documentation contributions.
 We will consider opening up contributions in the future. If you would like to
-contribute, express your interest through `/feedback` or the GitHub issue form.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting guidance and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for discussion expectations.
+contribute, express your interest through the GitHub issue form.
+See [CONTRIBUTING.md](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/CONTRIBUTING.md) for reporting guidance and
+[CODE_OF_CONDUCT.md](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/CODE_OF_CONDUCT.md) for discussion expectations.
 
-Use the private [security reporting channel](SECURITY.md#reporting-a-vulnerability)
+Use the private [security reporting channel](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/SECURITY.md#reporting-a-vulnerability)
 for suspected vulnerabilities.
 
 ## License
 
-Mirror is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
+Mirror is licensed under [Apache-2.0](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/LICENSE). See [NOTICE](https://github.com/reflection-oss/mirror/blob/main/mirror-cli/NOTICE) for attribution.
 Third-party components retain their respective licenses. Native wheels include
 `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.txt` under `mirror/bin/`.

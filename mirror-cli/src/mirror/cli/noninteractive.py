@@ -142,11 +142,12 @@ async def _run(
     del error  # Raw transport errors can include provider payloads.
     events.put_nowait(None)
 
+  log_dir = pathlib.Path.home() / '.mirror' / 'logs' / conversation_id
   transport = local_rpc_client.Transport(
     worker_command,
     configuration.values,
     workspace=workspace,
-    log_dir=pathlib.Path.home() / '.mirror' / 'logs' / conversation_id,
+    log_dir=log_dir,
     on_message=on_message,
   )
   client = rpc_client.Client(
@@ -162,7 +163,8 @@ async def _run(
     await asyncio.wait_for(client.start(replay=False), timeout=30)
   except (OSError, RuntimeError):
     raise RuntimeError(
-      'could not start agent; check model authentication and worker configuration'
+      'could not start agent; check numeric limits, model authentication and '
+      f'worker configuration. See {log_dir / "stderr"} for details'
     ) from None
   try:
     client.enqueue(

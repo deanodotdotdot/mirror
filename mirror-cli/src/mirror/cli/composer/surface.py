@@ -45,13 +45,22 @@ def wrap_input(
   status_bar: containers.AnyContainer,
   *,
   theme_name: Callable[[], str | themes.Theme] = lambda: 'dark',
+  bash_mode: Callable[[], bool] = lambda: False,
 ) -> containers.HSplit:
   """Frame the input and status bar without duplicating an open menu border."""
   show_menu = filters.Condition(menu_visible)
   input_surface = containers.HSplit(
     [
       containers.ConditionalContainer(
-        containers.Window(height=1), filter=~show_menu
+        containers.Window(
+          controls.FormattedTextControl(
+            lambda: '─ Bash mode ' if bash_mode() else ''
+          ),
+          height=1,
+          char=lambda: '─' if bash_mode() else ' ',
+          style=lambda: 'class:ui.info bold' if bash_mode() else '',
+        ),
+        filter=~show_menu,
       ),
       containers.ConditionalContainer(
         layout.Columns([

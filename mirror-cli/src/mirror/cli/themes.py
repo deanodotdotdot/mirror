@@ -251,6 +251,7 @@ _CLASSES = {
   # Reverse-video selection turns status foregrounds into mismatched fills.
   'worktree-tab-selected worktree': 'selected',
   'worktree-tab-selected worktree-running': 'selected',
+  'worktree-tab-selected worktree-running ui.success': 'selected',
   'worktree-tab-selected worktree-attention': 'selected',
   'worktree-tab-selected worktree-failed': 'selected',
   'worktree-tab-selected activity-spinner-highlight': 'selected',
@@ -300,6 +301,7 @@ _CLASSES = {
   'menu-selected extension-off': 'menu-selected',
   'menu-selected worktree': 'menu-selected',
   'menu-selected worktree-running': 'menu-selected',
+  'menu-selected worktree-running ui.success': 'menu-selected',
   'menu-selected worktree-attention': 'menu-selected',
   'menu-selected worktree-failed': 'menu-selected',
   'menu-selected activity-spinner-highlight': 'menu-selected',
@@ -551,13 +553,14 @@ def prompt_style(name: str | Theme = 'dark') -> prompt_styles.Style:
   """Resolve semantic roles once per palette for the live application."""
   rich_styles = rich_theme(name).styles
   definitions = {
-    key: _prompt_style(rich_styles[f'ui.{role}'])
-    for key, role in _CLASSES.items()
-  }
-  definitions.update({
     key: _prompt_style(value)
     for key, value in rich_styles.items()
     if key.startswith('ui.')
+  }
+  # Component composites override the semantic accents they contain.
+  definitions.update({
+    key: _prompt_style(rich_styles[f'ui.{role}'])
+    for key, role in _CLASSES.items()
   })
   # Defaults apply once; a canvas class inherited through scroll panes can
   # otherwise overwrite nested surfaces on their unoccupied cells.

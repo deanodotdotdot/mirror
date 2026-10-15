@@ -27,6 +27,10 @@ class Result:
   returncode: int
 
 
+class ProcessError(RuntimeError):
+  """A process error with no uncertain execution outcome."""
+
+
 class Process(Protocol):
   """Byte streams and exit status; drain output concurrently before waiting."""
 
@@ -68,7 +72,9 @@ class _LocalProcess:
   async def wait(self) -> int:
     return await self._process.wait()
 
-  async def close(self) -> bool:
+  async def close(
+    self, termination_signal: signal.Signals, termination_timeout: float
+  ) -> bool:
     """Reap the process; report whether forced termination was necessary."""
     self.close_stdin()
 
@@ -88,18 +94,24 @@ class _LocalProcess:
       return False
     except TimeoutError:
       try:
-        os.killpg(self._process.pid, signal.SIGKILL)
+        os.killpg(self._process.pid, termination_signal)
       except ProcessLookupError:
         pass
       try:
-        async with asyncio.timeout(1):
+        async with asyncio.timeout(termination_timeout):
           await asyncio.shield(finishing)
       except TimeoutError:
-        finishing.cancel()
-        await asyncio.gather(finishing, return_exceptions=True)
-        raise RuntimeError(
-          'Workspace process did not close after termination'
-        ) from None
+        with contextlib.suppress(ProcessLookupError):
+          os.killpg(self._process.pid, signal.SIGKILL)
+        try:
+          async with asyncio.timeout(1):
+            await asyncio.shield(finishing)
+        except TimeoutError:
+          finishing.cancel()
+          await asyncio.gather(finishing, return_exceptions=True)
+          raise RuntimeError(
+            'Workspace process did not close after termination'
+          ) from None
       return True
 
 
@@ -112,6 +124,10 @@ class Shell:
     default=None, repr=False
   )
   prefix: tuple[str, ...] = ()
+  termination_signal: signal.Signals = dataclasses.field(
+    default=signal.SIGKILL, kw_only=True
+  )
+  termination_timeout: float = dataclasses.field(default=1, kw_only=True)
   validate: Callable[[], None] | None = dataclasses.field(
     default=None, repr=False
   )
@@ -145,7 +161,9 @@ class Shell:
       async def cleanup() -> None:
         forced = True
         try:
-          forced = await process.close()
+          forced = await process.close(
+            self.termination_signal, self.termination_timeout
+          )
         finally:
           if (forced or child.returncode) and self.on_abort is not None:
             await self.on_abort()

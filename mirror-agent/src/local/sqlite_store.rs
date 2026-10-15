@@ -5,6 +5,7 @@ use std::fs::OpenOptions;
 use std::fs::TryLockError;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,6 +20,7 @@ use prost::Message;
 use ring::digest::{digest, SHA256};
 use rusqlite::params;
 use rusqlite::Connection;
+use rusqlite::OpenFlags;
 use rusqlite::OptionalExtension;
 use rusqlite::TransactionBehavior;
 use uuid::Uuid;
@@ -428,7 +430,19 @@ fn connect(path: &Path) -> Result<Connection, StoreError> {
     {
         std::fs::create_dir_all(parent).map_err(persistence)?;
     }
-    let mut connection = Connection::open(path).map_err(persistence)?;
+    if !path.as_os_str().is_empty() && path != Path::new(":memory:") {
+        // SQLite copies the database mode to new journal/WAL/SHM files.
+        OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(persistence)?;
+    }
+    // Use the same filesystem path as creation and session locking, not a URI.
+    let mut connection =
+        Connection::open_with_flags(path, OpenFlags::default() & !OpenFlags::SQLITE_OPEN_URI)
+            .map_err(persistence)?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(persistence)?;

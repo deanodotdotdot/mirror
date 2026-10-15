@@ -201,7 +201,8 @@ class Transport:
   @staticmethod
   async def _append_log(path: pathlib.Path, content: bytes) -> None:
     def write() -> None:
-      with path.open('ab') as sink:
+      descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+      with os.fdopen(descriptor, 'ab') as sink:
         sink.write(content)
 
     writing = asyncio.create_task(asyncio.to_thread(write))

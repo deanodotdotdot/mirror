@@ -110,13 +110,13 @@ def test_sticky_summary_does_not_replace_copyable_user_history() -> None:
   _paint(selection, width=40)
   selection.mouse_handler(_event(mouse_events.MouseEventType.MOUSE_DOWN, 0, 0))
   selection.mouse_handler(_event(mouse_events.MouseEventType.MOUSE_UP, 39, 0))
-  assert copied == ['› FIRST ORIGINAL SECOND ORIGINAL that i…']
+  assert copied == ['›  FIRST ORIGINAL SECOND ORIGINAL that…']
 
   view.first()
   _paint(selection, width=40)
-  selection.mouse_handler(_event(mouse_events.MouseEventType.MOUSE_DOWN, 2, 1))
+  selection.mouse_handler(_event(mouse_events.MouseEventType.MOUSE_DOWN, 3, 1))
   selection.mouse_handler(_event(mouse_events.MouseEventType.MOUSE_UP, 39, 2))
-  assert copied[1] == 'FIRST ORIGINAL\n  SECOND ORIGINAL that is intact'
+  assert copied[1] == 'FIRST ORIGINAL\n   SECOND ORIGINAL that is intact'
   assert source.entries()[0].chat.user.content == message
 
 

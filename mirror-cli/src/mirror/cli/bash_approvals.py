@@ -15,6 +15,9 @@ def prefixes(
   arguments: str, scope: str
 ) -> tuple[tool_approvals.ArgvPrefixApproval, ...]:
   """Return literal argv prefixes, full command first, for saved-grant matching."""
+  # Prefix enumeration is quadratic in argv length; oversized calls stay exact-only.
+  if len(arguments) > 16_384:
+    return ()
   try:
     # Preserve duplicate keys so ambiguous JSON cannot acquire a prefix grant.
     raw: object = json.loads(arguments, object_pairs_hook=tuple)
@@ -29,6 +32,8 @@ def prefixes(
   if name != 'command' or not isinstance(command, str):
     return ()
   argv = _literal_argv(command)
+  if len(argv) > 128:
+    return ()
   return tuple(
     tool_approvals.ArgvPrefixApproval(scope, 'bash', argv[:length])
     for length in range(len(argv), 0, -1)
@@ -38,9 +43,9 @@ def prefixes(
 def suggested_rule(
   full: tool_approvals.ArgvPrefixApproval,
 ) -> tool_approvals.ArgvPrefixApproval:
-  """Suggest a command family for file viewers; keep other prefixes narrow."""
+  """Suggest selected command families; keep other prefixes narrow."""
   # These are suggestions requiring user approval, not automatic allowances.
-  if full.argv[0] in {'cat', 'head', 'tail', 'wc'}:
+  if full.argv[0] in {'cat', 'head', 'tail', 'wc', 'printf'}:
     return tool_approvals.ArgvPrefixApproval(
       full.scope, full.tool, full.argv[:1]
     )

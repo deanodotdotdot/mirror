@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use crate::local::sqlite_migrations::v3_context_windows::{
@@ -1051,6 +1052,8 @@ fn dropping_a_store_releases_its_conversation() {
     let directory = tempfile::tempdir().expect("directory");
     let database = directory.path().join("react.db");
     drop(open(&database, "session", directory.path(), true));
+    let mode = database.metadata().expect("metadata").permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
 
     open(&database, "session", directory.path(), false);
 }
@@ -1088,6 +1091,8 @@ fn an_alias_of_the_database_shares_its_conversation_locks() {
     let directory = tempfile::tempdir().expect("directory");
     let database = directory.path().join("react.db");
     let _held = open(&database, "session", directory.path(), true);
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644))
+        .expect("shared database mode");
     let alias = directory.path().join("alias.db");
     std::os::unix::fs::symlink(&database, &alias).expect("alias database");
 
@@ -1095,6 +1100,8 @@ fn an_alias_of_the_database_shares_its_conversation_locks() {
         SQLiteStore::open(&alias, "session", directory.path(), false, false),
         Err(StoreError::OpenElsewhere { .. })
     );
+    let mode = database.metadata().expect("metadata").permissions().mode();
+    assert_eq!(mode & 0o777, 0o644);
 }
 
 #[test]

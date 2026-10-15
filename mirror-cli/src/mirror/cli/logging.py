@@ -16,7 +16,6 @@ from prompt_toolkit.output import defaults
 
 from mirror.cli import hyperlinks
 
-
 _FORMATTER = logging.Formatter('%(asctime)s %(levelname)s %(name)s %(message)s')
 
 
@@ -26,8 +25,12 @@ def capture_output(conversation_id: str) -> Generator[TextIO]:
   path = pathlib.Path.home() / '.mirror' / 'logs' / conversation_id
   path.mkdir(parents=True, exist_ok=True)
   with (
-    (path / 'cli-stdout').open('a', buffering=1) as captured_stdout,
-    (path / 'cli-stderr').open('a', buffering=1) as captured_stderr,
+    os.fdopen(
+      _open_log(path / 'cli-stdout'), 'a', buffering=1
+    ) as captured_stdout,
+    os.fdopen(
+      _open_log(path / 'cli-stderr'), 'a', buffering=1
+    ) as captured_stderr,
     os.fdopen(os.dup(1), 'w', buffering=1) as terminal,
     os.fdopen(os.dup(2), 'w', buffering=1) as stderr,
   ):
@@ -52,10 +55,15 @@ def capture_output(conversation_id: str) -> Generator[TextIO]:
       os.dup2(stderr.fileno(), 2)
 
 
+def _open_log(path: pathlib.Path) -> int:
+  return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
+
 def _file_handler(*parts: str) -> logging.FileHandler | None:
   try:
     path = pathlib.Path.home().joinpath('.mirror', 'logs', *parts)
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.close(_open_log(path))
     handler = logging.FileHandler(path)
   except (OSError, RuntimeError):
     return None

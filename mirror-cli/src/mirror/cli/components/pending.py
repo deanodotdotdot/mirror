@@ -29,15 +29,11 @@ class Pending(component.Component):
 
 def render(state: _state.State) -> ansi.ANSI:
   """Render in-flight tool calls exactly like their settled form."""
-  approval = state.approval.request
-  running = tuple(
-    call
-    for call in state.stream.running
-    if approval is None or call.call_id != approval.call_id
-  )
+  if state.approval.request is not None:
+    return ansi.ANSI('')
   return _render(
     state.status_bar.view_mode,
-    running,
+    state.stream.running,
     state.stream.pending,
     state.tool_group,
     state.layout.columns,
@@ -109,7 +105,11 @@ def renderables(
       if len(calls) > 1:
         label += f' · {len(calls)} running'
     if label:
-      prefix = '  └ ' if summary is not None else '· '
+      prefix = (
+        ' ' * rendering.GUTTER_WIDTH + '└ '
+        if summary is not None
+        else rendering.icon_prefix('·')
+      )
       row = table.Table.grid()
       row.add_column(width=len(prefix))
       row.add_column()
@@ -137,14 +137,13 @@ def renderables(
 
 
 def rows(state: _state.State) -> int:
-  """Return rows needed by running calls not gated on approval."""
-  if state.status_bar.view_mode is _actions.ViewMode.FOCUS:
+  """Let the approval preview own tool presentation while a decision is pending."""
+  if (
+    state.status_bar.view_mode is _actions.ViewMode.FOCUS
+    or state.approval.request is not None
+  ):
     return 0
-  approval = state.approval.request
-  has_running = any(
-    approval is None or call.call_id != approval.call_id
-    for call in state.stream.running
-  )
+  has_running = bool(state.stream.running)
   has_summary = (
     state.status_bar.view_mode is _actions.ViewMode.DEFAULT
     and state.tool_group is not None

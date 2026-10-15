@@ -9,6 +9,8 @@ import os
 import pathlib
 from typing import Any, cast
 
+from mirror.cli import reflection
+
 
 @dataclasses.dataclass(frozen=True)
 class ModelOption:
@@ -48,6 +50,49 @@ def default_model(api: str) -> str:
   if api in ('openai-responses', 'openai-codex-responses'):
     return 'gpt-6-astra'
   return 'openai/gpt-6-astra'
+
+
+def key_env(api: str) -> str:
+  """The environment variable holding the API key for a wire protocol."""
+  if api == 'reflection':
+    return 'REFLECTION_API_KEY'
+  if api == 'openai-responses':
+    return 'OPENAI_API_KEY'
+  if api == 'anthropic-messages':
+    return 'ANTHROPIC_API_KEY'
+  return 'OPENROUTER_API_KEY'
+
+
+def base_env(api: str) -> str | None:
+  """The environment variable holding the base URL for a wire protocol."""
+  if api == 'reflection':
+    return None
+  if api == 'openai-responses':
+    return 'OPENAI_BASE_URL'
+  if api == 'anthropic-messages':
+    return 'ANTHROPIC_BASE_URL'
+  return 'OPENROUTER_BASE_URL'
+
+
+def validate_connection(api: str, base_url: str) -> None:
+  """Check local provider prerequisites without probing model availability."""
+  if api == 'reflection':
+    if base_url and base_url.rstrip('/') != reflection.BASE_URL:
+      raise ValueError(
+        '--api reflection uses the Reflection endpoint; use '
+        '--api openai-chat-completions for custom endpoints'
+      )
+    return
+  if api in ('', 'openai-codex-responses', 'anthropic-messages'):
+    return
+  endpoint_env = base_env(api)
+  if base_url or (endpoint_env and os.environ.get(endpoint_env)):
+    return
+  if not os.environ.get(key_env(api), '').strip():
+    raise ValueError(
+      f'No API key found. Export {key_env(api)} or use --base-url '
+      'for a keyless self-hosted endpoint.'
+    )
 
 
 def _config_path() -> pathlib.Path:

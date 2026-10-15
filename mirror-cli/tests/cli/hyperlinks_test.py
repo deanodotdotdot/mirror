@@ -20,7 +20,7 @@ def test_markdown_links_preserve_labels_destinations_and_styles(
   )
   fragments = hyperlinks.ANSI(output).__pt_formatted_text__()
   assert (
-    formatted_text.fragment_list_to_text(fragments).strip() == '● label after'
+    formatted_text.fragment_list_to_text(fragments).strip() == '●  label after'
   )
   escapes = [
     text for style, text, *_ in fragments if style == '[ZeroWidthEscape]'

@@ -1,18 +1,12 @@
 use std::path::PathBuf;
-use std::time::Duration;
 
 use assert_matches::assert_matches;
 use pretty_assertions::assert_eq;
-use serde_json::json;
-use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
-use crate::sandboxd_file;
-use crate::EgressHost;
-use crate::FakeMsb;
-use crate::MicrosandboxConfig;
+use crate::{sandboxd_file, EgressHost, FakeMsb, MicrosandboxConfig};
 
 const NAME: &str = "mirror-ws-test";
 
@@ -53,19 +47,6 @@ async fn provider(fake: &FakeMsb) -> MicrosandboxProvider {
         memory_mib: None,
     };
     MicrosandboxProvider::new(fake.msb().await, config).expect("valid config")
-}
-
-fn command(command: &str, timeout: Duration) -> (SandboxStream, tokio::io::DuplexStream) {
-    let (stdout, captured) = tokio::io::duplex(64 * 1024);
-    let request = SandboxStream {
-        command: command.to_string(),
-        workdir: None,
-        timeout,
-        stdin: Some(Box::pin(&b"from-stdin"[..])),
-        stdout: Box::pin(stdout),
-        stderr: None,
-    };
-    (request, captured)
 }
 
 #[tokio::test]
@@ -136,101 +117,5 @@ async fn connect_to_a_missing_vm_reports_it_gone() {
     assert_matches!(
         provider.connect(NAME, "/workspace").await,
         Err(SandboxTransportError::Gone(_))
-    );
-}
-
-#[tokio::test]
-async fn stream_returns_the_exit_code_output_and_stderr() {
-    let fake = FakeMsb::new();
-    fake.add_sandbox(NAME, "Running", &document("deny"));
-    let provider = provider(&fake).await;
-    let (request, mut captured) = command(
-        "printf 'out:'; cat; printf problem >&2; exit 3",
-        Duration::from_secs(30),
-    );
-
-    let outcome = provider.stream(NAME, request).await.expect("stream");
-    let mut stdout = String::new();
-    captured.read_to_string(&mut stdout).await.expect("stdout");
-
-    assert_eq!(
-        outcome,
-        SandboxStreamOutcome {
-            exit_code: 3,
-            stderr: b"problem".to_vec(),
-        }
-    );
-    assert_eq!(stdout, "out:from-stdin");
-}
-
-#[tokio::test]
-async fn stream_preserves_both_byte_streams_and_guest_exit_status() {
-    let fake = FakeMsb::new();
-    fake.add_sandbox(NAME, "Running", &document("deny"));
-    let provider = provider(&fake).await;
-    let (mut request, mut stdout) = command(
-        "cat; printf '\\000\\377error\\r\\n' >&2; exit 17",
-        Duration::from_secs(30),
-    );
-    let bytes = b"\x00\xffraw\r\n".repeat(20_000);
-    request.stdin = Some(Box::pin(std::io::Cursor::new(bytes.clone())));
-    let (errors, mut stderr) = tokio::io::duplex(128);
-    request.stderr = Some(Box::pin(errors));
-    let (mut output, mut error_output) = (Vec::new(), Vec::new());
-
-    let (outcome, read, read_errors) = tokio::join!(
-        provider.stream(NAME, request),
-        stdout.read_to_end(&mut output),
-        stderr.read_to_end(&mut error_output),
-    );
-
-    read.expect("stdout");
-    read_errors.expect("stderr");
-    assert_eq!(output, bytes);
-    assert_eq!(error_output, b"\x00\xfferror\r\n");
-    assert_matches!(outcome, Ok(SandboxStreamOutcome { exit_code: 17, stderr }) if stderr.is_empty());
-}
-
-#[tokio::test]
-async fn stream_returns_once_the_command_exits_even_if_its_input_never_ends() {
-    let fake = FakeMsb::new();
-    fake.add_sandbox(NAME, "Running", &document("deny"));
-    let provider = provider(&fake).await;
-    let (mut request, _captured) = command("exit 4", Duration::from_secs(30));
-    let (_never_written, endless) = tokio::io::duplex(64);
-    request.stdin = Some(Box::pin(endless));
-
-    let outcome = tokio::time::timeout(Duration::from_secs(10), provider.stream(NAME, request))
-        .await
-        .expect("stream returns before the timeout");
-
-    assert_matches!(outcome, Ok(SandboxStreamOutcome { exit_code: 4, .. }));
-}
-
-#[tokio::test]
-async fn stream_rounds_a_fractional_timeout_up_for_the_guest() {
-    let fake = FakeMsb::new();
-    fake.add_sandbox(NAME, "Running", &document("deny"));
-    let provider = provider(&fake).await;
-    let (request, _captured) = command("exit 0", Duration::from_millis(1500));
-
-    provider.stream(NAME, request).await.expect("stream");
-
-    assert_matches!(
-        fake.calls().last(),
-        Some(call) if call.starts_with("exec --quiet --stream --timeout 2s ")
-    );
-}
-
-#[tokio::test]
-async fn stream_past_its_timeout_has_an_unknown_outcome() {
-    let fake = FakeMsb::new();
-    fake.add_sandbox(NAME, "Running", &document("deny"));
-    let provider = provider(&fake).await;
-    let (request, _captured) = command("exec sleep 30", Duration::from_millis(200));
-
-    assert_matches!(
-        provider.stream(NAME, request).await,
-        Err(SandboxTransportError::OutcomeUnknown(_))
     );
 }

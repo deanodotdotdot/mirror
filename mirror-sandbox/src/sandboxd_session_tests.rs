@@ -14,6 +14,14 @@ struct Probe {
 }
 #[tonic::async_trait]
 impl Sandboxd for Probe {
+    type RunCommandStream = ReceiverStream<Result<crate::RunCommandResponse, Status>>;
+    async fn run_command(
+        &self,
+        _: Request<tonic::Streaming<crate::RunCommandRequest>>,
+    ) -> Result<Response<Self::RunCommandStream>, Status> {
+        Err(Status::unimplemented("tool-only fixture"))
+    }
+
     type EgressStream =
         tokio_stream::wrappers::ReceiverStream<Result<crate::EgressEvent, tonic::Status>>;
     async fn egress(

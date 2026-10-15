@@ -64,14 +64,16 @@ def _command_context() -> commands.CommandContext:
   )
 
 
-@pytest.mark.parametrize('effort', ['high', 'max'])
+@pytest.mark.parametrize(
+  'effort', ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+)
 def test_extension_commands_return_application_actions(effort: str) -> None:
   current = _state()
   available = _commands(current)
 
   model = commands.dispatch('/model next', _command_context(), available)
   reasoning = commands.dispatch(
-    f'/reasoning {effort}', _command_context(), available
+    f'/effort {effort}', _command_context(), available
   )
 
   assert model == actions.SetModel('next')
@@ -84,7 +86,8 @@ def test_extension_commands_return_application_actions(effort: str) -> None:
   help_text = commands.dispatch('/help', _command_context(), available)
   assert isinstance(help_text, actions.ShowText)
   assert '/model' in help_text.text
-  assert '/reasoning' in help_text.text
+  assert '/effort' in help_text.text
+  assert '/reasoning' not in help_text.text
 
 
 def test_extension_commands_validate_arguments() -> None:
@@ -92,7 +95,7 @@ def test_extension_commands_validate_arguments() -> None:
 
   model = commands.dispatch('/model two models', _command_context(), available)
   reasoning = commands.dispatch(
-    '/reasoning extreme', _command_context(), available
+    '/effort extreme', _command_context(), available
   )
 
   assert model == actions.ShowText(
@@ -129,7 +132,7 @@ def test_extension_commands_open_selectors(
   available = _commands(_state())
 
   model = commands.dispatch('/model', _command_context(), available)
-  reasoning = commands.dispatch('/reasoning', _command_context(), available)
+  reasoning = commands.dispatch('/effort', _command_context(), available)
 
   assert model == actions.OpenSelector(
     selection.Selector(

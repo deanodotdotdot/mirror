@@ -48,7 +48,7 @@ def _repository(path: pathlib.Path) -> pathlib.Path:
   path.mkdir()
   remote = path.with_name(f'{path.name}-origin.git')
   subprocess.run(
-    ('git', 'init', '--bare', str(remote)),
+    ('git', 'init', '--bare', '--initial-branch=main', str(remote)),
     check=True,
     capture_output=True,
     text=True,
@@ -184,8 +184,10 @@ def test_overlapping_git_creations_use_their_own_fetched_revision(
   second_fetched = threading.Event()
   run_git = worktrees._git
 
-  def git(cwd: pathlib.Path, arguments: Sequence[str]) -> str:
-    output = run_git(cwd, arguments)
+  def git(
+    cwd: pathlib.Path, arguments: Sequence[str], *, timeout: float | None = None
+  ) -> str:
+    output = run_git(cwd, arguments, timeout=timeout)
     if arguments[0] == 'fetch':
       if not first_fetched.is_set():
         first_fetched.set()

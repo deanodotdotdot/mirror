@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import pathlib
 import re
 import shutil
@@ -53,6 +54,7 @@ class Worktree:
   path: pathlib.Path
   name: str | None
   identity: WorktreeIdentity | None = None
+  warning: str | None = dataclasses.field(default=None, compare=False)
 
   @property
   def provider(self) -> str:
@@ -296,22 +298,74 @@ def _managed_parent(shared_repository: pathlib.Path, name: str) -> pathlib.Path:
   return pathlib.Path.home() / '.mirror' / 'worktrees' / f'{name}-{digest}'
 
 
+def _default_remote(source: pathlib.Path) -> str | None:
+  remotes = _git(source, ('remote',)).splitlines()
+  if 'origin' in remotes:
+    return 'origin'
+  if len(remotes) == 1:
+    return remotes[0]
+  if not remotes:
+    return None
+  raise WorktreeError(
+    '/worktree cannot choose between multiple remotes without origin. '
+    'Configure an origin remote, or create a checkout with Git/Jujutsu '
+    'and open it with /folder.'
+  )
+
+
+def _remote_default(source: pathlib.Path, remote: str) -> str:
+  """Read the remote's advertised default branch for a scoped Jujutsu fetch."""
+  output = _git(
+    source, ('ls-remote', '--symref', '--', remote, 'HEAD'), timeout=10
+  )
+  for line in output.splitlines():
+    if line.startswith('ref: refs/heads/') and line.endswith('\tHEAD'):
+      return line.removeprefix('ref: refs/heads/').removesuffix('\tHEAD')
+  raise WorktreeError(
+    f'Remote {remote!r} does not advertise a default branch. '
+    'Set its HEAD to an existing branch, or create a checkout with '
+    'Git/Jujutsu and open it with /folder.'
+  )
+
+
 def _create_git_worktree(source: pathlib.Path, name: str) -> Worktree:
+  remote = _default_remote(source)
+  warning = None
   # Fetch into a request-owned ref; FETCH_HEAD and tracking refs are shared.
   reference = f'refs/mirror/worktrees/{uuid.uuid4().hex}'
   try:
-    _git(
-      source,
-      (
-        'fetch',
-        '--no-write-fetch-head',
-        '--no-tags',
-        '--refmap=',
-        'origin',
-        f'refs/heads/main:{reference}',
-      ),
-    )
-    main = _git(source, ('rev-parse', reference))
+    if remote is None:
+      revision = _git(source, ('rev-parse', '--verify', 'HEAD^{commit}'))
+    else:
+      try:
+        _git(
+          source,
+          (
+            'fetch',
+            '--no-write-fetch-head',
+            '--no-tags',
+            '--refmap=',
+            '--',
+            remote,
+            f'HEAD:{reference}',
+          ),
+          timeout=10,
+        )
+        revision = _git(source, ('rev-parse', reference))
+      except (WorktreeError, subprocess.TimeoutExpired):
+        try:
+          revision = _git(
+            source,
+            ('rev-parse', '--verify', f'refs/remotes/{remote}/HEAD^{{commit}}'),
+          )
+          base = f'cached {remote}/HEAD'
+        except WorktreeError:
+          revision = _git(source, ('rev-parse', '--verify', 'HEAD^{commit}'))
+          base = 'local HEAD (no cached default branch)'
+        warning = (
+          f'Could not refresh {remote!r}; created from {base} '
+          f'at {revision[:12]}. It may be stale.'
+        )
     common = pathlib.Path(
       _git(
         source,
@@ -323,13 +377,14 @@ def _create_git_worktree(source: pathlib.Path, name: str) -> Worktree:
     path.parent.mkdir(parents=True, exist_ok=True)
     _git(
       source,
-      ('worktree', 'add', '-b', branch, str(path), main),
+      ('worktree', 'add', '-b', branch, str(path), revision),
     )
     resolved = path.resolve()
     return Worktree(
       resolved,
       branch,
       WorktreeIdentity('git', str(resolved)),
+      warning=warning,
     )
   finally:
     _git(source, ('update-ref', '-d', reference))
@@ -374,7 +429,7 @@ def local_revision(source: pathlib.Path) -> tuple[pathlib.Path, str]:
 
 
 def _add_jj_workspace(
-  source: pathlib.Path, name: str, path: pathlib.Path
+  source: pathlib.Path, name: str, path: pathlib.Path, revision: str
 ) -> None:
   """Add a workspace, recovering a stale source checkout once."""
   arguments = (
@@ -383,7 +438,7 @@ def _add_jj_workspace(
     '--name',
     name,
     '--revision',
-    'main@origin',
+    revision,
     str(path),
   )
   try:
@@ -395,21 +450,71 @@ def _add_jj_workspace(
     _jj(source, arguments)
 
 
+def _jj_revision(source: pathlib.Path, revset: str) -> str:
+  """Resolve a revset without snapshotting the working copy."""
+  return _jj(
+    source,
+    (
+      'log',
+      '--ignore-working-copy',
+      '--no-graph',
+      '-r',
+      revset,
+      '-T',
+      'commit_id',
+    ),
+  )
+
+
 def _create_jj_workspace(
   source: pathlib.Path, root: pathlib.Path, name: str
 ) -> Worktree:
-  _jj(
-    source,
-    (
-      'git',
-      'fetch',
-      '--ignore-working-copy',
-      '--remote',
-      'origin',
-      '--branch',
-      'main',
-    ),
-  )
+  store = pathlib.Path(_jj(source, ('git', 'root', '--ignore-working-copy')))
+  remote = _default_remote(store)
+  warning = None
+  if remote is None:
+    revision = _jj_revision(source, '@-')
+  else:
+    cached = _jj_revision(source, 'present(trunk())')
+    base = 'the cached default branch'
+    if not cached or cached == '0' * 40:
+      cached = _jj_revision(source, '@-')
+      base = 'the local committed revision (no cached default branch)'
+    try:
+      default_branch = _remote_default(store, remote)
+      revset = (
+        f'{json.dumps(default_branch, ensure_ascii=False)}@'
+        f'{json.dumps(remote, ensure_ascii=False)}'
+      )
+      # Keep a pinned fallback even if fetch removes the remote bookmark.
+      if remote_revision := _jj_revision(source, f'present({revset})'):
+        cached = remote_revision
+        base = 'the cached default branch'
+      _jj(
+        source,
+        (
+          'git',
+          'fetch',
+          '--ignore-working-copy',
+          '--remote',
+          f'exact:{json.dumps(remote, ensure_ascii=False)}',
+          '--branch',
+          f'exact:{json.dumps(default_branch, ensure_ascii=False)}',
+        ),
+        timeout=10,
+      )
+      revision = _jj_revision(source, revset)
+    except (WorktreeError, subprocess.TimeoutExpired):
+      revision = cached
+      warning = (
+        f'Could not refresh {remote!r}; created from {base} '
+        f'at {revision[:12]}. It may be stale.'
+      )
+  # Resolve before workspace add: jj can leave a directory on revision errors.
+  if re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', revision) is None:
+    raise WorktreeError(
+      'Default branch must resolve to one commit; retry /worktree'
+    )
   try:
     repository = project.jj_repository(root)
   except OSError as error:
@@ -423,14 +528,16 @@ def _create_jj_workspace(
   )
   path = parent / name
   path.parent.mkdir(parents=True, exist_ok=True)
-  _add_jj_workspace(source, name, path)
-  return Worktree(path.resolve(), name, WorktreeIdentity('jj', name))
+  _add_jj_workspace(source, name, path, revision)
+  return Worktree(
+    path.resolve(), name, WorktreeIdentity('jj', name), warning=warning
+  )
 
 
 def create_worktree(
   cwd: str | pathlib.Path, name: str | None = None
 ) -> Worktree:
-  """Create an optionally named isolated checkout from `origin/main`."""
+  """Create an isolated checkout, refreshing its local base when possible."""
   source = pathlib.Path(cwd).resolve()
   worktree_name = _worktree_name(name)
   if (jj_root := project.jj_workspace_root(source)) is not None:

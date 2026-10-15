@@ -9,6 +9,8 @@
 //! calls over that stream with the `sandboxd` gRPC protocol.
 
 mod grpc_connection;
+mod run_sandbox_command;
+pub use run_sandbox_command::*;
 mod sandbox_provider;
 mod sandbox_transport;
 mod sandboxd_protocol;

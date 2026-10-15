@@ -7,6 +7,9 @@ service Sandboxd {
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc Execute(ExecuteRequest) returns (stream ExecuteEvent);
   rpc Cancel(CancelRequest) returns (CancelResponse);
+  // The first request starts a process; subsequent requests carry stdin.
+  // Half-closing stdin does not cancel the process. Cancel uses its call_id.
+  rpc RunCommand(stream RunCommandRequest) returns (stream RunCommandResponse);
   // buf:lint:ignore RPC_REQUEST_STANDARD_NAME
   // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
   rpc Egress(stream EgressUpdate) returns (stream EgressEvent);
@@ -31,6 +34,37 @@ message ExecuteResponse {
     mirror.agent.v1.ChatRecord completed = 1;
     string rejected = 2;
     string failed = 3;
+    bool cancelled = 4;
+    bool deadline_exceeded = 5;
+  }
+}
+
+message RunCommandStart {
+  string call_id = 1;
+  string command = 2;
+  optional string workdir = 3;
+  uint64 timeout_millis = 4;
+}
+message RunCommandRequest {
+  oneof input {
+    RunCommandStart start = 1;
+    bytes stdin = 2;
+  }
+}
+message RunCommandResponse {
+  oneof event {
+    bool accepted = 1;
+    bytes stdout = 2;
+    bytes stderr = 3;
+    RunCommandResult completed = 4;
+  }
+}
+message RunCommandResult {
+  oneof outcome {
+    int32 exit_code = 1;
+    string rejected = 2;
+    string failed = 3;
+    // True only after the process group has been observed stopped.
     bool cancelled = 4;
     bool deadline_exceeded = 5;
   }

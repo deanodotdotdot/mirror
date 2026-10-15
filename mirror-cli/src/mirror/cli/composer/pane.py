@@ -34,11 +34,12 @@ def components(
   selector_max_height: Callable[[], int] | None = None,
   *,
   skip_first_queued: Callable[[], bool] = lambda: False,
+  shortcut_hint: Callable[[actions.Action | None], str] = lambda _: '',
 ) -> dict[str, component.Component]:
   """Use the same components before and after the workspace agent is ready."""
   return {
     'activity': activity.Activity(),
-    'completion': completion.Completion(),
+    'completion': completion.Completion(shortcut_hint),
     'failure': failure.Failure(),
     'pending': pending.Pending(),
     'queued': queued.Queued(skip_first=skip_first_queued),
@@ -134,6 +135,12 @@ class Pane:
           containers.HSplit([footer, setup_footer]),
           theme_name=lambda: themes.current(
             get_state().extensions, get_state().extension_themes
+          ),
+          bash_mode=lambda: (
+            not secret_active()
+            and not get_state().secret.active
+            and not get_state().selector.active
+            and get_state().composer.text.lstrip().startswith('!')
           ),
         ),
       ]),
@@ -264,7 +271,13 @@ class Pane:
     size = self._get_size()
     # On small terminals, reserve the footer before allocating activity rows.
     minimum = self._fixed.preferred_height(size.columns, size.rows).min
-    return min(size.rows, max(minimum, size.rows * 2 // 3))
+    # Approval inspection takes priority over history, leaving a little context.
+    budget = (
+      size.rows - 3
+      if self._get_state().approval.request
+      else size.rows * 2 // 3
+    )
+    return min(size.rows, max(minimum, budget))
 
   def _body_height(self) -> int:
     size = self._get_size()
@@ -284,7 +297,7 @@ class Pane:
     snapshot = self._get_state()
     request = snapshot.selector.selector
     minimum = (
-      len(snapshot.selector.filtered_choices()) + 4
+      len(snapshot.selector.filtered_choices()) + 5
       if request is not None and request.header
       else 4
     )
