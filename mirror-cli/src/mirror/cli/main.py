@@ -104,12 +104,9 @@ def _database_paths(
 def _parse_args() -> argparse.Namespace:
   """Parse the mirror command-line flags."""
   parser = argparse.ArgumentParser(
-    prog='mirror', description='Mirror coding agent.'
-  )
-  parser.add_argument(
-    '--update',
-    action='store_true',
-    help='Allow a longer startup update check (handled by the launcher).',
+    prog='mirror',
+    description='Mirror coding agent.',
+    epilog='Use mirror update to check for updates without starting a session.',
   )
   parser.add_argument(
     '--no-update',
@@ -172,7 +169,7 @@ def _parse_args() -> argparse.Namespace:
   )
   parser.add_argument(
     '--reasoning-effort',
-    choices=['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    choices=['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     default=None,
     help='Reasoning effort for model requests (default: max).',
   )

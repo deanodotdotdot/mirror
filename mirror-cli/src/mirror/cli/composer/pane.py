@@ -41,7 +41,7 @@ def components(
     'activity': activity.Activity(),
     'completion': completion.Completion(shortcut_hint),
     'failure': failure.Failure(),
-    'pending': pending.Pending(),
+    'pending': pending.Pending(shortcut_hint),
     'queued': queued.Queued(skip_first=skip_first_queued),
     'resume': resume.Resume(),
     'selector': selector.Selector(get_max_height=selector_max_height),

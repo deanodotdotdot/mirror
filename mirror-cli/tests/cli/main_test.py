@@ -269,7 +269,7 @@ def test_remote_endpoint_requires_configuration(
 
 
 @pytest.mark.parametrize(
-  'effort', ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  'effort', ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 )
 def test_parse_args_accepts_named_reasoning_effort(
   monkeypatch: pytest.MonkeyPatch, effort: str

@@ -4888,11 +4888,11 @@ async def test_committing_multiple_inputs_preserves_every_presented_frame(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-  ('columns', 'instruction', 'message_row', 'shaded'),
+  ('columns', 'instruction', 'message_row'),
   [
-    (80, 'FIRST MESSAGE', 1, True),
-    (30, 'FIRST MESSAGE ' + 'wrapped 界 text ' * 8 + '\nlast line', 1, True),
-    (30, 'FIRST MESSAGE\n' + 'long wrapped input ' * 100, 0, False),
+    (80, 'FIRST MESSAGE', 1),
+    (30, 'FIRST MESSAGE ' + 'wrapped 界 text ' * 8 + '\nlast line', 1),
+    (30, 'FIRST MESSAGE\n' + 'long wrapped input ' * 100, 0),
   ],
   ids=['single', 'wrapped-multiline', 'overflow'],
 )
@@ -4900,7 +4900,6 @@ async def test_first_submission_keeps_its_frame_through_worker_start_and_ack(
   columns: int,
   instruction: str,
   message_row: int,
-  shaded: bool,
   tmp_path: pathlib.Path,
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5022,7 +5021,7 @@ async def test_first_submission_keeps_its_frame_through_worker_start_and_ack(
         ),
         30 - repl._dock_height(),
       )
-      assert (settled[message_row][2].bg != 'default') is shaded
+      assert settled[message_row][2].bg != 'default'
       assert optimistic[:message_height] == settled[:message_height]
       assert all(
         frame[:message_height] == settled[:message_height]
@@ -5423,6 +5422,7 @@ def test_dispatch_batches_state_effects_and_invalidation(
   repl.dispatch(
     _actions.TurnStarted(),
     _actions.SetStatus('thinking…'),
+    _actions.TaskChanged('1000', None, True),
     _actions.DetachRequested(),
     _actions.DetachRequested(),
   )
@@ -7857,18 +7857,32 @@ def test_done_stays_busy_while_a_resubmitted_instruction_is_queued(
   assert repl._state.activity.work_started is None
 
 
-def test_waiting_task_shows_footer_hint_until_detached() -> None:
+def test_waiting_task_shows_tool_hint_until_detached() -> None:
   repl = _repl()
   repl.dispatch(_actions.TurnStarted())
+  _start_calls(
+    repl,
+    [
+      {
+        'id': 'c1',
+        'type': 'function',
+        'function': {'name': 'bash', 'arguments': '{"command":"long command"}'},
+      }
+    ],
+  )
 
   repl._handle_message(_task_delta('1234', 'running', detached=False))
 
-  assert 'Ctrl+B to detach' in _fragments_text(_render_activity(repl))
+  assert 'Ctrl+B to background' in _rendering.render_blocks(
+    repl._live_blocks(), 80
+  )
   assert not _render_tasks(repl)
 
   repl._handle_message(_task_delta('1234', 'running'))
 
-  assert 'Ctrl+B to detach' not in _fragments_text(_render_activity(repl))
+  assert 'Ctrl+B to background' not in _rendering.render_blocks(
+    repl._live_blocks(), 80
+  )
   assert 'bash · 1234 · running' in _render_tasks(repl)
 
 
@@ -7939,6 +7953,7 @@ async def test_down_focuses_task_and_cancel_sends_worker_command() -> None:
 async def test_detach_requested_sends_detach_tools_while_busy() -> None:
   repl = _repl()
   repl.dispatch(_actions.TurnStarted())
+  repl._handle_message(_task_delta('1234', 'running', detached=False))
   sent: list[agent_pb2.ClientMessage] = []
 
   def send(request: agent_pb2.ClientMessage) -> None:
@@ -8843,9 +8858,9 @@ async def test_exploration_retains_detail_row_until_visible_text() -> None:
   assert '└ Read first.py' in _ansi_text(_pending.render(repl._state))
 
   repl._handle_message(_stream_reasoning('Checking the next file.'))
-  assert _pending.rows(repl._state) == 0
-  assert repl._state.tool_group is None
-  assert 'Checking the next file.' in _ansi_text(repl._stream_pane.ansi())
+  assert _pending.rows(repl._state) == 2
+  assert repl._state.tool_group is not None
+  assert 'Checking the next file.' not in _ansi_text(repl._stream_pane.ansi())
   _start_calls(
     repl,
     [
@@ -9083,7 +9098,7 @@ async def test_fullscreen_tool_status_stays_in_conversation_until_result(
     assert status not in completed
     assert 'found.py' in completed
     assert completed.count('rg --files') == 1
-    _assert_tool_follows_message(completed, 'found.py')
+    _assert_tool_follows_message(completed, 'rg --files')
 
     repl._handle_message(_turn_completed())
     assert status not in _frame_text(repl, terminal)
@@ -9226,16 +9241,11 @@ async def test_compact_mixed_batch_groups_until_visible_result(
   )
   history = _rendering.strip_ansi(repl._render_history())
   for rendered in (emitted, history):
-    assert rendered.count('Explored') == 2
-    assert rendered.index('1 read') < rendered.index('2 reads, 2 searches')
-    assert rendered.index('2 reads, 2 searches') < rendered.index(
+    assert rendered.count('Explored') == 1
+    assert rendered.index('3 reads, 2 searches') < rendered.index(
       'Ran jj status; jj root'
     )
-  assert history.count('Checking the next files.') == 1
-  assert history.index('1 read') < history.index('Checking the next files.')
-  assert history.index('Checking the next files.') < history.index(
-    '2 reads, 2 searches'
-  )
+  assert 'Checking the next files.' not in history
   assert repl._state.tool_group is None
   await _settle(repl)
 
@@ -9245,7 +9255,6 @@ async def test_compact_mixed_batch_groups_until_visible_result(
   'boundary',
   [
     _stream_content('Here is what I found.'),
-    _stream_reasoning('Checking the next files.'),
     _delta({'role': 'tool', 'name': 'edit', 'content': 'Edited f.py'}),
     _approval_requested('c1', 'read', '{"file_path":"f.py"}'),
     _turn_completed(),
@@ -9370,19 +9379,20 @@ def test_result_summary_compact_truncates_to_one_line() -> None:
   assert wide == f'└ {long_line}'
 
 
-def test_default_mode_shows_reasoning_in_delta() -> None:
+def test_default_mode_hides_reasoning_in_delta() -> None:
   repl = _NoEmitRepl()
   rendered = _handle(
     repl,
     _delta({
       'role': 'assistant',
       'content': 'the answer',
-      'reasoning_content': 'visible thoughts',
+      'reasoning_content': 'hidden thoughts',
     }),
   )
   assert rendered is not None
   text = _render_to_text(rendered)
-  assert 'visible thoughts' in text
+  assert 'the answer' in text
+  assert 'hidden thoughts' not in text
 
 
 @pytest.mark.asyncio
@@ -9393,7 +9403,7 @@ def test_default_mode_shows_reasoning_in_delta() -> None:
 @pytest.mark.parametrize(
   ('mode', 'visible'),
   [
-    (_actions.ViewMode.DEFAULT, True),
+    (_actions.ViewMode.DEFAULT, False),
     (_actions.ViewMode.DETAIL, True),
     (_actions.ViewMode.FOCUS, False),
   ],
@@ -10693,7 +10703,8 @@ async def test_view_change_restores_committed_stream_reasoning(
 
   await _dispatch_and_wait(repl, _actions.CycleViewMode())
 
-  assert paints[-1][0].count('available reasoning') == 1
+  assert 'available reasoning' not in paints[-1][0]
+  assert 'live answer' in _ansi_text(repl._stream_pane.ansi())
   await _dispatch_and_wait(repl, _actions.CycleViewMode())
 
   assert 'available reasoning' not in paints[-1][0]
@@ -10758,13 +10769,9 @@ async def test_reasoning_visibility_matches_live_and_saved_records(
   )
   assert saved is not None
   text = _render_to_text(saved)
-  assert ('available reasoning' in live) is (
-    mode is not _actions.ViewMode.FOCUS
-  )
+  assert ('available reasoning' in live) is (mode is _actions.ViewMode.DETAIL)
   assert 'Reasoning' not in live
-  assert ('available reasoning' in text) is (
-    mode is not _actions.ViewMode.FOCUS
-  )
+  assert ('available reasoning' in text) is (mode is _actions.ViewMode.DETAIL)
   assert 'Reasoning' not in text
   assert 'answer' in text
   await _settle(repl)

@@ -51,7 +51,6 @@ _CODEX_MODELS = (
 
 _REASONING_EFFORTS = (
   'none',
-  'minimal',
   'low',
   'medium',
   'high',

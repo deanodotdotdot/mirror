@@ -14,7 +14,7 @@ def test_installed_prefers_public_distribution() -> None:
     metadata, 'distribution', return_value=public
   ) as lookup:
     assert distribution.installed() is public
-  lookup.assert_called_once_with('mirror-agent')
+  lookup.assert_called_once_with('reflection-mirror')
 
 
 def test_installed_accepts_development_distribution() -> None:
@@ -22,11 +22,14 @@ def test_installed_accepts_development_distribution() -> None:
   with mock.patch.object(
     metadata,
     'distribution',
-    side_effect=[metadata.PackageNotFoundError('mirror-agent'), development],
+    side_effect=[
+      metadata.PackageNotFoundError('reflection-mirror'),
+      development,
+    ],
   ) as lookup:
     assert distribution.installed() is development
   assert lookup.call_args_list == [
-    mock.call('mirror-agent'),
+    mock.call('reflection-mirror'),
     mock.call('mirror'),
   ]
 
@@ -49,4 +52,4 @@ def test_installed_does_not_hide_broken_public_metadata() -> None:
     pytest.raises(PermissionError),
   ):
     distribution.installed()
-  lookup.assert_called_once_with('mirror-agent')
+  lookup.assert_called_once_with('reflection-mirror')

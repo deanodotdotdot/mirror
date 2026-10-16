@@ -118,10 +118,7 @@ impl AnthropicMessages {
                 "thinking".to_string(),
                 json!({"type": "adaptive", "display": "summarized"}),
             );
-            body.insert(
-                "output_config".to_string(),
-                json!({"effort": map_effort(&effort)}),
-            );
+            body.insert("output_config".to_string(), json!({"effort": effort}));
         }
         apply_extra_body(&mut body, request.inference.as_ref())?;
         Ok(Value::Object(body))
@@ -619,14 +616,6 @@ fn serialize_assistant(message: &AssistantMessage) -> Result<Value, LlmError> {
         content.push(json!({"type": "text", "text": ""}));
     }
     Ok(json!({"role": "assistant", "content": content}))
-}
-
-fn map_effort(effort: &str) -> &str {
-    // The CLI's `minimal` tier has no Messages API equivalent; `low` is closest.
-    match effort {
-        "minimal" => "low",
-        effort => effort,
-    }
 }
 
 fn format_api_error(error: &ApiError) -> String {

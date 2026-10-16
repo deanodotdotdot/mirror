@@ -65,6 +65,7 @@ def _selector_request() -> actions.OpenSelector:
       empty='No text files available.',
       prefiltered=True,
       loading=True,
+      truncate_labels_from_start=True,
     )
   )
 

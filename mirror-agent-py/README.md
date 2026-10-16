@@ -1,7 +1,7 @@
 # Mirror agent Python bindings
 
 **Not part of the Mirror CLI release.** These embedding bindings are not
-included in the `mirror-agent` PyPI distribution.
+included in the `reflection-mirror` PyPI distribution.
 
 This is a Cargo workspace member, not a separately published Python project.
 From the repository root, check it with
@@ -26,7 +26,7 @@ Construct `AgentService` inside a running asyncio event loop:
 `await session.close()` half-closes client input while remaining output drains;
 `await service.close()` stops the in-process service and waits for active work.
 
-The CLI distribution (`mirror-agent` on PyPI) provides generated protobuf
+The CLI distribution (`reflection-mirror` on PyPI) provides generated protobuf
 classes under `mirror.protocol`, but does not include this native extension.
 Tool callbacks must be async functions accepting parsed JSON arguments and
 returning a string, such as `async def run(arguments: dict[str, object]) -> str`;

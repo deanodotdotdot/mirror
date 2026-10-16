@@ -1,8 +1,7 @@
 //! The values a reasoning effort setting may take.
 
 /// Named reasoning effort levels accepted by the harness; provider support varies.
-pub const REASONING_EFFORT_LEVELS: [&str; 7] =
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const REASONING_EFFORT_LEVELS: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
 
 /// Whether `value` is a level name or a non-negative integer budget.
 ///

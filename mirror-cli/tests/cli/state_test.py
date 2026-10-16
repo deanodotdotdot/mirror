@@ -494,6 +494,7 @@ def test_detach_request_declares_effect_only_while_turn_is_active() -> None:
     _state(worktree_supervised=True), actions.TurnStarted()
   )
 
+  current, _ = reducer.reduce(current, actions.TaskChanged('1000', None, True))
   unchanged, effects = reducer.reduce(current, actions.DetachRequested())
 
   assert unchanged is current

@@ -65,7 +65,7 @@ def _command_context() -> commands.CommandContext:
 
 
 @pytest.mark.parametrize(
-  'effort', ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  'effort', ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 )
 def test_extension_commands_return_application_actions(effort: str) -> None:
   current = _state()
@@ -103,7 +103,7 @@ def test_extension_commands_validate_arguments() -> None:
   )
   assert reasoning == actions.ShowText(
     'Unknown reasoning effort: extreme. Choices: '
-    'none, minimal, low, medium, high, xhigh, max',
+    'none, low, medium, high, xhigh, max',
     style='ui.warning',
   )
 
@@ -182,7 +182,6 @@ def test_extension_commands_open_selectors(
         )
         for value in (
           'none',
-          'minimal',
           'low',
           'medium',
           'high',

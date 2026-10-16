@@ -96,7 +96,7 @@ def _https(url: str) -> urllib.parse.SplitResult:
 
 def _installed_version() -> str | None:
   try:
-    installed = importlib.metadata.distribution('mirror-agent')
+    installed = importlib.metadata.distribution('reflection-mirror')
   except importlib.metadata.PackageNotFoundError:
     return None
   # Installing the package elsewhere must not opt a source checkout in.
@@ -150,7 +150,7 @@ def _run(
 
 
 def latest(current: str, *, timeout: float) -> Release | None:
-  """Resolve the latest compatible mirror-agent wheel from PyPI."""
+  """Resolve the latest compatible reflection-mirror wheel from PyPI."""
   minimum = _version(current).public
   output = _run(
     (
@@ -173,11 +173,11 @@ def latest(current: str, *, timeout: float) -> Release | None:
       '-',
     ),
     timeout=timeout,
-    stdin=f'mirror-agent>={minimum}\n'.encode(),
+    stdin=f'reflection-mirror>={minimum}\n'.encode(),
   )
   package = _one(tomllib.loads(output.decode()).get('packages'))
   version = package.get('version')
-  if package.get('name') != 'mirror-agent' or not isinstance(version, str):
+  if package.get('name') != 'reflection-mirror' or not isinstance(version, str):
     raise ValueError('Invalid resolved package')
   if _version(version) <= _version(current):
     return None
@@ -257,7 +257,7 @@ def install(release: Release, root: pathlib.Path, current: str) -> pathlib.Path:
           ),
         )
         requirement = (
-          f'mirror-agent @ {release.url} --hash=sha256:{release.sha256}\n'
+          f'reflection-mirror @ {release.url} --hash=sha256:{release.sha256}\n'
         )
         _run(
           (
@@ -282,7 +282,7 @@ def install(release: Release, root: pathlib.Path, current: str) -> pathlib.Path:
             str(python),
             '-I',
             '-c',
-            'import importlib.metadata; print(importlib.metadata.version("mirror-agent"))',
+            'import importlib.metadata; print(importlib.metadata.version("reflection-mirror"))',
           ),
         )
         if output.decode().strip() != release.version:
@@ -297,37 +297,61 @@ def install(release: Release, root: pathlib.Path, current: str) -> pathlib.Path:
     return python
 
 
-def prepare(*, check: bool, force: bool, interactive: bool) -> Launch:
-  """Select a cached release and optionally offer an update before CLI startup."""
+def prepare(
+  *, check: bool, interactive: bool, update_only: bool = False
+) -> Launch:
+  """Select/offer a release; update-only exits unless handing off to its updater."""
   python = pathlib.Path(sys.executable)
   if os.environ.get('MIRROR_SKIP_UPDATE') == '1' or os.environ.get(
     'MIRROR_RUST_WORKER'
   ):
+    if update_only:
+      raise SystemExit(
+        'Updates disabled by MIRROR_SKIP_UPDATE or MIRROR_RUST_WORKER.'
+      )
     return Launch(python)
   try:
     current = _installed_version()
     if current is None:
+      if update_only:
+        raise SystemExit(
+          'This checkout is not update-managed. Update it using its original installation method.'
+        )
       return Launch(python)
     root = _root()
     python, current = _selected(root, current)
     if python != pathlib.Path(sys.executable):
       # Let the selected release own checks, so updater fixes take effect too.
       return Launch(python, 'mirror.main')
+    if update_only and not interactive:
+      raise SystemExit(
+        'Run mirror update in a terminal (stdin and stderr) to confirm the update; no session will start.'
+      )
     if not check or not interactive:
       return Launch(python)
-    release = latest(current, timeout=120 if force else 3)
+    release = latest(current, timeout=120 if update_only else 3)
     if release is None:
+      if update_only:
+        print(f'Mirror {current} is up to date.', file=sys.stderr)
+        raise SystemExit(0)
       return Launch(python)
+    action = 'Update?' if update_only else 'Update and start?'
     print(
-      f'Mirror {release.version} is available. Update and start? [y/N] ',
+      f'Mirror {release.version} is available. {action} [y/N] ',
       end='',
       file=sys.stderr,
       flush=True,
     )
     if input().strip().lower() not in ('y', 'yes'):
+      if update_only:
+        raise SystemExit('Mirror update cancelled.')
       return Launch(python)
     print('Preparing Mirror update…', file=sys.stderr)
-    return Launch(install(release, root, current))
+    installed = install(release, root, current)
+    if update_only:
+      print('Mirror update ready for the next run.', file=sys.stderr)
+      raise SystemExit(0)
+    return Launch(installed)
   except (
     OSError,
     ValueError,
@@ -337,8 +361,12 @@ def prepare(*, check: bool, force: bool, interactive: bool) -> Launch:
     EOFError,
     importlib.metadata.PackageNotFoundError,
   ):
+    if update_only:
+      raise SystemExit(
+        'Mirror update failed. Check uv and network access; retry with mirror update.'
+      ) from None
     print(
-      'Mirror update unavailable; starting the existing release. Check uv and network access; retry with mirror --update.',
+      'Mirror update unavailable; starting the existing release. Check uv and network access; retry with mirror update.',
       file=sys.stderr,
     )
     return Launch(python)

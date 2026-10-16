@@ -1,7 +1,30 @@
+import io
+
 import pytest
+from mirror.protocol import agent_pb2
 from rich import cells
 
-from mirror.cli import rendering, state, stream
+from mirror.cli import actions, rendering, state, stream, transcript
+
+
+@pytest.fixture
+def compact_history() -> transcript.Transcript:
+  return transcript.Transcript(
+    view_mode=lambda: actions.ViewMode.DEFAULT,
+    skill_names=frozenset(),
+    get_rewind_entry_id=lambda: None,
+  )
+
+
+def _lines(
+  history: transcript.Transcript, entry: agent_pb2.AgentMessage
+) -> list[str]:
+  rendered = history.project(entry, {})
+  assert rendered is not None
+  output = io.StringIO()
+  rendering.ansi_console(output, 120, interactive=False).print(rendered)
+  rendered = rendering.strip_ansi(output.getvalue()).strip()
+  return [line.rstrip() for line in rendered.splitlines()]
 
 
 @pytest.mark.parametrize('width', [11, 32, 80])
@@ -72,3 +95,130 @@ def test_assistant_list_starts_beside_its_glyph() -> None:
   )
   assert rendered.splitlines()[0].startswith('●')
   assert 'First' in rendered.splitlines()[0]
+
+
+@pytest.mark.parametrize(
+  ('content', 'success', 'expected'),
+  [
+    (
+      'Exit code: 1\nstdout:\nfailed\n',
+      True,
+      ['✗  Ran pytest · exit 1', '   └ failed'],
+    ),
+    (
+      'Timed out.\nExit code: -1\nstdout:\npartial\n',
+      True,
+      ['✗  Ran pytest · timed out', '   └ partial'],
+    ),
+    (
+      'Command timed out after 60000ms\nPartial stdout:\npartial\n[Completed in 60.0s]',
+      False,
+      ['✗  Ran pytest · timed out', '   └ partial'],
+    ),
+    (
+      'Command timed out after 5ms\n[Completed in 0.1s]',
+      True,
+      ['·  Ran pytest', '   └ Command timed out after 5ms'],
+    ),
+    (
+      'Exit code: 0\nstdout:\npassed\n',
+      True,
+      ['·  Ran pytest', '   └ passed'],
+    ),
+  ],
+)
+def test_collapsed_shell_results_preserve_exit_and_timeout_status(
+  compact_history: transcript.Transcript,
+  content: str,
+  success: bool,
+  expected: list[str],
+) -> None:
+  foreground = agent_pb2.AgentMessage(
+    chat=agent_pb2.ChatRecord(
+      tool=agent_pb2.ToolMessage(
+        name='bash', tool_call_id='tool', content=content
+      ),
+      display='pytest',
+      success=success,
+    )
+  )
+  background = agent_pb2.AgentMessage(
+    task_result=agent_pb2.TaskResultRecord(
+      tool_name='bash',
+      task_id='task',
+      content=content,
+      display='pytest',
+      success=success,
+    )
+  )
+  assert _lines(compact_history, foreground) == expected
+  assert _lines(compact_history, background) == expected
+
+
+@pytest.mark.parametrize(
+  ('entry', 'expected'),
+  [
+    (
+      agent_pb2.AgentMessage(
+        metadata=agent_pb2.MetadataRecord(exit_code=0),
+        chat=agent_pb2.ChatRecord(
+          tool=agent_pb2.ToolMessage(
+            name='bash',
+            tool_call_id='tool',
+            content='Exit code: 1\n[Completed in 0.1s]',
+          ),
+          display='pytest',
+          success=True,
+        ),
+      ),
+      '·  Ran pytest',
+    ),
+    (
+      agent_pb2.AgentMessage(
+        metadata=agent_pb2.MetadataRecord(exit_code=0),
+        task_result=agent_pb2.TaskResultRecord(
+          tool_name='bash',
+          task_id='task',
+          content='Exit code: 1\n[Completed in 0.1s]',
+          display='pytest',
+          success=True,
+        ),
+      ),
+      '·  Ran pytest',
+    ),
+    (
+      agent_pb2.AgentMessage(
+        metadata=agent_pb2.MetadataRecord(exit_code=1),
+        chat=agent_pb2.ChatRecord(
+          tool=agent_pb2.ToolMessage(
+            name='bash',
+            tool_call_id='tool',
+            content='output spilled to a file',
+          ),
+          display='pytest',
+          success=True,
+        ),
+      ),
+      '✗  Ran pytest · exit 1',
+    ),
+    (
+      agent_pb2.AgentMessage(
+        metadata=agent_pb2.MetadataRecord(exit_code=1),
+        task_result=agent_pb2.TaskResultRecord(
+          tool_name='bash',
+          task_id='task',
+          content='output spilled to a file',
+          display='pytest',
+          success=True,
+        ),
+      ),
+      '✗  Ran pytest · exit 1',
+    ),
+  ],
+)
+def test_collapsed_shell_results_use_recorded_exit_status(
+  compact_history: transcript.Transcript,
+  entry: agent_pb2.AgentMessage,
+  expected: str,
+) -> None:
+  assert _lines(compact_history, entry)[0] == expected

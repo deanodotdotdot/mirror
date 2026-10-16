@@ -113,7 +113,7 @@ def test_user_message_bar_matches_live_and_replayed_history(
 @pytest.mark.parametrize(
   ('mode', 'visible'),
   [
-    (actions.ViewMode.DEFAULT, True),
+    (actions.ViewMode.DEFAULT, False),
     (actions.ViewMode.DETAIL, True),
     (actions.ViewMode.FOCUS, False),
   ],

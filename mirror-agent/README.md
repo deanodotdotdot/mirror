@@ -6,8 +6,8 @@ Use it for automation, evaluations, and embedding in other applications.
 
 ## Install
 
-The PyPI package `mirror-agent` installs the `mirror` CLI. This page covers the
-standalone native executable and its HTTP API.
+The PyPI package `reflection-mirror` installs the `mirror` CLI. This page covers
+the standalone native executable and its HTTP API.
 
 From the [full source checkout](../README.md#run-from-source), install Rust,
 a C compiler, `protoc`, and ripgrep (`rg`), then run at the repository root:

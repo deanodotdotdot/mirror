@@ -215,18 +215,22 @@ def load_skills(
     project_dirs=SKILL_ROOT_DIRS,
     include_global=include_global,
   )
+  if include_global and global_dir is None:
+    scan_roots[:0] = [
+      project.GLOBAL_DIR.parent / directory / 'skills'
+      for directory in ('.claude', '.agents')
+    ]
 
   by_name: dict[str, Skill] = {}
-  seen_files: set[pathlib.Path] = set()
+  by_path: dict[pathlib.Path, Skill] = {}
   for root in scan_roots:
     for skill in _skills_in_dir(root):
       try:
         canonical = skill.path.resolve()
       except OSError:
         canonical = skill.path.absolute()
-      if canonical in seen_files:
-        continue
-      seen_files.add(canonical)
+      # Keep one identity per file without losing a later root's precedence.
+      skill = by_path.setdefault(canonical, skill)
       by_name[skill.name] = skill
   return list(by_name.values())
 

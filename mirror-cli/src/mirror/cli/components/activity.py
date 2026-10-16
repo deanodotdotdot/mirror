@@ -63,9 +63,6 @@ def _content(state: state.State) -> formatted_text.StyleAndTextTuples:
   timer = ''
   if state.activity.work_started is not None:
     timer = f' · {rendering.Stopwatch(state.activity.work_started).render()}'
-  detach_hint = (
-    '  ·  Ctrl+B to detach' if state.activity.foreground_tasks else ''
-  )
   indicator = spinner.render(
     state.activity.spinner_color, style='class:activity'
   )
@@ -76,7 +73,7 @@ def _content(state: state.State) -> formatted_text.StyleAndTextTuples:
     *indicator,
     ('class:activity', ' ' * padding),
     *text_shimmer.render(status, style='class:activity'),
-    ('class:activity', tokens + timer + detach_hint),
+    ('class:activity', tokens + timer),
   ]
 
 

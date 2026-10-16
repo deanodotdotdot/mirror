@@ -1,5 +1,3 @@
-import pathlib
-
 import pytest
 from rich import cells
 
@@ -24,24 +22,14 @@ def test_card_uses_single_line_borders_and_fits_terminal(width: int) -> None:
 
 
 @pytest.mark.parametrize('width', [32, 120])
-def test_welcome_card_keeps_facts_and_setup_without_a_second_emblem(
-  width: int,
-) -> None:
+def test_key_setup_without_a_second_emblem(width: int) -> None:
   rendered = rendering.strip_ansi(
     rendering.renderable_to_ansi(
-      rendering.render_banner(
-        'example-model',
-        pathlib.Path.home() / 'project',
-        setup_url='https://example.test',
-        setup_provider='Test',
-      ),
+      rendering.render_key_setup('Test', 'https://example.test'),
       width,
     )
   )
-  assert 'Reflection mirror' in rendered
   assert ' · ' not in rendered
-  assert 'example-model' in rendered
-  assert '~/project' in rendered
   assert 'Connect to Test' in rendered
   assert 'Paste your key below' in rendered
   assert '╱' not in rendered

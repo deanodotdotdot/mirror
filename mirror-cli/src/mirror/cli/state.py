@@ -239,10 +239,11 @@ class CompletionState:
   skills: tuple[skills.Skill, ...] = ()
   argument_hint: str | None = None
   argument_optional: bool = False
+  empty_skills: bool = False
 
   @property
   def active(self) -> bool:
-    return bool(self.skills or self.commands)
+    return bool(self.skills or self.commands or self.empty_skills)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -321,3 +322,14 @@ class State:
   # The host supplies this catalog in extension reducer and render snapshots.
   extension_tips: tuple[str, ...] = ()
   extension_themes: tuple[themes.Theme, ...] = ()
+
+  @property
+  def can_detach_tools(self) -> bool:
+    """Whether the worker reports foreground tasks that can release their wait."""
+    return (
+      self.activity.busy
+      and bool(self.activity.foreground_tasks)
+      and self.approval.request is None
+      and self.session.pending_switch is None
+      and not self.lifecycle.quitting
+    )

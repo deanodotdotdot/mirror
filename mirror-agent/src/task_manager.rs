@@ -159,6 +159,11 @@ impl TaskManagerHandle {
         }
     }
 
+    /// Whether this context has no live task manager (including standalone tools).
+    pub fn is_closed(&self) -> bool {
+        self.commands.is_closed()
+    }
+
     /// Start task work and return its conversation-local id.
     pub async fn spawn<F, Fut>(
         &self,

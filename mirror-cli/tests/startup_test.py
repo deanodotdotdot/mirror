@@ -32,7 +32,7 @@ def test_handoff_preserves_arguments_and_cwd(
   monkeypatch.chdir(tmp_path)
   monkeypatch.setenv('GRPC_ENABLE_FORK_SUPPORT', '1')
   monkeypatch.setattr(
-    sys, 'argv', ['mirror', '--update', '--model', 'fixture', '--continue']
+    sys, 'argv', ['mirror', '--model', 'fixture', '--continue']
   )
   python = tmp_path / 'selected' / 'bin' / 'python'
   with (
@@ -44,7 +44,9 @@ def test_handoff_preserves_arguments_and_cwd(
     mock.patch.object(sys.stderr, 'isatty', return_value=True),
   ):
     main.run()
-  prepare.assert_called_once_with(check=True, force=True, interactive=True)
+  prepare.assert_called_once_with(
+    check=True, interactive=True, update_only=False
+  )
   execute.assert_called_once_with(
     str(python),
     [str(python), '-m', 'mirror.cli.main', '--model', 'fixture', '--continue'],
@@ -94,7 +96,7 @@ def test_console_version_contract_survives_handoff() -> None:
 def test_cached_release_owns_next_check_and_receives_original_flags(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-  monkeypatch.setattr(sys, 'argv', ['mirror', '--update', '--continue'])
+  monkeypatch.setattr(sys, 'argv', ['mirror', '--no-update', '--continue'])
   selected = pathlib.Path('/fixture/selected/bin/python')
   with (
     mock.patch.object(
@@ -107,6 +109,6 @@ def test_cached_release_owns_next_check_and_receives_original_flags(
     main.run()
   execute.assert_called_once_with(
     str(selected),
-    [str(selected), '-m', 'mirror.main', '--update', '--continue'],
+    [str(selected), '-m', 'mirror.main', '--no-update', '--continue'],
     mock.ANY,
   )

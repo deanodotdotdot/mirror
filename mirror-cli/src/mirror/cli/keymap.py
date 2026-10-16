@@ -259,9 +259,13 @@ def defaults(
     Binding(('c-s',), actions.WorkspaceTagCommand()),
     Binding(('c-c',), actions.CancelOrQuitRequested()),
     Binding(('c-d',), actions.QuitRequested()),
+    Binding(
+      ('c-b',),
+      actions.DetachRequested(),
+      filter=not modal_active and current.can_detach_tools,
+    ),
     Binding(('c-t',), actions.CycleViewMode()),
     Binding(('c-o',), actions.OpenWorkspaces()),
-    Binding(('c-b',), actions.DetachRequested()),
     *(
       Binding((f'c-{index + 1}',), actions.SelectWorktreeRequested(index))
       for index in range(9)
