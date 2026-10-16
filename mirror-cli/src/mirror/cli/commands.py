@@ -364,7 +364,7 @@ COMMANDS: tuple[CommandDef, ...] = (
   ),
   CommandDef(
     'folder',
-    'Open an existing directory as a folder workspace',
+    'Open a directory (absolute or relative to this workspace)',
     _handle_folder,
     id=CommandId.FOLDER,
     arguments=RequiredArguments('<path>'),

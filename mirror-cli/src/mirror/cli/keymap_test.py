@@ -377,7 +377,7 @@ def test_default_workspace_and_background_shortcuts(busy: bool) -> None:
   assert keymap.Binding(('c-o',), actions.OpenWorkspaces()) in bindings
   assert keymap.Binding(('c-n',), actions.OpenNewWorkspace()) in bindings
   assert ('c-x',) not in {binding.keys for binding in bindings}
-  assert keymap.Binding(('c-b',), actions.DetachRequested()) in bindings
+  assert keymap.Binding(('c-b',), actions.DetachRequested()) not in bindings
   assert keymap.Binding(('c-o',), actions.DetachRequested()) not in bindings
 
 

@@ -10,9 +10,15 @@ from mirror import updater
 
 
 def run() -> None:
-  """Offer a startup update, then replace this launcher with the chosen CLI."""
+  """Update without a session, or hand off to the selected CLI."""
+  update_only = sys.argv[1:2] == ['update']
+  if update_only:
+    argparse.ArgumentParser(
+      prog='mirror update',
+      description='Check for an update, ask before installing, then exit. Requires a terminal.',
+      allow_abbrev=False,
+    ).parse_args(sys.argv[2:])
   parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-  parser.add_argument('--update', action='store_true')
   parser.add_argument('--no-update', action='store_true')
   options, arguments = parser.parse_known_args()
   exec_mode = 'exec' in arguments
@@ -23,8 +29,8 @@ def run() -> None:
       and not any(
         arg in ('--help', '-h', '--version', '--showcase') for arg in arguments
       ),
-      force=options.update and not exec_mode,
       interactive=not exec_mode and sys.stdin.isatty() and sys.stderr.isatty(),
+      update_only=update_only,
     )
   except KeyboardInterrupt:
     raise SystemExit(130) from None

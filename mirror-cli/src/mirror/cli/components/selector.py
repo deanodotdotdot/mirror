@@ -10,7 +10,7 @@ from prompt_toolkit.key_binding import key_bindings, key_processor
 from prompt_toolkit.layout import containers, controls, dimension, processors
 from prompt_toolkit.utils import get_cwidth
 
-from rich import console, text
+from rich import cells, console, text
 
 from mirror.cli import rendering, selection, state, themes
 from mirror.cli.components import component, fuzzy_score, menu, resume
@@ -36,6 +36,20 @@ def highlight(text: str, query: str, style: str) -> StyleAndTextTuples:
   if start < len(text):
     fragments.append((style, text[start:]))
   return fragments
+
+
+def _label_suffix(label: str, width: int) -> str:
+  """Fit a label suffix using the terminal renderer's cell measurements."""
+  offset = len(label)
+  remaining = max(0, width)
+  # Rich supplies grapheme boundaries, but its cell widths differ from the UI's.
+  for start, stop, _ in reversed(cells.split_graphemes(label)[0]):
+    size = get_cwidth(label[start:stop])
+    if size > remaining:
+      break
+    offset = start
+    remaining -= size
+  return label[offset:]
 
 
 def height(
@@ -67,6 +81,7 @@ def render_choices(
   stacked: bool = False,
   wrap_details: bool = False,
   footer: str | None = None,
+  truncate_labels_from_start: bool = False,
 ) -> StyleAndTextTuples:
   row_budget = menu_state.max_rows
   wrapping_console = console.Console() if wrap_details else None
@@ -75,7 +90,9 @@ def render_choices(
   if width is not None:
     label_width = min(
       label_width,
-      max(0, width - 4) if stacked else max(8, (width - 4) // 3),
+      max(0, width - 4)
+      if stacked
+      else max(0, min(width - 4, max(8, (width - 4) // 3))),
     )
 
   shortcut_width = max(
@@ -98,12 +115,15 @@ def render_choices(
     style = 'class:menu-selected' if selected else 'class:menu-item'
     label = choice.label
     if get_cwidth(label) > label_width:
-      label = (
-        formatted_text.fragment_list_to_text(
-          menu.fit_line([('', label)], max(0, label_width - 1))
+      if truncate_labels_from_start:
+        label = '…' + _label_suffix(label, label_width - 1)
+      else:
+        label = (
+          formatted_text.fragment_list_to_text(
+            menu.fit_line([('', label)], max(0, label_width - 1))
+          )
+          + '…'
         )
-        + '…'
-      )
     label_query = (
       query if fuzzy_score.positions(label, query) is not None else ''
     )
@@ -285,6 +305,7 @@ class Selector(component.Component):
       min_rows=min_rows,
       numbered=request.numbered,
       width=state.layout.columns,
+      truncate_labels_from_start=request.truncate_labels_from_start,
     )
     if is_resume:
       fragments = [

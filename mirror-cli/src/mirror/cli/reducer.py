@@ -453,12 +453,12 @@ def _reduce(
       ), (effects.SetComposerText(text, cursor),)
     case _actions.StageRewind(turn, discards):
       return _stage_rewind(state, turn, discards)
-    case _actions.OpenFolder(path):
+    case _actions.OpenFolder(path, confirmed):
       if not state.supervised:
         return state, (
           effects.EmitError('workspace supervision is unavailable'),
         )
-      return state, (effects.OpenFolder(path),)
+      return state, (effects.OpenFolder(path, confirmed),)
     case _actions.OpenNewWorkspace() | _actions.CreateWorkspace():
       if not state.supervised:
         return state, (
@@ -1549,7 +1549,7 @@ def _reduce(
         completion=_state.CompletionState(),
       ), ()
     case _actions.CompletionChanged(
-      skill_choices, command_choices, hint, optional
+      skill_choices, command_choices, hint, optional, empty_skills
     ):
       return dataclasses.replace(
         state,
@@ -1559,6 +1559,7 @@ def _reduce(
           commands=command_choices,
           argument_hint=hint,
           argument_optional=optional,
+          empty_skills=empty_skills,
         ),
       ), ()
     case _actions.TaskChanged(task_id, task, foreground):
@@ -1704,6 +1705,6 @@ def _reduce(
         return state, ()
       return state, (effects.SelectWorktree(index),)
     case _actions.DetachRequested():
-      if state.activity.busy:
+      if state.can_detach_tools:
         return state, (effects.DetachTools(),)
       return state, ()

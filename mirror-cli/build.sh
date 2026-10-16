@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Export, build, and verify a native wheel.
+# Export, build, and verify a native wheel, or stage a Linux agent for ABI auditing.
 set -euo pipefail
 
 if [[ $# -gt 1 ]]; then
@@ -7,6 +7,20 @@ if [[ $# -gt 1 ]]; then
   exit 2
 fi
 source_dir="$(cd "$(dirname "$0")" && pwd)"
+component="${MIRROR_BUILD_COMPONENT:-cli}"
+case "$component" in
+  cli) ;;
+  agent)
+    if [[ -f "$source_dir/BUILD.bazel" || "$(uname -s)" != Linux ]]; then
+      echo 'error: agent mode requires an exported source tree and native Linux' >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo 'error: MIRROR_BUILD_COMPONENT must be cli or agent' >&2
+    exit 2
+    ;;
+esac
 output="${1:-$source_dir/dist}"
 mkdir -p "$output"
 output="$(cd "$output" && pwd)"
@@ -73,10 +87,14 @@ sign_macos_binary() {
     codesign --verify --strict "$1"
   fi
 }
-read -r distribution version < <(uv run --no-project --python 3.12 python -c \
-  'import pathlib, sys, tomllib; project = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]; print(project["name"], project["version"])' \
-  "$source_dir/pyproject.toml")
-echo "Building Mirror $version for $platform"
+if [[ "$component" == cli ]]; then
+  read -r distribution version < <(uv run --no-project --python 3.12 python -c \
+    'import pathlib, sys, tomllib; project = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())["project"]; print(project["name"], project["version"])' \
+    "$source_dir/pyproject.toml")
+  echo "Building Mirror $version for $platform"
+else
+  echo "Building standalone Mirror agent for $platform"
+fi
 # Never reuse binaries or configuration from the development checkout.
 export CARGO_TARGET_DIR="$scratch/target"
 # Pin the embedded tool for repeatable releases; upgrades must pass RPC and dylib checks.
@@ -107,6 +125,39 @@ sign_macos_binary "$MIRROR_BUNDLED_RG"
   cargo build --locked --release -p mirror-agent --bin mirror-agent --features bundled-ripgrep \
     --message-format=json-render-diagnostics >"$scratch/worker.jsonl"
 )
+if [[ "$component" == agent ]]; then
+  native_output="${MIRROR_NATIVE_OUTPUT:-$output}"
+  mkdir -p "$native_output"
+  native_output="$(cd "$native_output" && pwd)"
+  cp "$CARGO_TARGET_DIR/release/mirror-agent" "$native_output/mirror-agent"
+  cp "$MIRROR_BUNDLED_RG" "$native_output/rg"
+  cp "$source_dir/../mirror-agent/"{LICENSE,NOTICE,RIPGREP-LICENSE-MIT} "$native_output/"
+  chmod 755 "$native_output/mirror-agent" "$native_output/rg"
+  # Attribute these Cargo bytes, not another build system's dependency graph.
+  uv run --no-project --python 3.12 python "$source_dir/native_notices.py" \
+    "$native_output/THIRD_PARTY_NOTICES.txt" "$scratch/worker.jsonl" "$scratch/ripgrep.jsonl" \
+    --rust-docs "$("${RUSTC:-rustc}" --print sysroot)/share/doc/rust"
+  uv run --no-project --python 3.12 --with absl-py python "${MIRROR_NATIVE_ARTIFACTS:?agent mode requires the packaging helper}" \
+    --action=record --native="$native_output" --workspace="$source_dir/.." \
+    --ripgrep_log="$scratch/ripgrep.jsonl"
+  (
+    cd "$source_dir/.."
+    env -u MIRROR_RG_PATH MIRROR_AGENT_BIN="$native_output/mirror-agent" \
+      cargo test --locked --release -p mirror-agent --features bundled-ripgrep \
+      --test headless_test --test worker_shutdown_test --test worker_environment_test
+  )
+  # Retain the compiled public-tool test for the extracted archive, without Cargo or Python.
+  headless_tests=()
+  for candidate in "$CARGO_TARGET_DIR"/release/deps/headless_test-*; do
+    if [[ -f "$candidate" && -x "$candidate" ]]; then
+      headless_tests+=("$candidate")
+    fi
+  done
+  [[ ${#headless_tests[@]} == 1 ]]
+  cp "${headless_tests[0]}" "$native_output/headless_test"
+  echo "Runtime-tested standalone agent staged for ABI auditing: $native_output"
+  exit
+fi
 # Sandboxes mount a Linux sandboxd built for this machine's architecture. Linked
 # against glibc 2.17, it runs in any glibc-based guest image.
 case "$(uname -m)" in

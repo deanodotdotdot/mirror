@@ -35,6 +35,16 @@ class Block:
       return self.renderable.parts
     return (self.renderable,)
 
+  @functools.cached_property
+  def expanded(self) -> _console.RenderableType | None:
+    """The full output a click swaps in, when the row collapses one."""
+    rendered = self.renderable
+    if isinstance(rendered, _Entry):
+      rendered = rendered.renderable
+    if isinstance(rendered, _rendering.Expandable):
+      return rendered.expanded
+    return None
+
 
 @dataclasses.dataclass(frozen=True)
 class _Entry:
@@ -105,6 +115,15 @@ def _render_entry(
     )
   if kind == 'task_result':
     task_result = entry.task_result
+    if compact and task_result.tool_name == 'bash':
+      return _rendering.bash_result(
+        f'background task {task_result.task_id[:8]}',
+        task_result.content,
+        task_result.display if task_result.HasField('display') else None,
+        error=not task_result.success,
+        exit_code=_exit_code(entry),
+        expandable=True,
+      )
     return _rendering.task_result_renderable(
       task_result.tool_name,
       task_result.task_id,
@@ -127,7 +146,7 @@ def _render_entry(
       (
         assistant.reasoning_content
         if include_reasoning
-        and not focus
+        and view_mode.shows_reasoning
         and assistant.HasField('reasoning_content')
         else None
       ),
@@ -138,6 +157,11 @@ def _render_entry(
       skill_names=skill_names,
     )
   return None
+
+
+def _exit_code(entry: agent_pb2.AgentMessage) -> int | None:
+  metadata = entry.metadata
+  return metadata.exit_code if metadata.HasField('exit_code') else None
 
 
 class Transcript:
@@ -398,7 +422,10 @@ class Transcript:
             return bool(
               message.content.strip()
               or message.refusal.strip()
-              or (message.reasoning_content.strip() and not self._focus())
+              or (
+                message.reasoning_content.strip()
+                and self._view_mode().shows_reasoning
+              )
             )
           case _:
             return False
@@ -421,7 +448,9 @@ class Transcript:
     if not self._visible_entry(entry):
       return None
     if entry.chat.HasField('tool'):
-      return self.resolve_tool_call(entry.chat, hints)
+      return self.resolve_tool_call(
+        entry.chat, hints, exit_code=_exit_code(entry)
+      )
     if lazy and not entry.chat.HasField('user'):
       return _Entry(entry, self._view_mode(), self._skill_names)
     return _render_entry(
@@ -434,7 +463,11 @@ class Transcript:
     )
 
   def resolve_tool_call(
-    self, message: agent_pb2.ChatRecord, hints: _rendering.CallHints
+    self,
+    message: agent_pb2.ChatRecord,
+    hints: _rendering.CallHints,
+    *,
+    exit_code: int | None = None,
   ) -> _console.RenderableType | None:
     """Combine a tool result with its parked call into one block."""
     tool = message.tool
@@ -449,6 +482,15 @@ class Transcript:
       and (skill := _rendering.skill_display_for_tool(name, args)) is not None
     ):
       return _rendering.skill_loaded_text(skill)
+    if self._compact() and name == 'bash':
+      return _rendering.bash_result(
+        args,
+        tool.content,
+        display,
+        error=not message.success,
+        exit_code=exit_code,
+        expandable=True,
+      )
     if self._compact():
       group = _tool_groups.result(
         _rendering.strip_ansi(name),

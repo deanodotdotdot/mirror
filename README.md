@@ -3,26 +3,22 @@
 Mirror is a coding agent for your terminal. It can read and edit files, run
 commands, and work on parallel tasks in separate repository worktrees.
 
+More [documentation](https://developers.reflection.ai/mirror-overview) is available in Reflection's website.
+
 ## Install
 
 Install with
 [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-uv tool install mirror-agent
+uv tool install reflection-mirror
 cd /path/to/your/project
 mirror
 ```
 
-The package is named `mirror-agent`; the command is `mirror`. Release wheels
+The package is named `reflection-mirror`; the command is `mirror`. Release wheels
 include the native agent and ripgrep, so no Rust build is required. See the
 [supported platforms](mirror-cli/README.md#requirements).
-
-The `mirror-agent-py` Python embedding bindings are not part of the CLI release
-and are not included in the PyPI package.
-
-If your shell cannot find `mirror`, run `uv tool update-shell` and restart it.
-The PyPI package named `mirror` is unrelated; do not install it.
 
 ## Run from source
 
@@ -51,28 +47,8 @@ cd /path/to/your/project
 /path/to/mirror/mirror-cli/mirror-dev
 ```
 
-To try the interface without model credentials or a Rust build:
-
-```bash
-./mirror-cli/mirror-dev --showcase
-```
-
-Send a message to play a synthetic conversation. No model calls or real tools run.
-
 By default, tools run with your account's permissions. Manual approval is not a
 sandbox; see [local data and safety](mirror-cli/README.md#local-data-and-safety).
-
-## Development
-
-- [CLI usage and configuration](mirror-cli/README.md)
-- [Editing, testing, and building from source](mirror-cli/docs/building.md)
-- [Rust agent](mirror-agent/README.md) · [Python embedding](mirror-agent-py/README.md)
-
-```bash
-bash ci.sh
-cargo test --locked -p mirror-agent -p mirror-protocol
-cargo check --locked -p mirror-agent-python
-```
 
 The Rust checkpoint tests also require Jujutsu (`jj`) on `PATH`.
 

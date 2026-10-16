@@ -78,6 +78,11 @@ class ViewMode(enum.Enum):
   DEFAULT = 'default'
   FOCUS = 'focus'
 
+  @property
+  def shows_reasoning(self) -> bool:
+    """Whether provider reasoning is drawn; only the detail view includes it."""
+    return self is ViewMode.DETAIL
+
 
 @dataclasses.dataclass(frozen=True)
 class PendingSwitch:
@@ -315,6 +320,7 @@ class OpenFolder:
   """Open an existing directory as a folder workspace."""
 
   path: str
+  confirmed: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -993,6 +999,7 @@ class CompletionChanged:
   commands: tuple[CommandSelection, ...] = ()
   argument_hint: str | None = None
   argument_optional: bool = False
+  empty_skills: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

@@ -74,7 +74,7 @@ struct AgentArgs {
     /// local workspace; the store's contents reach the model endpoint.
     #[arg(long)]
     memory_dir: Option<PathBuf>,
-    /// A level name (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) or a
+    /// A level name (`none`, `low`, `medium`, `high`, `xhigh`, `max`) or a
     /// non-negative integer budget for endpoints that take one.
     #[arg(long, value_parser = reasoning_effort)]
     reasoning_effort: Option<String>,

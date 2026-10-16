@@ -715,11 +715,11 @@ def test_sticky_header_keeps_the_middle_and_end_of_a_long_user_message_reachable
   view.first()
   view.create_content(40, 12)
   view.scroll(1)
-  assert 'USER ROW 0' in _text(view.create_content(40, 12)).splitlines()[2]
+  assert 'USER ROW 0' in _text(view.create_content(40, 12)).splitlines()[1]
   view.scroll(19)
-  assert 'USER ROW 19' in _text(view.create_content(40, 12)).splitlines()[2]
+  assert 'USER ROW 19' in _text(view.create_content(40, 12)).splitlines()[1]
   view.scroll(20)
-  assert 'USER ROW 39' in _text(view.create_content(40, 12)).splitlines()[2]
+  assert 'USER ROW 39' in _text(view.create_content(40, 12)).splitlines()[1]
   view.follow()
   assert 'ASSISTANT ANSWER' in _text(view.create_content(40, 12))
 
@@ -781,7 +781,7 @@ def test_sticky_summary_uses_one_terminal_row(
   source.extend([original, *answers])
   view = transcript_view.TranscriptView(source.blocks, lambda: ())
   frame = _paint(view, width, 8)
-  header = _text(view.create_content(width, 8)).splitlines()[0]
+  header = _text(view.create_content(width, 8)).splitlines()[0].rstrip()
   assert header == expected
   assert utils.get_cwidth(header) <= width
   assert cells.cell_len(header) <= width
@@ -790,10 +790,9 @@ def test_sticky_summary_uses_one_terminal_row(
   body = _source()
   body.extend(answers)
   without_header = _paint(
-    transcript_view.TranscriptView(body.blocks, lambda: ()), width, 6
+    transcript_view.TranscriptView(body.blocks, lambda: ()), width, 7
   )
-  assert frame.display[1].strip() == ''
-  assert frame.display[2:] == without_header.display
+  assert frame.display[1:] == without_header.display
   assert source.entries()[0].chat.user.content == message
 
 
@@ -808,7 +807,7 @@ def test_sticky_summary_keeps_emoji_sequences_whole(
   source.extend([_user(message), _answer('answer', 'TEXT\n\n' * 20, 2)])
   view = transcript_view.TranscriptView(source.blocks, lambda: ())
   header = _text(view.create_content(8, 6)).splitlines()[0]
-  assert header == expected
+  assert header.rstrip() == expected
   assert utils.get_cwidth(header) <= 8
   assert cells.cell_len(header) <= 8
   assert 'TEXT' in _paint(view, 8, 6).display[2]
@@ -827,7 +826,7 @@ def test_sticky_summary_leaves_no_extra_padding_in_short_terminals(
 
 
 @pytest.mark.parametrize('name', themes.NAMES)
-def test_sticky_summary_is_quiet_but_normal_user_message_is_unchanged(
+def test_sticky_summary_is_shaded_but_normal_user_message_is_unchanged(
   name: str,
 ) -> None:
   message = 'FIRST LINE\nSECOND LINE with original spacing'
@@ -836,17 +835,24 @@ def test_sticky_summary_is_quiet_but_normal_user_message_is_unchanged(
   view = transcript_view.TranscriptView(
     source.blocks, lambda: (), theme_name=lambda: name
   )
-  summary = _paint(view, 40, 12, name)
+  summary = _paint(view, 80, 12, name)
   assert (
-    summary.display[0].rstrip() == '›  FIRST LINE SECOND LINE with original…'
+    summary.display[0].rstrip()
+    == '›  FIRST LINE SECOND LINE with original spacing'
   )
-  assert summary.buffer[0][2].italics
-  assert summary.buffer[0][2].bg == 'default'
+  assert not summary.buffer[0][2].italics
+  assert (
+    summary.buffer[0][2].bg
+    == {
+      'dark': '282828',
+      'light': 'eeeeee',
+      'terminal': 'default',
+      'mono': 'default',
+    }[name]
+  )
   assert not summary.buffer[0][2].reverse
-  assert (
-    summary.buffer[0][2].fg
-    == themes.prompt_style(name).get_attrs_for_style_str('class:ui.muted').color
-  )
+  assert summary.buffer[0][79].bg == summary.buffer[0][2].bg
+  assert summary.buffer[0][79].reverse == summary.buffer[0][2].reverse
 
   view.first()
   original = _paint(view, 40, 12, name)
@@ -879,7 +885,7 @@ def test_leaving_follow_mode_scrolls_one_body_row_with_a_sticky_summary() -> (
   reading = _paint(view, 30, 10)
   assert view.reading
   assert reading.display[0] == following.display[0]
-  assert reading.display[3:] == following.display[2:-1]
+  assert reading.display[2:] == following.display[1:-1]
   view.scroll(1)
   assert not view.reading
   assert _paint(view, 30, 10).display == following.display
@@ -896,9 +902,8 @@ def test_sticky_summary_resizes_without_moving_streaming_content() -> None:
   before = _paint(view, 60, 8)
   narrow = _paint(view, 22, 8)
   assert narrow.display[0] == '›  A long request wit…'
-  assert narrow.display[1].strip() == ''
-  assert [row.rstrip() for row in narrow.display[2:]] == [
-    row.rstrip() for row in before.display[2:]
+  assert [row.rstrip() for row in narrow.display[1:]] == [
+    row.rstrip() for row in before.display[1:]
   ]
   live[0] = rendering.assistant_render(
     answer + '\n\nNew output', hyperlinks=False

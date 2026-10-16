@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Callable
 from typing import override
 
 from prompt_toolkit.formatted_text import ansi
@@ -18,16 +19,23 @@ from mirror.cli.components import component
 class Pending(component.Component):
   """Tool calls that are assembling or awaiting results."""
 
+  def __init__(
+    self,
+    shortcut_hint: Callable[[_actions.Action | None], str] = lambda _: '',
+  ) -> None:
+    self._shortcut_hint = shortcut_hint
+
   @override
   def render(self, state: _state.State) -> containers.AnyContainer:
+    shortcut = self._shortcut_hint(_actions.DetachRequested())
     return containers.Window(
-      controls.FormattedTextControl(render(state)),
-      height=dimension.Dimension.exact(rows(state)),
+      controls.FormattedTextControl(render(state, shortcut)),
+      height=dimension.Dimension.exact(rows(state, shortcut)),
       wrap_lines=False,
     )
 
 
-def render(state: _state.State) -> ansi.ANSI:
+def render(state: _state.State, background_shortcut: str = '') -> ansi.ANSI:
   """Render in-flight tool calls exactly like their settled form."""
   if state.approval.request is not None:
     return ansi.ANSI('')
@@ -38,6 +46,7 @@ def render(state: _state.State) -> ansi.ANSI:
     state.tool_group,
     state.layout.columns,
     themes.current(state.extensions, state.extension_themes),
+    background_shortcut if state.can_detach_tools else '',
   )
 
 
@@ -49,9 +58,10 @@ def _render(
   group: tool_groups.ToolGroup | None,
   columns: int,
   theme_name: str | themes.Theme,
+  background_shortcut: str,
 ) -> ansi.ANSI:
   """Share tool-row rendering between measurement and painting."""
-  blocks = renderables(view_mode, running, pending, group)
+  blocks = renderables(view_mode, running, pending, group, background_shortcut)
   if view_mode is _actions.ViewMode.DEFAULT:
     return ansi.ANSI(
       rendering.renderable_to_ansi(
@@ -68,11 +78,13 @@ def renderables(
   running: tuple[_actions.RunningToolCall, ...],
   pending: tuple[_actions.PendingToolCall, ...],
   group: tool_groups.ToolGroup | None,
+  background_shortcut: str = '',
 ) -> tuple[console.RenderableType, ...]:
   """Share live tool presentation between scrollback and fullscreen layouts."""
   if view_mode is _actions.ViewMode.FOCUS:
     return ()
-  body = 'running…'
+  hint = f'{background_shortcut} to background' if background_shortcut else ''
+  body = hint or 'running…'
   if view_mode is _actions.ViewMode.DEFAULT:
     parts: list[console.RenderableType] = []
     calls = (*running, *pending)
@@ -105,11 +117,15 @@ def renderables(
       if len(calls) > 1:
         label += f' · {len(calls)} running'
     if label:
-      prefix = (
-        ' ' * rendering.GUTTER_WIDTH + '└ '
-        if summary is not None
-        else rendering.icon_prefix('·')
-      )
+      if summary is None:
+        return (
+          rendering.tool_block(
+            text.Text(rendering.strip_ansi(label), style='dim'),
+            rendering.result_summary(hint) if hint and running else None,
+            wrap=wrap,
+          ),
+        )
+      prefix = ' ' * rendering.GUTTER_WIDTH + '└ '
       row = table.Table.grid()
       row.add_column(width=len(prefix))
       row.add_column()
@@ -122,6 +138,10 @@ def renderables(
           no_wrap=not wrap,
         ),
       )
+      if hint and running:
+        row.add_row(
+          text.Text(prefix, style='dim'), rendering.result_summary(hint)
+        )
       parts.append(row)
     return (console.Group(*parts),) if parts else ()
   return (
@@ -130,13 +150,13 @@ def renderables(
       for call in running
     ),
     *(
-      rendering.running_tool_renderable(*call.render_hint, body)
+      rendering.running_tool_renderable(*call.render_hint, 'running…')
       for call in pending
     ),
   )
 
 
-def rows(state: _state.State) -> int:
+def rows(state: _state.State, background_shortcut: str = '') -> int:
   """Let the approval preview own tool presentation while a decision is pending."""
   if (
     state.status_bar.view_mode is _actions.ViewMode.FOCUS
@@ -152,7 +172,7 @@ def rows(state: _state.State) -> int:
     return 0
   text = ''.join(
     fragment[1]
-    for fragment in render(state).__pt_formatted_text__()
+    for fragment in render(state, background_shortcut).__pt_formatted_text__()
     if fragment[0] != '[ZeroWidthEscape]'
   )
   return text.count('\n') + 1

@@ -57,7 +57,14 @@ class Position:
 
 type _Row = tuple[formatted_text.OneStyleAndTextTuple, ...]
 type _Rows = tuple[_Row, ...]
-type _LayoutKey = tuple[str, tuple[int, int], int, int, str | themes.Theme, int]
+type _LayoutKey = tuple[
+  str, tuple[int, int], int, int, str | themes.Theme, int, bool
+]
+
+
+def _presentation(blocks: Sequence[transcript.Block]) -> int | None:
+  """The view mode and rewind cut that produced a settled snapshot."""
+  return blocks[0].revision[0] if blocks else None
 
 
 def _plain(fragments: _Row) -> str:
@@ -119,6 +126,35 @@ def _split_rows(
   return tuple(rows) + ((),) * padding
 
 
+type _Handler = Callable[[mouse_events.MouseEvent], None]
+
+
+def _toggle_header(row: _Row, expanded: bool, handler: _Handler) -> _Row:
+  """Mark a clickable tool header with a trailing chevron.
+
+  The chevron follows the header text rather than leading the row so tool
+  rows keep the transcript's shared gutter alignment.
+  """
+  fragments = [(style, value) for style, value, *_ in row]
+  while fragments and not fragments[-1][1].strip():
+    fragments.pop()
+  if fragments:
+    style, value = fragments[-1]
+    fragments[-1] = (style, value.rstrip())
+  fragments.append(('class:ui.muted', ' ▾' if expanded else ' ▸'))
+  return _clickable(tuple(fragments), handler)
+
+
+def _clickable(row: _Row, handler: _Handler) -> _Row:
+  """Route clicks on a row to `handler` without displacing existing actions."""
+  return tuple(
+    (f'{fragment[0]} class:mouse-pointer', fragment[1], handler)
+    if len(fragment) == 2
+    else fragment
+    for fragment in row
+  )
+
+
 class TranscriptView(screen_selection.HoverControl):
   """Paint visible rows with bounded retained layouts and stable reading positions."""
 
@@ -154,6 +190,7 @@ class TranscriptView(screen_selection.HoverControl):
     self._cache: collections.OrderedDict[_LayoutKey, tuple[_Rows, int]] = (
       collections.OrderedDict()
     )
+    self._expanded: set[str] = set()
     self._copy_ids = itertools.count()
     self._hovered_style: str | None = None
     self._hovered_action = False
@@ -282,6 +319,7 @@ class TranscriptView(screen_selection.HoverControl):
     self._anchor = None
     self._anchor_index = 0
     self._settling_line = None
+    self._expanded.clear()
     self._cache.clear()
     self._cache_bytes = 0
     self._summary = None
@@ -308,7 +346,15 @@ class TranscriptView(screen_selection.HoverControl):
     # Match inline scrollback: one empty row between blocks or Markdown parts.
     padding = 1
     theme_name = self._theme_name()
-    key = (block.key, block.revision, part, self._width, theme_name, padding)
+    key = (
+      block.key,
+      block.revision,
+      part,
+      self._width,
+      theme_name,
+      padding,
+      block.key in self._expanded,
+    )
     cached = self._cache.get(key)
     if cached is not None:
       self._cache.move_to_end(key)
@@ -380,7 +426,12 @@ class TranscriptView(screen_selection.HoverControl):
     self, block: transcript.Block, key: _LayoutKey, copy_id: int
   ) -> tuple[_Rows, int]:
     """Render captured geometry and copy IDs without mutating viewport state."""
-    _, _, part, width, theme, padding = key
+    _, _, part, width, theme, padding, expanded = key
+    content = block.parts[part]
+    if block.expanded is not None:
+      width = max(1, width - 2)  # Room for the trailing chevron.
+      if expanded:
+        content = block.expanded
     painter = rendering.ansi_console(
       io.StringIO(),
       width,
@@ -392,7 +443,7 @@ class TranscriptView(screen_selection.HoverControl):
     handlers: dict[bool, Callable[[mouse_events.MouseEvent], None]] = {}
     # Direct rendering bypasses the console's default text style.
     for index, segment in enumerate(
-      painter.render(styled.Styled(block.parts[part], 'ui.text'))
+      painter.render(styled.Styled(content, 'ui.text'))
     ):
       rich_style = segment.style
       value = segment.text
@@ -429,7 +480,28 @@ class TranscriptView(screen_selection.HoverControl):
       else:
         fragments.extend(decoded)
     rows = _split_rows(fragments, padding)
+    if block.expanded is not None and rows:
+      # The whole row toggles: the header, the preview, and the expanded output.
+      handler = functools.partial(self._tool_event, block.key)
+      rows = (
+        _toggle_header(rows[0], expanded, handler),
+        *(_clickable(row, handler) for row in rows[1:]),
+      )
     return rows, _layout_bytes(key, rows)
+
+  def _tool_event(self, key: str, event: mouse_events.MouseEvent) -> None:
+    if (
+      event.event_type == mouse_events.MouseEventType.MOUSE_UP
+      and event.button == mouse_events.MouseButton.LEFT
+      and not event.modifiers
+    ):
+      if self._anchor is None:
+        index, part, row = self._content_start()
+        self._anchor = Position(self._blocks[index].key, row, part)
+      if key in self._expanded:
+        self._expanded.remove(key)
+      else:
+        self._expanded.add(key)
 
   @override
   def clear_hover(self) -> None:
@@ -547,7 +619,7 @@ class TranscriptView(screen_selection.HoverControl):
     return message if isinstance(message, rendering.UserText) else None
 
   def _header(self, owner: rendering.UserText) -> _Rows:
-    """Summarize the original message, with a blank separator when space allows."""
+    """Summarize the original message in one full-width shaded row."""
     cached = self._summary
     # Identity avoids hashing or comparing multi-megabyte prompts on redraw.
     if (
@@ -555,13 +627,16 @@ class TranscriptView(screen_selection.HoverControl):
       or cached[0] is not owner.content
       or cached[1] != self._width
     ):
+      summary = _summarize(owner.content, self._width)
+      padding = self._width - max(
+        cells.cell_len(summary), utils.get_cwidth(summary)
+      )
       cached = self._summary = (
         owner.content,
         self._width,
-        _summarize(owner.content, self._width),
+        summary + ' ' * padding,
       )
-    header = ((('class:ui.muted.italic', cached[2]),),)
-    return header + ((),) if self._height > 2 else header
+    return ((('class:ui.message', cached[2]),),)
 
   def _content_start(self) -> tuple[int, int, int]:
     """The first conversation row painted below any pinned header."""
@@ -655,6 +730,8 @@ class TranscriptView(screen_selection.HoverControl):
         return
     else:
       self._user_position = None
+      if _presentation(settled) != _presentation(self._settled_snapshot):
+        self._expanded.clear()
     if self._user_position is not None:
       first, last, user = self._user_position
       last = min(last, len(settled) + len(pending) - 1)

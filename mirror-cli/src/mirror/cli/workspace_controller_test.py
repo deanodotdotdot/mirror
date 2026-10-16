@@ -37,7 +37,7 @@ from mirror.cli import (
     ((), 'low', 'auto', 'low'),
     (('--approval-mode', 'approve'), 'low', 'approve', 'low'),
     (('--approval-mode', 'auto'), 'low', 'auto', 'low'),
-    (('--reasoning-effort', 'minimal'), 'max', 'auto', 'minimal'),
+    (('--reasoning-effort', 'low'), 'max', 'auto', 'low'),
     (('--reasoning-effort', 'medium'), 'max', 'auto', 'medium'),
     (('--reasoning-effort', 'xhigh'), 'max', 'auto', 'xhigh'),
     (('--reasoning-effort', 'max'), 'low', 'auto', 'max'),

@@ -115,7 +115,10 @@ class Transport:
         )
       )
       self._channel = grpc.aio.insecure_channel(
-        address, options=rpc_client.GRPC_CHANNEL_OPTIONS
+        address,
+        # This channel only talks to our child; external traffic keeps its proxy.
+        options=rpc_client.GRPC_CHANNEL_OPTIONS
+        + (('grpc.enable_http_proxy', 0),),
       )
       ready = asyncio.create_task(self._channel.channel_ready())
       exited = asyncio.create_task(process.wait())

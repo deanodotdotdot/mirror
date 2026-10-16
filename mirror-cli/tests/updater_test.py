@@ -23,7 +23,7 @@ _OLD = '0.1.0'
 _NEW = '0.2.0'
 _RELEASE = updater.Release(
   _NEW,
-  'https://files.pythonhosted.org/packages/mirror_agent-0.2.0-py3-none-any.whl',
+  'https://files.pythonhosted.org/packages/reflection_mirror-0.2.0-py3-none-any.whl',
   'a' * 64,
 )
 
@@ -50,7 +50,7 @@ def _enable(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _lock(release: updater.Release = _RELEASE) -> bytes:
   return (
-    f'[[packages]]\nname = "mirror-agent"\nversion = "{release.version}"\n'
+    f'[[packages]]\nname = "reflection-mirror"\nversion = "{release.version}"\n'
     f'wheels = [{{url = "{release.url}", hashes = {{sha256 = "{release.sha256}"}}}}]\n'
   ).encode()
 
@@ -63,7 +63,7 @@ def test_resolution_uses_only_pypi() -> None:
     command[command.index('--default-index') + 1] == 'https://pypi.org/simple/'
   )
   assert '--no-deps' in command
-  assert run.call_args.kwargs['stdin'] == b'mirror-agent>=0.1.0\n'
+  assert run.call_args.kwargs['stdin'] == b'reflection-mirror>=0.1.0\n'
   assert run.call_args.kwargs['timeout'] == 3
 
 
@@ -100,6 +100,7 @@ def test_equal_and_older_versions_are_not_offered(version: str) -> None:
     b'not toml',
     b'packages=[]',
     b'packages=[1]',
+    _lock().replace(b'reflection-mirror', b'mirror-agent'),
     _lock(dataclasses.replace(_RELEASE, sha256='bad')),
   ],
 )
@@ -114,9 +115,9 @@ def test_source_checkout_does_not_enable_updates(
 ) -> None:
   monkeypatch.setattr(updater, '__file__', str(tmp_path / 'updater.py'))
   with mock.patch.object(updater, 'latest') as check:
-    assert updater.prepare(
-      check=True, force=True, interactive=True
-    ) == updater.Launch(pathlib.Path(sys.executable))
+    assert updater.prepare(check=True, interactive=True) == updater.Launch(
+      pathlib.Path(sys.executable)
+    )
     check.assert_not_called()
 
 
@@ -129,9 +130,9 @@ def test_development_bypasses_updates(
   _enable(tmp_path, monkeypatch)
   monkeypatch.setenv(variable, '1')
   with mock.patch.object(updater, '_installed_version') as read:
-    assert updater.prepare(
-      check=True, force=True, interactive=True
-    ) == updater.Launch(pathlib.Path(sys.executable))
+    assert updater.prepare(check=True, interactive=True) == updater.Launch(
+      pathlib.Path(sys.executable)
+    )
     read.assert_not_called()
 
 
@@ -145,9 +146,9 @@ def test_decline_starts_current_without_installing(
     mock.patch('builtins.input', return_value=answer),
     mock.patch.object(updater, 'install') as install,
   ):
-    assert updater.prepare(
-      check=True, force=False, interactive=True
-    ) == updater.Launch(pathlib.Path(sys.executable))
+    assert updater.prepare(check=True, interactive=True) == updater.Launch(
+      pathlib.Path(sys.executable)
+    )
     install.assert_not_called()
 
 
@@ -161,10 +162,10 @@ def test_accept_prepares_before_handoff(
     mock.patch('builtins.input', return_value='yes'),
     mock.patch.object(updater, 'install', return_value=selected) as install,
   ):
-    assert updater.prepare(
-      check=True, force=True, interactive=True
-    ) == updater.Launch(selected)
-    assert check.call_args.kwargs['timeout'] == 120
+    assert updater.prepare(check=True, interactive=True) == updater.Launch(
+      selected
+    )
+    assert check.call_args.kwargs['timeout'] == 3
     install.assert_called_once()
 
 
@@ -173,7 +174,7 @@ def test_noninteractive_does_not_check_or_prompt(
 ) -> None:
   _enable(tmp_path, monkeypatch)
   with mock.patch.object(updater, 'latest') as check:
-    updater.prepare(check=True, force=True, interactive=False)
+    updater.prepare(check=True, interactive=False)
     check.assert_not_called()
 
 
@@ -186,9 +187,9 @@ def test_failure_is_payload_free_and_falls_back(
   with mock.patch.object(
     updater, 'latest', side_effect=RuntimeError('SYNTHETIC_SECRET')
   ):
-    assert updater.prepare(
-      check=True, force=True, interactive=True
-    ) == updater.Launch(pathlib.Path(sys.executable))
+    assert updater.prepare(check=True, interactive=True) == updater.Launch(
+      pathlib.Path(sys.executable)
+    )
   output = capsys.readouterr()
   assert 'starting the existing release' in output.err
   assert 'SYNTHETIC_SECRET' not in output.err
@@ -223,12 +224,12 @@ def test_timeout_kills_and_reaps_process() -> None:
 
 
 def _wheel(path: pathlib.Path, version: str) -> pathlib.Path:
-  wheel = path / f'mirror_agent-{version}-py3-none-any.whl'
-  metadata = f'mirror_agent-{version}.dist-info'
+  wheel = path / f'reflection_mirror-{version}-py3-none-any.whl'
+  metadata = f'reflection_mirror-{version}.dist-info'
   with zipfile.ZipFile(wheel, 'w') as archive:
     archive.writestr(
       metadata + '/METADATA',
-      f'Metadata-Version: 2.1\nName: mirror-agent\nVersion: {version}\nRequires-Dist: packaging\n',
+      f'Metadata-Version: 2.1\nName: reflection-mirror\nVersion: {version}\nRequires-Dist: packaging\n',
     )
     archive.writestr(
       metadata + '/WHEEL',
@@ -256,7 +257,7 @@ def _installer(
   assert uv is not None
   # This fixture translates one synthetic HTTPS wheel URL to a local wheel;
   # real uv installs the environment and public dependencies, without authentication.
-  index = tmp_path / 'index' / 'mirror-agent'
+  index = tmp_path / 'index' / 'reflection-mirror'
   index.mkdir(parents=True, exist_ok=True)
   digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
   (index / 'index.html').write_text(
@@ -316,9 +317,9 @@ def test_real_side_by_side_install_and_selected_offline_start(
     mock.patch.object(updater, '_root', return_value=root),
     mock.patch.object(updater, 'latest') as check,
   ):
-    assert updater.prepare(
-      check=False, force=False, interactive=False
-    ) == updater.Launch(python, 'mirror.main')
+    assert updater.prepare(check=False, interactive=False) == updater.Launch(
+      python, 'mirror.main'
+    )
     check.assert_not_called()
 
 
@@ -369,7 +370,7 @@ def test_real_startup_accepts_update_and_runs_it_without_relaunch(
   master, slave = pty.openpty()
   try:
     with subprocess.Popen(
-      [str(python), '-m', 'mirror.main', '--update', '--continue'],
+      [str(python), '-m', 'mirror.main', '--continue'],
       stdin=slave,
       stderr=slave,
       stdout=subprocess.PIPE,

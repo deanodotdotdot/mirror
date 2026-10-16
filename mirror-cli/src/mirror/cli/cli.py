@@ -422,6 +422,7 @@ class _Repl:
         tuple[_actions.RunningToolCall, ...],
         _tool_groups.ToolGroup | None,
         str | None,
+        str,
       ]
       | None
     ) = None
@@ -1116,7 +1117,9 @@ class _Repl:
     """Retain and display a supervisor error as an imperative effect."""
     renderable = _rendering.error_text(message)
     self._flush_tool_group()
-    self._transcript.add_decoration(renderable)
+    self._transcript.add_decoration(
+      renderable, welcome=self._fullscreen and self._live_notices()
+    )
     if not self._state.lifecycle.active:
       return None
     if self._state.session.replaying:
@@ -1128,7 +1131,9 @@ class _Repl:
   def _record_decoration(self, renderable: _console.RenderableType) -> None:
     """Keep a UI-only event reconstructible without adding it to the trace."""
     self._flush_tool_group()
-    self._transcript.add_decoration(renderable)
+    self._transcript.add_decoration(
+      renderable, welcome=self._fullscreen and self._live_notices()
+    )
     if self._state.lifecycle.active and not self._replacing_history():
       self._terminal.queue_emit([renderable])
 
@@ -1137,14 +1142,14 @@ class _Repl:
     if self._fullscreen:
       if self._state.lifecycle.active or self._viewport.reading:
         # Retain block identities for reading positions, including hidden tabs.
-        blocks = self._live_blocks()
+        blocks = self._live_blocks(show_shortcuts=False)
       else:
-        blocks = self._live_tool_blocks()
+        blocks = self._live_tool_blocks('')
         if (preview := self._stream_pane.preview) is not None:
           rendered = _rendering.assistant_turn_renderable(
-            None
-            if self._focus()
-            else (preview.committed_reasoning or '') + preview.reasoning,
+            (preview.committed_reasoning or '') + preview.reasoning
+            if self._shows_reasoning()
+            else None,
             (preview.committed_content or '') + preview.content,
             preview.refusal,
             hyperlinks=False,
@@ -1157,7 +1162,9 @@ class _Repl:
     self._stream_pane.abort()
 
   def _live_notices(self) -> bool:
-    return self._secret_input is None and not self._transcript.has_conversation
+    return (
+      self._secret_input is None or self._welcome_visible()
+    ) and not self._transcript.has_conversation
 
   def _append_entry(self, entry: agent_pb2.AgentMessage) -> None:
     """Hand welcome notices to scrollback before the first conversation entry."""
@@ -1253,8 +1260,11 @@ class _Repl:
     )
 
   def _focus(self) -> bool:
-    """Whether the current view mode hides thinking and tool activity."""
+    """Whether the current view mode hides tool activity."""
     return self._state.status_bar.view_mode is _actions.ViewMode.FOCUS
+
+  def _shows_reasoning(self) -> bool:
+    return self._state.status_bar.view_mode.shows_reasoning
 
   def _store(self) -> _cli_store.Store:
     return _cli_store.Store(self._database)
@@ -1669,8 +1679,9 @@ class _Repl:
     )
 
   def _welcome_visible(self) -> bool:
+    # Inline sign-in uses scrollback; owned screens keep the launch layout.
     return (
-      self._secret_input is None
+      (self._fullscreen or self._secret_input is None)
       and not self._state.session.restore_pending
       and not self._transcript.has_conversation
       and self._stream_pane.preview is None
@@ -1791,11 +1802,12 @@ class _Repl:
             lambda: _hyperlinks.ANSI(
               _rendering.render_blocks(
                 self._terminal.header,
-                self._state.layout.columns,
+                self._component_state().layout.columns,
                 theme_name=_themes.current(
                   self._state.extensions, self._state.extension_themes
                 ),
               )
+              + '\n'
             ),
             show_cursor=False,
           ),
@@ -1859,10 +1871,15 @@ class _Repl:
       output = _current.get_app().output
       rows = output.get_size().rows
       column = _banner.centered(
-        _containers.HSplit([notices_window, streaming_window, prompt_pane]),
+        _containers.HSplit([
+          pinned_header,
+          notices_window,
+          streaming_window,
+          prompt_pane,
+        ]),
         self._state.layout.columns,
       )
-      welcome = _containers.HSplit([pinned_header, banner_window, column])
+      welcome = _containers.HSplit([banner_window, column])
 
       def height() -> _dimension.Dimension:
         natural = sum(
@@ -1970,9 +1987,16 @@ class _Repl:
       ),
     )
 
-  def _live_blocks(self) -> tuple[_console.RenderableType, ...]:
+  def _live_blocks(
+    self, *, show_shortcuts: bool = True
+  ) -> tuple[_console.RenderableType, ...]:
     preview = self._stream_pane.preview
     approval = self._state.approval.request
+    background_shortcut = (
+      self._keymap.shortcut_hint(_actions.DetachRequested())
+      if show_shortcuts and self._state.can_detach_tools
+      else ''
+    )
     stamp = (
       preview,
       self._state.status_bar.view_mode,
@@ -1980,6 +2004,7 @@ class _Repl:
       self._state.stream.running,
       self._state.tool_group,
       approval.call_id if approval is not None else None,
+      background_shortcut,
     )
     if stamp == self._live_stamp:
       return self._live_blocks_cache
@@ -1998,7 +2023,7 @@ class _Repl:
     blocks = list(self._committed_blocks)
     if preview is not None:
       tail = _rendering.assistant_turn_renderable(
-        None if self._focus() else preview.reasoning,
+        preview.reasoning if self._shows_reasoning() else None,
         None,
         None,
         skill_names=self._available_skill_names,
@@ -2017,11 +2042,13 @@ class _Repl:
         blocks.append(refusal)
     else:
       self._streaming_answer.update('')
-    blocks.extend(self._live_tool_blocks())
+    blocks.extend(self._live_tool_blocks(background_shortcut))
     self._live_blocks_cache = tuple(blocks)
     return self._live_blocks_cache
 
-  def _live_tool_blocks(self) -> tuple[_console.RenderableType, ...]:
+  def _live_tool_blocks(
+    self, background_shortcut: str
+  ) -> tuple[_console.RenderableType, ...]:
     """Keep live and retained tool output consistent with the scrollback view."""
     if self._state.approval.request is not None:
       return ()
@@ -2030,6 +2057,7 @@ class _Repl:
       self._state.stream.running,
       self._state.stream.pending,
       self._state.tool_group,
+      background_shortcut,
     )
 
   async def _run_slash(self, text: str) -> None:
@@ -2399,7 +2427,7 @@ class _Repl:
         or (
           kind == 'stream_reasoning'
           and bool(delta.stream_reasoning.reasoning)
-          and not self._focus()
+          and self._shows_reasoning()
         )
       )
       if visible_text:
@@ -3141,15 +3169,11 @@ class _Repl:
     self._app.layout.focus(self._input_window)
     self._app.invalidate()
     try:
-      welcome = _rendering.render_banner(
-        self._state.status_bar.model,
-        self._session_directory(),
-        setup_url=_api_keys.ANTHROPIC_KEY_URL
+      welcome = _rendering.render_key_setup(
+        'Anthropic' if api == 'anthropic-messages' else 'Reflection',
+        _api_keys.ANTHROPIC_KEY_URL
         if api == 'anthropic-messages'
         else _reflection.KEY_URL,
-        setup_provider='Anthropic'
-        if api == 'anthropic-messages'
-        else 'Reflection',
       )
       self._terminal.pin_header(welcome)
       await self._repaint(replacing=True)
@@ -3657,7 +3681,7 @@ async def handle_workspace_effect(
       identity = await controller.create_workspace(kind)
       if await controller.select_workspace(identity):
         agent.handoff('workspace')
-    case _effects.OpenFolder(path):
+    case _effects.OpenFolder(path, confirmed):
       source = controller.selected
       if not isinstance(source, _workspaces.AgentWorkspace):
         return
@@ -3668,13 +3692,36 @@ async def handle_workspace_effect(
       )
       if not directory.is_dir():
         raise ValueError(f'not a directory: {directory}')
-      try:
-        await _run_in_terminal(
-          functools.partial(_onboarding.ensure_consent, directory),
-          in_executor=True,
-        )
-      except SystemExit:
-        return
+      if not _onboarding.is_trusted_directory(directory):
+        # Consent applies only to the canonical path shown, not a retargeted link.
+        if not confirmed or directory != pathlib.Path(path):
+          agent.dispatch(
+            _actions.OpenSelector(
+              _selection.Selector(
+                id='folder-trust',
+                title='Trust directory?',
+                header=_text.Text.assemble(
+                  (str(directory), 'ui.text.bold'),
+                  '\n\nMirror can read/edit files and run commands here.\n'
+                  'Only open directories whose files and instructions you trust.',
+                  style='ui.muted',
+                ),
+                choices=(
+                  _selection.Choice('cancel', 'Cancel'),
+                  _selection.Choice('trust', 'Trust and open'),
+                ),
+                selected='cancel',
+                numbered=True,
+                on_select=lambda value: (
+                  _actions.OpenFolder(str(directory), confirmed=True)
+                  if value == 'trust'
+                  else _actions.CloseSelector()
+                ),
+              )
+            )
+          )
+          return
+        _onboarding.ensure_consent(directory, confirm=lambda _: True)
       workspace = await controller.open_folder(source.id, directory)
       await controller.select_workspace(workspace.id)
       agent.handoff('folder')

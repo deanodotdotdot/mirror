@@ -102,8 +102,8 @@ class StreamPane:
     self._ansi_cache = hyperlinks.ANSI('')
     self._cursor_cache = _data_structures.Point(x=0, y=0)
 
-  def _focus(self) -> bool:
-    return self._get_state().status_bar.view_mode is _actions.ViewMode.FOCUS
+  def _shows_reasoning(self) -> bool:
+    return self._get_state().status_bar.view_mode.shows_reasoning
 
   @property
   def preview(self) -> _state.StreamPreview | None:
@@ -156,7 +156,7 @@ class StreamPane:
       self._emit_reasoning(committed_reasoning)
 
   def _emit_reasoning(self, reasoning: str) -> None:
-    if self._focus():
+    if not self._shows_reasoning():
       return
     renderable = _rendering.reasoning_text(reasoning)
     self._emit_task = self._terminal.create_task(
@@ -192,7 +192,7 @@ class StreamPane:
     if preview is None:
       return []
     blocks: list[_console.RenderableType] = []
-    if preview.committed_reasoning is not None and not self._focus():
+    if preview.committed_reasoning is not None and self._shows_reasoning():
       blocks.append(_rendering.reasoning_text(preview.committed_reasoning))
     if preview.committed_content is not None:
       content = _rendering.assistant_turn_renderable(
@@ -308,7 +308,7 @@ class StreamPane:
       None
       if preview is None
       else _rendering.assistant_turn_renderable(
-        None if self._focus() else (preview.reasoning or None),
+        (preview.reasoning or None) if self._shows_reasoning() else None,
         preview.content or None,
         preview.refusal or None,
         skill_names=self._skill_names,
@@ -338,7 +338,7 @@ class StreamPane:
     width = max(1, self._get_columns())
     max_lines = self._get_max_lines()
     preview = self.preview or _state.StreamPreview()
-    hide_reasoning = self._focus()
+    hide_reasoning = not self._shows_reasoning()
     render_key = (
       preview.reasoning,
       preview.content,

@@ -28,6 +28,7 @@ def choices_changed(
     if text.startswith('/') and text.endswith(' ')
     else None
   )
+  query = skill_completion.query(text, cursor)
   return actions.CompletionChanged(
     skills_completion.matches(text, cursor),
     tuple(
@@ -36,6 +37,9 @@ def choices_changed(
     ),
     hint.prompt_hint if hint is not None else None,
     hint.arguments_are_optional if hint is not None else False,
+    empty_skills=not skills_completion.available
+    and query is not None
+    and not query.value,
   )
 
 
@@ -69,7 +73,7 @@ class Completion(component.Component):
     if state.selector.active:
       return containers.Window(height=dimension.Dimension.exact(0))
     skills = state.completion.skills
-    if skills:
+    if skills or state.completion.empty_skills:
       choices = tuple(
         selection.Choice(
           skill.name, f'${skill.name}', ' '.join(skill.description.split())
@@ -102,8 +106,10 @@ class Completion(component.Component):
         query=needle,
         width=state.layout.columns,
         wrap_details=not skills,
+        empty='No skills found. Add .agents/skills/<name>/SKILL.md.',
+        footer='Esc to cancel' if state.completion.empty_skills else None,
       )
-      if choices
+      if choices or state.completion.empty_skills
       else []
     )
     return menu.window(

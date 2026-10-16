@@ -118,6 +118,7 @@ class OpenFolder:
   """Open an existing directory as a folder workspace."""
 
   path: str
+  confirmed: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

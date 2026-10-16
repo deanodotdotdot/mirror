@@ -1,6 +1,6 @@
 //! Agent-skill discovery and metadata.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -60,13 +60,9 @@ struct Frontmatter {
 
 /// Discover skills from global and project-local skill roots.
 pub fn load_skills(cwd: &Path, global_dir: Option<&Path>) -> Vec<Skill> {
-    let mut roots = Vec::new();
-    if let Some(global) = global_dir
-        .map(Path::to_path_buf)
-        .or_else(default_global_dir)
-    {
-        roots.push(global);
-    }
+    let mut roots = global_dir
+        .map(|directory| vec![directory.to_path_buf()])
+        .unwrap_or_else(default_global_dirs);
     for directory in super::directories(cwd) {
         roots.extend(SKILL_ROOT_DIRS.iter().map(|root| directory.join(root)));
     }
@@ -82,7 +78,7 @@ pub(super) fn read_skills(
     files: &mut super::load_instructions::ContextFiles,
 ) -> std::io::Result<Vec<Skill>> {
     let mut loaded = Vec::<Skill>::new();
-    let mut seen = HashSet::new();
+    let mut by_path = HashMap::new();
     for root in roots {
         let Some(canonical_root) = files.identity(root) else {
             continue;
@@ -107,15 +103,17 @@ pub(super) fn read_skills(
                     .and_then(|raw| std::str::from_utf8(raw).ok())
                     .and_then(|raw| parse_skill(&path, raw))
                 {
-                    if seen.insert(files.identity(&path).unwrap_or_else(|| path.clone())) {
-                        if let Some(index) = loaded
-                            .iter()
-                            .position(|existing| existing.name == skill.name)
-                        {
-                            loaded[index] = skill;
-                        } else {
-                            loaded.push(skill);
-                        }
+                    // Keep one identity per file without losing a later root's precedence.
+                    let skill = by_path
+                        .entry(files.identity(&path).unwrap_or_else(|| path.clone()))
+                        .or_insert(skill);
+                    if let Some(index) = loaded
+                        .iter()
+                        .position(|existing| existing.name == skill.name)
+                    {
+                        loaded[index] = skill.clone();
+                    } else {
+                        loaded.push(skill.clone());
                     }
                 }
                 continue;
@@ -142,8 +140,15 @@ pub(super) fn read_skills(
     Ok(loaded)
 }
 
-fn default_global_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".mirror/skills"))
+fn default_global_dirs() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(home);
+    [".claude/skills", ".agents/skills", ".mirror/skills"]
+        .into_iter()
+        .map(|directory| home.join(directory))
+        .collect()
 }
 
 fn parse_skill(path: &Path, raw: &str) -> Option<Skill> {

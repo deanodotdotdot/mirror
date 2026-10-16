@@ -29,7 +29,7 @@ to help us improve it.
 Install with [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```bash
-uv tool install mirror-agent
+uv tool install reflection-mirror
 mirror --version
 ```
 
@@ -62,7 +62,7 @@ Rerun after editing. See [development checks](https://github.com/reflection-oss/
 - Accept → verified side-by-side install; launch immediately and on later runs.
 - Decline/failure → current version. Original installation and user data stay intact.
 - `--no-update`: skip checking, but still use a newer cached release.
-- `--update`: retry with a longer timeout.
+- `mirror update`: check, ask, then exit without a session (TTY required).
 - `MIRROR_SKIP_UPDATE=1`: bypass checks and cached releases.
 - Cache: `$XDG_DATA_HOME/mirror/releases/public`, default `~/.local/share/mirror/releases/public`.
 - Noninteractive runs: no checks/prompts. Source checkouts: no opt-in.
@@ -224,7 +224,8 @@ cover both formats in tests, and run the command's test suite.
 
 - `/editor` / `Ctrl+P`: open a workspace file.
 - `/view` / `Ctrl+T`: cycle **detail**, **default**, **focus**; badge shows mode.
-- **default**: grouped tools + reasoning. **detail**: full tool output + reasoning.
+- **default**: grouped tools, no reasoning; click a shell row to expand its
+  output. **detail**: full tool output + reasoning.
 - **focus**: hide tool activity and reasoning.
 
 ### Research and analysis
@@ -417,12 +418,15 @@ part of the model's instructions; they do not enforce access restrictions.
 
 ### Skills
 
-Skills are reusable task instructions in `SKILL.md` files. Mirror discovers
-user skills under `~/.mirror/skills/` and project skills under `.agents/skills/`
-or `.claude/skills/`. Project skills override user skills with the same name.
-Enabled extensions can also supply skills.
+Skills are reusable task instructions in `SKILL.md`.
 
-For example, create `.agents/skills/review-api/SKILL.md`:
+- Project: `.agents/skills/` or `.claude/skills/`.
+- User, highest priority first: `~/.mirror/skills/`, `~/.agents/skills/`,
+  `~/.claude/skills/`.
+- Project > user > enabled extensions.
+- Discovery reads Markdown only; foreign settings are not imported.
+
+Create `.agents/skills/review-api/SKILL.md`:
 
 ```markdown
 ---
@@ -434,7 +438,9 @@ Check request validation, response compatibility, and failure paths.
 Identify the relevant tests and report any missing coverage.
 ```
 
-Start a new conversation to load the skill, then mention it in a prompt:
+Start a new conversation.
+
+**Check:** Type `$` to find `review-api`, then invoke it:
 
 ```text
 Use $review-api to review the changes in this branch.
@@ -539,7 +545,7 @@ Report suspected vulnerabilities privately to
 Exit Mirror and upgrade the installed tool:
 
 ```bash
-uv tool upgrade mirror-agent
+uv tool upgrade reflection-mirror
 mirror --version
 ```
 

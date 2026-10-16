@@ -30,7 +30,6 @@ from rich import text as _text
 
 from mirror import distribution
 from mirror.cli import themes
-from mirror.cli.components import card as _card
 from mirror.cli.composer import skill_completion as _skill_completion
 
 # The glyph the input line uses, reused as the user-message prefix.
@@ -429,11 +428,8 @@ def render_blocks(
 def render_banner(
   model: str,
   cwd: str | os.PathLike[str] | None = None,
-  *,
-  setup_url: str | None = None,
-  setup_provider: str = 'Reflection',
 ) -> _console.RenderableType:
-  """Quiet welcome facts, with a frame only for interactive connection setup."""
+  """Quiet welcome facts shared by the launch presentation."""
   home = os.path.expanduser('~')
   cwd = os.fspath(cwd) if cwd is not None else os.getcwd()
   # Guard the separator so `/home/foobar` under `$HOME=/home/foo` isn't
@@ -451,24 +447,25 @@ def render_banner(
   facts.add_row('model', _text.Text(model))
   facts.add_row('directory', _text.Text(directory))
 
-  content: _console.RenderableType = _console.Group(info, facts)
-  if setup_url is None:
-    return content
+  return _console.Group(info, facts)
+
+
+def render_key_setup(provider: str, url: str) -> _text.Text:
+  """Actionable sign-in steps, without competing launch branding or metadata."""
   welcome = _text.Text()
-  welcome.append(f'\nConnect to {setup_provider}\n', style='ui.info.bold')
+  welcome.append(f'Connect to {provider}\n', style='ui.info.bold')
   welcome.append(
     'Add an API key to start coding with Mirror.\n\n', style='default'
   )
   welcome.append('1  ', style='ui.info.bold')
   welcome.append('Create a key\n   ', style='bold')
-  link = _text.Text(setup_url, style='ui.info')
-  link.stylize(f'underline link {setup_url}')
+  link = _text.Text(url, style='ui.info')
+  link.stylize(f'underline link {url}')
   welcome.append_text(link)
   welcome.append('\n\n2  ', style='ui.info.bold')
   welcome.append('Paste your key below', style='bold')
   welcome.append(' — input is hidden.', style='ui.muted')
-  content = _console.Group(content, welcome)
-  return _card.frame(content, expand=False, width=76)
+  return welcome
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1257,8 +1254,28 @@ class Stopwatch:
     return f'{seconds}s'
 
 
-def _bash_result(
-  args: str, content: str, display: str | None, *, error: bool
+@dataclasses.dataclass(frozen=True)
+class Expandable:
+  """A collapsed tool row and the full output a click swaps in for it."""
+
+  collapsed: _console.RenderableType
+  expanded: _console.RenderableType
+
+  def __rich_console__(
+    self, console: _console.Console, options: _console.ConsoleOptions
+  ) -> _console.RenderResult:
+    del console, options
+    yield self.collapsed
+
+
+def bash_result(
+  args: str,
+  content: str,
+  display: str | None,
+  *,
+  error: bool,
+  exit_code: int | None = None,
+  expandable: bool = False,
 ) -> _console.RenderableType:
   """Render bash's command display separately from its structured output text."""
   command = strip_ansi(display if display is not None else args)
@@ -1271,32 +1288,41 @@ def _bash_result(
   timeout = (
     _BASH_TIMEOUT_RE.match(output) if completed is not None and error else None
   )
-  detail = ''
+  error = error or exit_code not in (None, 0)
+  detail = f' · exit {exit_code}' if exit_code not in (None, 0) else ''
+  status = _BASH_EXIT_STATUS_RE.match(output) if exit_code != 0 else None
   if timeout is not None:
     detail = ' · timed out'
     output = output[timeout.end() :].removeprefix('Partial stdout:\n')
-  elif (status := _BASH_EXIT_STATUS_RE.match(output)) is not None:
-    code = int(status.group(2))
+  elif status is not None:
+    code = exit_code if exit_code is not None else int(status.group(2))
     error = error or bool(status.group(1)) or code != 0
     detail = ' · timed out' if status.group(1) else f' · exit {code}'
     output = output[status.end() :].removeprefix('stdout:\n')
+  suffix = (detail or ' · failed') if error else ''
+  header = _tool_title(f'Ran {command_preview(command)}{suffix}')
   lines = output.strip().splitlines()
+  style = 'ui.error' if error else 'dim'
   preview = lines[0] if lines else ''
   if len(lines) > 1:
     preview += f' … (+{len(lines) - 1} lines)'
-  body = (
-    _text.Text(
-      preview,
-      style='ui.error' if error else 'dim',
-      overflow='ellipsis',
-      no_wrap=True,
-    )
+  collapsed = tool_block(
+    header,
+    _text.Text(preview, style=style, overflow='ellipsis', no_wrap=True)
     if lines
-    else None
+    else None,
+    error=error,
+    wrap=not expandable,
   )
-  suffix = (detail or ' · failed') if error else ''
-  header = _tool_title(f'Ran {command_preview(command)}{suffix}')
-  return tool_block(header, body, error=error, wrap=True)
+  if not expandable:
+    return collapsed
+  expanded = tool_block(
+    header,
+    _text.Text('\n'.join(lines), style=style) if lines else None,
+    error=error,
+    wrap=True,
+  )
+  return Expandable(collapsed, expanded)
 
 
 def tool_result_renderable(
@@ -1312,7 +1338,7 @@ def tool_result_renderable(
   """Combine a tool result with its parked call into one block."""
   if name == 'bash':
     if compact:
-      return _bash_result(args, content, display, error=error)
+      return bash_result(args, content, display, error=error)
     return tool_text(
       name,
       display if display is not None else args,
@@ -1384,7 +1410,7 @@ def task_result_renderable(
 ) -> _console.RenderableType:
   """One task-result block, using the same renderer as its foreground tool."""
   if tool_name == 'bash' and compact:
-    return _bash_result(
+    return bash_result(
       f'background task {task_id[:8]}', source, display, error=not success
     )
   source = strip_ansi(display if display is not None else source)

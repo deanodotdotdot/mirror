@@ -150,21 +150,32 @@ impl Tool for BashTool {
         let workspace = self.workspace_root.clone().ok_or_else(|| {
             ToolError::Execution("remote-only Bash tool cannot execute locally".into())
         })?;
-        if !args.detached {
-            let timeout = validate_timeout(args.timeout_seconds)?;
-            return run_command(args.command, workspace, Some(timeout), None).await;
+        let timeout = if args.detached {
+            None
+        } else {
+            Some(validate_timeout(args.timeout_seconds)?)
+        };
+        if !args.detached && context.tasks().is_closed() {
+            return run_command(args.command, workspace, timeout, None).await;
         }
+        let behavior = if args.detached {
+            TaskBehavior::Detach
+        } else {
+            TaskBehavior::Wait
+        };
         let command = args.command;
         let task_id = context
             .tasks()
             .spawn(
                 "bash",
                 Some(command.clone()),
-                TaskBehavior::Detach,
+                behavior,
                 move |task_context| async move {
-                    match run_command(command, workspace, None, Some(task_context)).await {
+                    match run_command(command, workspace, timeout, Some(task_context)).await {
                         Ok(mut output) => {
-                            output.display = None;
+                            if args.detached {
+                                output.display = None;
+                            }
                             output
                         }
                         Err(error) => ToolOutput::error(error.to_string()),
@@ -173,7 +184,13 @@ impl Tool for BashTool {
             )
             .await
             .map_err(|error| ToolError::Execution(error.to_string()))?;
-        Ok(ToolOutput::success(format!("Task {task_id} started.")))
+        match context.tasks().resolve(&task_id).await {
+            Ok(crate::TaskResolution::Finished(output)) => Ok(output),
+            Ok(crate::TaskResolution::Detached) => {
+                Ok(ToolOutput::success(format!("Task {task_id} started.")))
+            }
+            Err(error) => Err(ToolError::Execution(error.to_string())),
+        }
     }
 }
 
