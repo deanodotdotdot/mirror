@@ -45,7 +45,7 @@ def default_model(api: str) -> str:
   """The model id a wire protocol starts from when none is named."""
   if api == 'reflection':
     return 'Beam-1.0-501B-A23B'
-  if api == 'anthropic-messages':
+  if api in ('anthropic-messages', 'anthropic-oauth'):
     return 'claude-opus-4-8'
   if api in ('openai-responses', 'openai-codex-responses'):
     return 'gpt-6-astra'

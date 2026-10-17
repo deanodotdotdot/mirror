@@ -67,7 +67,7 @@ impl ChatCompletions {
             .messages
             .iter()
             .map(serialize_message)
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, LlmError>>()?;
         let mut body = Map::from_iter([
             ("model".to_string(), json!(self.config.model)),
             ("messages".to_string(), Value::Array(messages)),
@@ -506,7 +506,7 @@ impl CompletionState {
             .reasoning_details
             .into_iter()
             .map(json_to_struct)
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, LlmError>>()?;
         Ok(Completion {
             message: AssistantMessage {
                 content: (!self.content.is_empty()).then_some(self.content),
@@ -622,7 +622,7 @@ fn serialize_assistant(message: &AssistantMessage) -> Result<Value, LlmError> {
                     },
                 }))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, LlmError>>()?;
         value.insert("tool_calls".to_string(), Value::Array(calls));
     }
     Ok(Value::Object(value))

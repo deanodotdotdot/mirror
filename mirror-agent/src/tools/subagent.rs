@@ -343,7 +343,7 @@ async fn collect_subagent_result(
         }
     }
     if let Some(error) = turn_error {
-        return ToolOutput::error(error);
+        return ToolOutput::error(error.message);
     }
     let entries = match service.messages().await {
         Ok(entries) => entries,

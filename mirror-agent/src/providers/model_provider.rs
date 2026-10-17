@@ -14,6 +14,7 @@ use mirror_protocol::InferenceConfig;
 use reqwest::Client;
 use thiserror::Error;
 
+use super::claude::{ClaudeConfigurationError, ClaudeError, ClaudeSessionBinding};
 use super::AnthropicMessages;
 use super::AnthropicMessagesConfig;
 use super::ChatCompletions;
@@ -45,6 +46,9 @@ pub struct ModelProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub auth_path: Option<PathBuf>,
+    /// Durable conversation binding, retained even while another API is active.
+    /// No credential material or token generation is stored here.
+    pub claude_session: Option<ClaudeSessionBinding>,
     pub prompt_cache_key: String,
     /// The longest one model request may take. `None` leaves it unbounded, so
     /// a long generation is never cut off and resampled; use it only where a
@@ -70,6 +74,7 @@ pub enum ModelApi {
     ChatCompletions,
     Reflection,
     AnthropicMessages,
+    AnthropicOAuth,
     ChatCompletionsNonStreaming,
 }
 
@@ -84,6 +89,7 @@ impl ModelProvider {
         config: ModelProviderConfig,
         request_guard: Option<Arc<dyn ModelRequestGuard>>,
     ) -> Result<Self, LlmError> {
+        config.ensure_subscription_available()?;
         if config
             .context_window
             .is_some_and(|window| window == 0 || window > usize::MAX / 100)
@@ -104,8 +110,56 @@ impl ModelProvider {
 }
 
 impl ModelProviderConfig {
+    /// Validate subscription configuration without looking up any credential.
+    pub fn validate_subscription_configuration(&self) -> Result<(), LlmError> {
+        if self.api != ModelApi::AnthropicOAuth {
+            return Ok(());
+        }
+        if self.api_key.is_some() {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::ApiKeyNotAllowed).into(),
+            );
+        }
+        if self.auth_path.is_some() {
+            return Err(ClaudeError::configuration(
+                ClaudeConfigurationError::CodexAuthPathNotAllowed,
+            )
+            .into());
+        }
+        let default_endpoint =
+            |value: &str| value.trim_end_matches('/') == super::claude::profile::API_ORIGIN;
+        if self
+            .base_url
+            .as_deref()
+            .is_some_and(|url| !default_endpoint(url))
+            || std::env::var_os("ANTHROPIC_BASE_URL")
+                .is_some_and(|url| url.to_str().is_none_or(|url| !default_endpoint(url)))
+        {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::EndpointNotAllowed).into(),
+            );
+        }
+        if let Some(binding) = &self.claude_session {
+            binding.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Temporary fail-closed gate until the real authority and transport are wired.
+    /// Keep this before API-key resolution, metadata fallback and HTTP creation.
+    pub(crate) fn ensure_subscription_available(&self) -> Result<(), LlmError> {
+        self.validate_subscription_configuration()?;
+        if self.api == ModelApi::AnthropicOAuth {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::NotImplemented).into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Resolve the same endpoint and credentials for inference and metadata.
     pub(super) async fn connection(&self) -> Result<(String, String), LlmError> {
+        self.ensure_subscription_available()?;
         let (base_env, base_default, key_env) = match self.api {
             ModelApi::CodexResponses => (
                 "MIRROR_CODEX_BASE_URL",
@@ -127,6 +181,11 @@ impl ModelProviderConfig {
                 "https://api.anthropic.com",
                 Some("ANTHROPIC_API_KEY"),
             ),
+            ModelApi::AnthropicOAuth => {
+                return Err(
+                    ClaudeError::configuration(ClaudeConfigurationError::NotImplemented).into(),
+                );
+            }
             ModelApi::Reflection => {
                 return Ok((
                     super::REFLECTION_BASE_URL.into(),
@@ -182,6 +241,7 @@ impl ModelProviderConfig {
         if config.api != self.api {
             config.api_key = None;
             config.base_url = None;
+            config.auth_path = None;
         }
         if let Some(base_url) = &inference.base_url {
             config.base_url = (!base_url.is_empty()).then(|| base_url.clone());
@@ -189,6 +249,24 @@ impl ModelProviderConfig {
         if config.base_url != self.base_url {
             config.api_key = None;
         }
+        if let Some(binding) = &inference.claude_session {
+            let binding = ClaudeSessionBinding::try_from(binding)?;
+            if config
+                .claude_session
+                .as_ref()
+                .is_some_and(|current| current.identity != binding.identity)
+            {
+                let mut error = ClaudeError::new(super::claude::ClaudeErrorKind::AccountChanged);
+                error.details.expected_identity = config
+                    .claude_session
+                    .as_ref()
+                    .map(|current| current.identity.clone());
+                error.details.current_identity = Some(binding.identity);
+                return Err(error.into());
+            }
+            config.claude_session = Some(binding);
+        }
+        config.validate_subscription_configuration()?;
         Ok(config)
     }
 }
@@ -303,6 +381,9 @@ impl Llm for ModelProvider {
                         yield event?;
                     }
                 }
+                ModelApi::AnthropicOAuth => {
+                    Err(ClaudeError::configuration(ClaudeConfigurationError::NotImplemented))?;
+                }
             }
         }
     }
@@ -352,6 +433,7 @@ impl FromStr for ModelApi {
             "reflection" => Ok(Self::Reflection),
             "openai-chat-completions" | "openrouter" => Ok(Self::ChatCompletions),
             "anthropic-messages" | "anthropic" => Ok(Self::AnthropicMessages),
+            "anthropic-oauth" => Ok(Self::AnthropicOAuth),
             "openai-chat-completions-non-streaming" => Ok(Self::ChatCompletionsNonStreaming),
             value => Err(ModelApiParseError(value.to_string())),
         }
@@ -397,6 +479,7 @@ mod tests {
             api_key: Some("synthetic-reflection-key".into()),
             base_url: None,
             auth_path: None,
+            claude_session: None,
             prompt_cache_key: "session".into(),
             request_timeout: None,
         };
@@ -416,6 +499,7 @@ mod tests {
             api_key: Some("synthetic-private-key".into()),
             base_url: Some("https://other.example/v1".into()),
             auth_path: None,
+            claude_session: None,
             prompt_cache_key: "session".into(),
             request_timeout: None,
         };
@@ -443,6 +527,7 @@ mod tests {
                 api_key: Some("synthetic-reflection-key".into()),
                 base_url: None,
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".into(),
                 request_timeout: None,
             },
@@ -476,6 +561,7 @@ mod tests {
                 api_key: Some("synthetic-reflection-key".into()),
                 base_url: Some("http://127.0.0.1:1/v1".into()),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".into(),
                 request_timeout: None,
             },
@@ -540,6 +626,7 @@ mod tests {
                 api_key: Some("test-key".into()),
                 base_url: Some("http://test/v1".into()),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".into(),
                 request_timeout: None,
             },
@@ -575,6 +662,7 @@ mod tests {
                 api_key: None,
                 base_url: None,
                 auth_path: Some(auth_path),
+                claude_session: None,
                 prompt_cache_key: "session".to_string(),
                 request_timeout: None,
             },
@@ -597,6 +685,7 @@ mod tests {
                 api_key: Some("test-key".to_string()),
                 base_url: Some("https://default.example.test/v1".to_string()),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".to_string(),
                 request_timeout: None,
             },
@@ -635,6 +724,7 @@ mod tests {
                 api_key: Some("test-key".to_string()),
                 base_url: Some("https://default.example.test/v1".to_string()),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".to_string(),
                 request_timeout: None,
             },

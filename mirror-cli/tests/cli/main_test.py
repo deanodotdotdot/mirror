@@ -703,6 +703,32 @@ def test_anthropic_messages_reads_its_own_credentials() -> None:
   assert models.base_env('anthropic-messages') == 'ANTHROPIC_BASE_URL'
 
 
+@pytest.mark.parametrize('arguments', [
+  ['--api', 'anthropic-oauth'],
+  ['exec', '--api', 'anthropic-oauth', 'hello'],
+  ['acp', '--api', 'anthropic-oauth'],
+  ['--api', 'anthropic-oauth', '--api-key', 'synthetic-secret-canary'],
+])
+def test_subscription_launch_fails_before_onboarding_or_key_fallback(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  arguments: list[str],
+) -> None:
+  monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(tmp_path / 'models.json'))
+  monkeypatch.setenv('ANTHROPIC_API_KEY', 'synthetic-existing-api-key')
+  monkeypatch.setattr(sys, 'argv', ['mirror', *arguments])
+
+  def unexpected(*args: object, **kwargs: object) -> None:
+    raise AssertionError('unsupported subscription launch reached onboarding')
+
+  monkeypatch.setattr(main.onboarding, 'ensure_consent', unexpected)
+  with pytest.raises(SystemExit) as raised:
+    main.main()
+  assert raised.value.code
+  assert 'synthetic-secret-canary' not in str(raised.value)
+  assert os.environ['ANTHROPIC_API_KEY'] == 'synthetic-existing-api-key'
+
+
 def test_a_configured_endpoint_counts_as_self_hosted() -> None:
   args = argparse.Namespace(
     base_url=None, model_base_url='http://localhost:8000/v1'

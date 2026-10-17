@@ -100,6 +100,7 @@ impl ScriptedModel {
                 api_key: Some("synthetic-test-key".into()),
                 base_url: Some("http://127.0.0.1:1".into()),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: "session".into(),
                 request_timeout: None,
             },
@@ -1003,6 +1004,7 @@ async fn model_switch_uses_the_new_endpoints_catalog_for_compaction_and_budgetin
             api_key: Some("synthetic-large-key".into()),
             base_url: Some(large.base_url.clone()),
             auth_path: None,
+            claude_session: None,
             prompt_cache_key: "session".into(),
             request_timeout: None,
         },
@@ -1127,6 +1129,7 @@ async fn inference_control_during_turn_applies_to_the_next_completion() {
         ..Default::default()
     };
     let queued = mirror_protocol::InferenceConfig {
+        claude_session: None,
         model: "queued-model".to_string(),
         api: Some("openai-chat-completions".to_string()),
         base_url: Some("https://queued.example.test/v1".to_string()),
@@ -1245,6 +1248,94 @@ async fn explicit_skill_mentions_append_one_persisted_user_context() {
 }
 
 #[tokio::test]
+async fn claude_final_errors_are_not_retried_and_preserve_machine_details() {
+    use crate::providers::claude::{ClaudeError, ClaudeErrorKind, ClaudeRetryDisposition};
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("react.db");
+    // An internal retry hint must never grant a new outer-agent retry budget.
+    let mut error = ClaudeError::new(ClaudeErrorKind::AuthTemporarilyUnavailable);
+    error.retry = ClaudeRetryDisposition::SafeBeforeOutput;
+    error.details.http_status = Some(503);
+    let mut model = ScriptedModel::new([
+        ModelResponse::Error(error.into()),
+        ModelResponse::Completion(completion("must not be requested")),
+    ]);
+    let mut requests = model.requests();
+    let (service, runtime) = spawn_service(
+        &database,
+        directory.path(),
+        true,
+        model,
+        Vec::new(),
+        ReactAgentConfig::default(),
+    )
+    .await;
+    service.open().await.unwrap();
+    let mut events = service.events();
+    service
+        .execute(user_message("hello".into(), "user-1".into(), None))
+        .unwrap();
+    let events = wait_for_turn(&mut events).await;
+    let failure = events
+        .iter()
+        .find_map(|event| match event {
+            ReactServiceEvent::TurnError(error) => Some(error),
+            _ => None,
+        })
+        .unwrap();
+    let details = failure.claude_error.as_ref().unwrap();
+    assert_eq!(details.kind, "auth_temporarily_unavailable");
+    assert_eq!(details.http_status, Some(503));
+    assert_eq!(details.retry_disposition, "terminal");
+    assert_eq!(requests.seen().len(), 1);
+    let entries = service.messages().await.unwrap();
+    assert!(!entries.iter().any(|entry| matches!(
+        entry.chat_message(),
+        Some(chat_record::Message::Assistant(_))
+    )));
+    close_service(&service, runtime).await;
+}
+
+#[tokio::test]
+async fn normalization_notice_keeps_existing_durable_log_event_path() {
+    use crate::providers::claude::{HistoryNormalizationNotice, HistoryNormalizationReason};
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("react.db");
+    let model = ScriptedModel::new([ModelResponse::Events(vec![
+        Ok(StreamEvent::Notice(HistoryNormalizationNotice {
+            schema_version: 1,
+            reason: HistoryNormalizationReason::UnknownProvenance,
+            affected_messages: 2,
+        })),
+        Ok(StreamEvent::Final(completion("answer"))),
+    ])]);
+    let (service, runtime) = spawn_service(
+        &database,
+        directory.path(),
+        true,
+        model,
+        Vec::new(),
+        ReactAgentConfig::default(),
+    )
+    .await;
+    service.open().await.unwrap();
+    run_turn(&service, "hello", "user-1").await;
+    let entries = service.messages().await.unwrap();
+    let notice = entries
+        .iter()
+        .find_map(|entry| match &entry.payload {
+            Some(agent_message::Payload::Log(log)) => log.history_normalization.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(notice.reason, "unknown_provenance");
+    assert_eq!(notice.affected_messages, 2);
+    assert_final_answer(&entries, "answer");
+    close_service(&service, runtime).await;
+    assert_eq!(load_entries(&database, directory.path()).await, entries);
+}
+
+#[tokio::test]
 async fn service_recovers_from_failed_completion() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("react.db");
@@ -1268,7 +1359,7 @@ async fn service_recovers_from_failed_completion() {
             Some(agent_message::Payload::Log(log)) => Some(log),
             _ => None,
         }),
-        Some(LogRecord { level, text })
+        Some(LogRecord { level, text, .. })
             if level == "error" && text.contains("model request failed: offline")
     );
     assert_final_answer(&entries, "recovered");
@@ -1649,7 +1740,7 @@ async fn service_surfaces_stale_sqlite_commit_and_replacement_recovers() {
     assert_matches!(
         turn_events.iter().find(|event| matches!(event, ReactServiceEvent::TurnError(_))),
         Some(ReactServiceEvent::TurnError(error))
-            if error.contains("conversation state changed")
+            if error.message.contains("conversation state changed")
     );
     runtime.await.expect("stale owner closes");
     assert!(service.is_closed());
@@ -1906,7 +1997,7 @@ async fn service_deduplicates_inputs_across_concurrent_callers() {
         .expect("queue conflicting input");
     loop {
         if let ReactServiceEvent::TurnError(error) = events.recv().await.expect("conflict event") {
-            assert!(error.contains("message ID \"user-1\" was reused"));
+            assert!(error.message.contains("message ID \"user-1\" was reused"));
             break;
         }
     }
@@ -1967,7 +2058,7 @@ async fn service_closes_after_input_persistence_failure() {
     assert_matches!(
         wait_for_turn(&mut events).await.as_slice(),
         [ReactServiceEvent::TurnError(error), ReactServiceEvent::TurnCompleted]
-            if error.contains("injected user append failure")
+            if error.message.contains("injected user append failure")
     );
     assert_eq!(
         wait_for_close(&mut events).await,
@@ -2976,7 +3067,7 @@ async fn failed_approval_commit_is_not_acknowledged_or_executed() {
         .await
         .expect("rejected acknowledgment"));
     let remaining = wait_for_turn(&mut events).await;
-    assert!(remaining.iter().any(|event| matches!(event, ReactServiceEvent::TurnError(error) if error.contains("injected approval append failure"))));
+    assert!(remaining.iter().any(|event| matches!(event, ReactServiceEvent::TurnError(error) if error.message.contains("injected approval append failure"))));
     assert!(!remaining.iter().any(|event| matches!(
         event,
         ReactServiceEvent::HitlResolved { approved: true, .. }
@@ -3809,7 +3900,7 @@ async fn service_recovers_after_model_panic() {
     let failed = wait_for_turn(&mut events).await;
     assert_matches!(
         failed.iter().find(|event| matches!(event, ReactServiceEvent::TurnError(_))),
-        Some(ReactServiceEvent::TurnError(error)) if error.contains("injected model panic")
+        Some(ReactServiceEvent::TurnError(error)) if error.message.contains("injected model panic")
     );
     run_turn(&service, "retry", "user-2").await;
     let entries = service.messages().await.expect("service messages");
@@ -4816,6 +4907,7 @@ fn log_entry(text: &str) -> AgentMessage {
         payload: Some(agent_message::Payload::Log(LogRecord {
             level: "info".to_string(),
             text: text.to_string(),
+            ..LogRecord::default()
         })),
         ..AgentMessage::default()
     }
@@ -5116,7 +5208,7 @@ async fn manual_compaction_respects_disabled_compaction() {
     service.compact().await.expect("request accepted");
     let events = wait_for_turn(&mut events).await;
     assert!(events.iter().any(|event| matches!(event,
-        ReactServiceEvent::TurnError(error) if error.contains("compaction is disabled"))));
+        ReactServiceEvent::TurnError(error) if error.message.contains("compaction is disabled"))));
     assert_eq!(service.messages().await.expect("history"), before);
     close_service(&service, runtime).await;
 }

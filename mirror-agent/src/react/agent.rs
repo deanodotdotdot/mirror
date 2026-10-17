@@ -9,7 +9,7 @@ use crate::compaction::Compactor;
 use crate::compaction::CompactorConfig;
 use crate::providers::Completion;
 use crate::providers::CompletionRequest;
-use crate::providers::{model_context_window, ModelProvider, DEFAULT_CONTEXT_WINDOW};
+use crate::providers::{model_context_window, ModelProvider};
 use crate::tools::ToolOutput;
 use crate::AgentError;
 use futures_util::StreamExt;
@@ -112,25 +112,22 @@ where
             return Ok(());
         }
         self.update_inference(inference);
-        let context_window = self.context_window().await;
+        let context_window = self.context_window().await?;
         self.report_context_usage(context, tool_executor, context_window)
             .await
     }
 
     /// Discover once per model selection, caching the fallback on failure too.
-    pub async fn context_window(&mut self) -> usize {
+    pub async fn context_window(&mut self) -> Result<usize, ReactAgentError> {
         if let Some(window) = self.context_window {
-            return window;
+            return Ok(window);
         }
-        let window = match self
+        let config = self
             .inference_provider
-            .config_for(self.inference_config.as_ref())
-        {
-            Ok(config) => model_context_window(&self.inference_provider, &config).await,
-            Err(_) => DEFAULT_CONTEXT_WINDOW,
-        };
+            .config_for(self.inference_config.as_ref())?;
+        let window = model_context_window(&self.inference_provider, &config).await?;
         self.context_window = Some(window);
-        window
+        Ok(window)
     }
 
     fn compactor(
@@ -189,7 +186,7 @@ where
         if let Some(inference) = context.execution().inference_config() {
             self.update_inference(inference);
         }
-        let context_window = self.context_window().await;
+        let context_window = self.context_window().await?;
         let inference = self.inference_config.clone();
         if context.entries().is_empty() {
             let system_prompt = self.snapshot_system_prompt(tool_executor).await?;
@@ -226,7 +223,7 @@ where
         if self.config.disable_compaction {
             return Err(AgentError::InvalidInput("compaction is disabled".into()).into());
         }
-        let window = self.context_window().await;
+        let window = self.context_window().await?;
         self.compact(
             context,
             tool_executor,
@@ -320,7 +317,7 @@ where
         if let Some(inference) = context.execution().inference_config() {
             self.update_inference(inference);
         }
-        let context_window = self.context_window().await;
+        let context_window = self.context_window().await?;
         let inference = self.inference_config.clone();
         self.report_context_usage(context, tool_executor, context_window)
             .await?;
@@ -513,6 +510,13 @@ where
                             elapsed_seconds: started.elapsed().as_secs_f64(),
                         }))
                         .await?;
+                }
+                StreamEvent::Notice(notice) => {
+                    let mut record = log_message("Omitted incompatible opaque reasoning while preserving visible history and tool results.", "notice");
+                    if let Some(agent_message::Payload::Log(log)) = record.payload.as_mut() {
+                        log.history_normalization = Some(notice.to_protocol());
+                    }
+                    context.push(AgentEvent::Entries(vec![record])).await?;
                 }
                 StreamEvent::Final(completion) => {
                     if final_completion.replace(completion).is_some() {
@@ -743,6 +747,11 @@ pub enum ReactAgentError {
 
 impl ReactAgentError {
     fn is_retryable(&self) -> bool {
+        // Transport owns the entire bounded retry budget. Any Claude error
+        // reaching this loop is final, including transient recovery guidance.
+        if matches!(self, Self::Model(LlmError::Claude(_))) {
+            return false;
+        }
         if matches!(self, Self::Agent(AgentError::InvalidConfiguration(_))) {
             return false;
         }
@@ -790,6 +799,7 @@ fn log_message(text: &str, level: &str) -> AgentMessage {
         payload: Some(agent_message::Payload::Log(LogRecord {
             level: level.to_string(),
             text: text.to_string(),
+            ..LogRecord::default()
         })),
         ..AgentMessage::default()
     }

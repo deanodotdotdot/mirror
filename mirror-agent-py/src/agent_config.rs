@@ -46,6 +46,7 @@ impl PyAgentConfig {
                 api_key: None,
                 base_url: Some(base_url),
                 auth_path: None,
+                claude_session: None,
                 prompt_cache_key: conversation_id.clone(),
                 request_timeout: Some(mirror_agent_core::providers::DEFAULT_REQUEST_TIMEOUT),
             },

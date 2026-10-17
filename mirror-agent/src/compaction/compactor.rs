@@ -129,6 +129,7 @@ impl Compactor {
                     level: "warning".to_string(),
                     text: "last user message exceeded budget so it was summarised anyway"
                         .to_string(),
+                    ..LogRecord::default()
                 })),
                 ..AgentMessage::default()
             });

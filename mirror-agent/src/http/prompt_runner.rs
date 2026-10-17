@@ -118,7 +118,9 @@ async fn execute(
             match events.recv().await {
                 Ok(ReactServiceEvent::TurnCompleted) => return Ok(()),
                 Ok(ReactServiceEvent::TurnInterrupted) => return Err(PromptError::Interrupted),
-                Ok(ReactServiceEvent::TurnError(error)) => return Err(PromptError::Failed(error)),
+                Ok(ReactServiceEvent::TurnError(error)) => {
+                    return Err(PromptError::Failed(error.message))
+                }
                 Ok(ReactServiceEvent::Closed) | Err(_) => {
                     return Err(ReactServiceError::Closed.into())
                 }

@@ -33,7 +33,6 @@ use mirror_protocol::SessionMessage;
 use mirror_protocol::TaskStatus as ProtocolTaskStatus;
 use mirror_protocol::TaskUpdate;
 use mirror_protocol::ToolCall;
-use mirror_protocol::TurnError;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -958,9 +957,9 @@ fn service_responses(event: ReactServiceEvent) -> Vec<SessionMessage> {
         ReactServiceEvent::TurnInterrupted => vec![runtime_response(
             runtime_delta::Payload::TurnInterrupted(()),
         )],
-        ReactServiceEvent::TurnError(message) => vec![runtime_response(
-            runtime_delta::Payload::TurnError(TurnError { message }),
-        )],
+        ReactServiceEvent::TurnError(error) => {
+            vec![runtime_response(runtime_delta::Payload::TurnError(error))]
+        }
         ReactServiceEvent::InputRejected { message_id } => vec![nack(
             &message_id,
             InputNackReason::InvalidRequest,

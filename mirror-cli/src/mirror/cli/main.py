@@ -163,6 +163,7 @@ def _parse_args() -> argparse.Namespace:
       'openai-chat-completions-non-streaming',
       'openrouter',
       'anthropic-messages',
+      'anthropic-oauth',
     ],
     default=None,
     help=('Wire protocol to speak.'),
@@ -549,6 +550,17 @@ def main(logs: _logging.Logs | None = None) -> None:
   # What to authenticate is what the worker will build: the startup model's own
   # protocol when its entry names one, and the session flag for the rest.
   api = args.model_api or args.api
+  if api == 'anthropic-oauth':
+    if args.api_key is not None:
+      raise SystemExit('mirror: --api-key is not allowed with anthropic-oauth')
+    if args.command == 'acp' or args.remote_endpoint:
+      raise SystemExit(
+        'mirror: anthropic-oauth is not supported on this launch surface'
+      )
+    raise SystemExit(
+      'mirror: Claude subscription auth/transport integration is not '
+      'available in this build'
+    )
   # Interactive validation belongs inside the UI so /model can repair it.
   if args.command in ('exec', 'acp'):
     try:

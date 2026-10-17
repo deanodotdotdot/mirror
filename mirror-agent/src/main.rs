@@ -73,6 +73,7 @@ struct WorkerConfig {
     compaction_model_base_url: Option<String>,
     api: Option<String>,
     model_api: Option<String>,
+    claude_session: Option<mirror_agent::providers::claude::ClaudeSessionBinding>,
     approval_mode: Option<String>,
     max_iterations: Option<usize>,
     compaction_threshold: Option<usize>,
@@ -148,6 +149,17 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     let config = worker_config()?;
+    // Reject incomplete subscription launches before starting tools or reading
+    // any provider's credential source. No success placeholder or key fallback.
+    if config.model_api.as_deref().or(config.api.as_deref()) == Some("anthropic-oauth")
+        || (config.compaction_model.is_some()
+            && config.compaction_model_api.as_deref() == Some("anthropic-oauth"))
+    {
+        return Err(mirror_agent::providers::claude::ClaudeError::configuration(
+            mirror_agent::providers::claude::ClaudeConfigurationError::NotImplemented,
+        )
+        .into());
+    }
     let workspace = std::env::var_os("MIRROR_WORKSPACE")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
@@ -195,7 +207,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         model: config.model.clone(),
         api_key: None,
         base_url: config.model_base_url.clone().or(config.base_url.clone()),
-        auth_path: std::env::var_os("MIRROR_CODEX_AUTH_PATH").map(Into::into),
+        auth_path: (api == ModelApi::CodexResponses)
+            .then(|| std::env::var_os("MIRROR_CODEX_AUTH_PATH").map(Into::into))
+            .flatten(),
+        claude_session: config.claude_session.clone(),
         prompt_cache_key: config.conversation_id.clone(),
         request_timeout: Some(mirror_agent::providers::DEFAULT_REQUEST_TIMEOUT),
     };
@@ -300,16 +315,17 @@ async fn run() -> Result<(), Box<dyn Error>> {
         Some(receiver)
     };
     let compaction_model = if let Some(model) = config.compaction_model {
-        let base_url = config
-            .compaction_model_base_url
-            .clone()
-            .or_else(|| provider_config.base_url.clone());
         let mut api = config
             .compaction_model_api
             .as_deref()
             .map(str::parse)
             .transpose()?
             .unwrap_or(provider_config.api);
+        let base_url = config.compaction_model_base_url.clone().or_else(|| {
+            (api == provider_config.api)
+                .then(|| provider_config.base_url.clone())
+                .flatten()
+        });
         if base_url.is_some() && api == ModelApi::CodexResponses {
             api = ModelApi::ChatCompletions;
         }
@@ -318,7 +334,17 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 ModelProviderConfig {
                     api,
                     model,
-                    base_url,
+                    base_url: base_url.clone(),
+                    api_key: if api == provider_config.api && base_url == provider_config.base_url {
+                        provider_config.api_key.clone()
+                    } else {
+                        None
+                    },
+                    auth_path: if api == ModelApi::CodexResponses {
+                        provider_config.auth_path.clone()
+                    } else {
+                        None
+                    },
                     ..provider_config.clone()
                 },
                 None,
@@ -476,6 +502,7 @@ fn worker_config() -> Result<WorkerConfig, Box<dyn Error>> {
         compaction_model_base_url: None,
         api: Some("openai-codex-responses".to_string()),
         model_api: None,
+        claude_session: None,
         approval_mode: None,
         max_iterations: None,
         compaction_threshold: None,

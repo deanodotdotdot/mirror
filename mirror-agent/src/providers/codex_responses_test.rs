@@ -91,6 +91,7 @@ async fn responses_and_codex_forward_cumulative_usage() {
                 api_key: Some("test-key".to_string()),
                 base_url: Some(format!("http://{address}")),
                 auth_path: Some(auth.0.clone()),
+                claude_session: None,
                 prompt_cache_key: "test-session".to_string(),
                 request_timeout: None,
             },
