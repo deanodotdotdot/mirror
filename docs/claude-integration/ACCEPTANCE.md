@@ -1,10 +1,11 @@
 # Production acceptance record and runbook
 
 Status: **final validation in progress**. Reviewed Task 7 is merged at
-`072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's frozen runtime/test/build
-candidate is `591e0898df2f37260557c66ed86567cc5c545aab`. Mac and Linux checks
-build archives of that exact commit. Documentation changes after the freeze do
-not relabel those artifacts. A1–A11 are not yet declared complete. Historical
+`072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's first runtime/test/build
+candidate was `591e0898df2f37260557c66ed86567cc5c545aab`. Its full source gates
+are recorded below; both actual native builds exposed defects in the new
+terminal fixture. The corrected fixture is awaiting fresh native wheel builds.
+Later documentation or test changes do not relabel earlier artifacts. A1–A11 are not yet declared complete. Historical
 [Phase 0 evidence](../../diagnostics/claude_oauth/EVIDENCE.md) does not establish
 production behavior.
 
@@ -36,8 +37,23 @@ All results in this table refer to source
 | Mac development-native opt-ins | All six passed separately against the built candidate worker: private status/logout, metadata missing-login, actual prechat usage, two native attachment/reconnect cases and missing-login exec. |
 | Mac Rust agent/protocol | 728 passed across the original run and remaining suites, four intentional ignores. The original run failed only the unchanged `/dev/full` headless fixture, which requires Linux; this is **not** a passing Mac full-workspace claim. Linux's full workspace passed that fixture. The long Unicode spill case completed normally. |
 | Mac diagnostic / binding / launcher | 43 diagnostic fixtures passed; Python binding check and source launcher help passed. |
-| Mac/Linux actual native wheels | In progress; native packaging checks and artifact hashes pending. Source CI's dummy worker is not native acceptance. |
+| Mac actual native wheel, first attempt | Actual fresh `build.sh` compiled worker, Linux guest and wheel, then failed installed checks: 14 passed, one Linux-only guest-load skip, two terminal-fixture failures. No accepted artifact retained. |
+| Linux actual native wheel, first attempt | Actual fresh `build.sh` compiled worker, guest and wheel, then failed installed checks: 15 passed, two terminal-fixture failures. No accepted artifact retained. |
 | Production login / models / tools / restart / refresh / coexistence | Pending manager-coordinated installed-artifact observations. No live result is inferred from the rows above. |
+
+The failed native builds preserve useful findings without counting as acceptance.
+Linux passed actual Ctrl-C exit 130, full terminal restoration, process reaping
+and both listener closures; its final filesystem assertion incorrectly forbade
+the stable private lock created during login preparation. Mac also exposed the
+fixture's need to drain the PTY during exit and measure terminal restoration
+before its controlling session disappears. The fixture now keeps a supervisor
+alive around the actual foreground CLI, reports only exit code/restoration via a
+separate pipe, drains bounded private output, checks both processes/listeners,
+and permits exactly the 0700 private directory plus 0600 lock after cancellation.
+No grant, chat, history, preferences or log file is allowed. Direct real-native
+prevalidation passed both ordinary and space-containing helper paths with the
+installed Python CLI. This is fixture prevalidation, not native-wheel acceptance.
+Shipping runtime/build sources remain byte-identical to the first candidate.
 
 Local raw deterministic logs (synthetic data only) are under
 `/tmp/mirror-claude-task8-final-591e089/` on the Mac, and the manager's

@@ -627,8 +627,21 @@ The long Unicode spill test completed. Binding, source launcher help and all 43
 diagnostic fixtures passed. Manager exact-source Linux full workspace passed
 839 tests with five intentional ignores and no failures, including the `/dev/full`
 case, with a real built sandbox guest. Linux diagnostic43/binding/launcher and
-full Python CI3392/22/Pyright0 also passed. Actual native wheel builds are still
-running; their output, provenance and installed checks are not yet claimed.
+full Python CI3392/22/Pyright0 also passed. Both actual fresh native builds
+compiled worker, guest and wheel, then failed the new terminal fixture: Mac
+14 passed/one Linux-only skip/two failed; Linux 15 passed/two failed. No accepted
+wheel or artifact provenance is claimed from those failed runs.
+
+The correction changes only the packaging fixture and documentation. Login
+preparation deliberately creates a 0700 private directory and 0600 stable lock,
+which cancellation must allow while forbidding any credential or chat-side file.
+The fixture also drains bounded private PTY output throughout exit and keeps a
+controlling-terminal supervisor alive to measure restoration before macOS
+invalidates the parent's terminal handle. A separate pipe reports closed results;
+the actual CLI receives terminal Ctrl-C and both CLI/native processes and both
+listeners must be gone. Real native prevalidation passed ordinary and
+space-containing helper paths against installed Python; fresh native wheel runs
+are still required. All shipping runtime/build source remains unchanged.
 
 Documentation now describes the shipped local/SSH command contract, independent
 grant storage, automatic renewal, billing isolation/extra usage, explicit

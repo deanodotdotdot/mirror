@@ -100,11 +100,18 @@ def _clean_output(output: str) -> None:
       pytest.fail('Installed command exposed a private field or canary')
 
 
-def _no_chat_files(env: dict[str, str], *, logged_out: bool = False) -> None:
+def _no_chat_files(
+  env: dict[str, str],
+  *,
+  logged_out: bool = False,
+  cancelled_login: bool = False,
+) -> None:
   home = pathlib.Path(env['HOME'])
   expected = (
     {'.mirror', '.mirror/claude_oauth.json', '.mirror/claude_oauth.lock'}
     if logged_out
+    else {'.mirror', '.mirror/claude_oauth.lock'}
+    if cancelled_login
     else set()
   )
   assert {str(path.relative_to(home)) for path in home.rglob('*')} == expected
@@ -301,37 +308,78 @@ def test_installed_cli_status_never_copies_seeded_credentials(installed):
   _no_chat_files(env, logged_out=True)
 
 
+# Keep the controlling session alive until the real CLI has exited and its
+# terminal restoration is measured. On macOS, tcgetattr on the parent's slave
+# can fail after the controlling session leader exits. A caught (not ignored)
+# SIGINT handler keeps this supervisor alive; exec resets it for the real CLI.
+_TERMINAL_SUPERVISOR = r"""
+import json, os, signal, subprocess, sys, termios
+os.login_tty(0)
+before = termios.tcgetattr(0)
+report_fd = int(sys.argv[1])
+def report(value):
+    os.write(report_fd, (json.dumps(value) + "\n").encode())
+signal.signal(signal.SIGINT, lambda *_: None)
+child = subprocess.Popen(sys.argv[2:])
+report({"cli_pid": child.pid,
+        "foreground": os.getpgid(child.pid) == os.tcgetpgrp(0)})
+code = child.wait()
+report({"code": code, "restored": termios.tcgetattr(0) == before})
+"""
+
+
 def test_installed_cli_private_callback_cancel_restores_terminal(installed):
   cli, _, env = installed
   master, slave = pty.openpty()
-  before = termios.tcgetattr(slave)
+  report_read, report_write = os.pipe()
   child = None
+  cli_pid = None
   native_pids: list[int] = []
   private = bytearray()
+  reports = bytearray()
+  readable = {master, report_read}
+
+  def drain(*, capture: bool = True) -> None:
+    for descriptor in select.select(list(readable), [], [], 0.05)[0]:
+      try:
+        chunk = os.read(descriptor, 65536)
+      except OSError:
+        chunk = b''
+      if not chunk:
+        readable.discard(descriptor)
+      elif not capture:
+        continue
+      elif descriptor == master:
+        private.extend(chunk)
+      else:
+        reports.extend(chunk)
+    if capture and (len(private) > 131072 or len(reports) > 4096):
+      pytest.fail('Private terminal output exceeded the fixture bound')
 
   def await_notice(notice: bytes) -> None:
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
+      drain()
       if notice in private:
         return
       if child is not None and child.poll() is not None:
         break
-      if select.select([master], [], [], 0.05)[0]:
-        try:
-          private.extend(os.read(master, 65536))
-        except OSError:
-          break
-        if len(private) > 131072:
-          pytest.fail('Private terminal output exceeded the fixture bound')
     # Never print private output or a generated authorization URL on failure.
     pytest.fail('Installed login did not reach the expected terminal phase')
+
+  def report_records() -> list[dict[str, object]]:
+    try:
+      return [json.loads(line) for line in reports.splitlines()]
+    except (ValueError, UnicodeError):
+      pytest.fail('Terminal supervisor returned an invalid closed result')
 
   try:
     child = subprocess.Popen(
       [
         sys.executable,
         '-c',
-        'import os,sys; os.login_tty(0); os.execv(sys.argv[1], sys.argv[1:])',
+        _TERMINAL_SUPERVISOR,
+        str(report_write),
         str(cli),
         'auth',
         'login',
@@ -341,10 +389,19 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
       stdin=slave,
       stdout=slave,
       stderr=slave,
+      pass_fds=(report_write,),
       cwd=env['HOME'],
       env=env,
     )
+    os.close(report_write)
+    report_write = -1
     await_notice(b'Ctrl-C cancels.')
+    initial = report_records()
+    assert len(initial) == 1
+    assert set(initial[0]) == {'cli_pid', 'foreground'}
+    assert initial[0]['foreground'] is True
+    cli_pid = initial[0]['cli_pid']
+    assert isinstance(cli_pid, int) and cli_pid > 0
     assert not termios.tcgetattr(slave)[3] & termios.ECHO
     # Inspect only process IDs, never command lines or environment contents.
     processes = subprocess.run(
@@ -358,7 +415,7 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
       int(pid)
       for line in processes.stdout.splitlines()
       for pid, parent in [line.split()]
-      if int(parent) == child.pid
+      if int(parent) == cli_pid
     ]
     assert len(native_pids) == 1, (
       'Expected one private native authority process'
@@ -371,23 +428,31 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
         urllib.parse.urlsplit(match[0].decode()).query
       )
       redirect = urllib.parse.urlsplit(query['redirect_uri'][0])
+      port = redirect.port
     except (UnicodeError, ValueError, KeyError, IndexError):
       pytest.fail('Installed login provided an invalid callback setup')
-    if redirect.hostname != 'localhost' or redirect.port is None:
+    if redirect.hostname != 'localhost' or port is None:
       pytest.fail('Unexpected callback listener address')
-    port = redirect.port
     # Wrong state is rejected before exchange; no real code is ever submitted.
     os.write(master, (_INPUT_CANARY + '#wrong-state\n').encode())
     await_notice(b'Callback rejected;')
     if _INPUT_CANARY.encode() in private:
       pytest.fail('Private callback input was echoed')
     os.write(master, b'\x03')
-    assert child.wait(timeout=10) == 130
-    assert termios.tcgetattr(slave) == before
-    for pid in native_pids:
+    # Keep draining while waiting: a full PTY buffer can block process exit.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+      drain()
+      if child.poll() is not None and report_read not in readable:
+        break
+    assert child.poll() == 0, 'Terminal supervisor did not exit cleanly'
+    results = report_records()
+    assert len(results) == 2
+    assert results[1] == {'code': 130, 'restored': True}
+    for pid in [cli_pid, *native_pids]:
       with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
-    # The foreground command is reaped; the native listener must also be closed.
+    # Both actual processes are reaped; the native listeners must be closed.
     for family, host in (
       (socket.AF_INET, '127.0.0.1'),
       (socket.AF_INET6, '::1'),
@@ -395,14 +460,22 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
       with socket.socket(family, socket.SOCK_STREAM) as connection:
         connection.settimeout(1)
         assert connection.connect_ex((host, port)) != 0
-    _no_chat_files(env)
+    # Preparing login holds a stable private lock before creating any grant.
+    _no_chat_files(env, cancelled_login=True)
   finally:
+    # These are the fixture's observed children, never a name-based process kill.
+    for pid in [*native_pids, cli_pid]:
+      if pid is not None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+          os.kill(pid, signal.SIGKILL)
     if child is not None and child.poll() is None:
-      with contextlib.suppress(ProcessLookupError):
-        os.killpg(child.pid, signal.SIGKILL)
+      # Let the supervisor reap the CLI before terminating the supervisor.
+      deadline = time.monotonic() + 2
+      while child.poll() is None and time.monotonic() < deadline:
+        drain(capture=False)
+      if child.poll() is None:
+        child.kill()
       child.wait(timeout=5)
-    for pid in native_pids:
-      with contextlib.suppress(ProcessLookupError):
-        os.kill(pid, signal.SIGKILL)
-    os.close(master)
-    os.close(slave)
+    for descriptor in (master, slave, report_read, report_write):
+      if descriptor >= 0:
+        os.close(descriptor)
