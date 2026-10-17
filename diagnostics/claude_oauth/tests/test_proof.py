@@ -391,6 +391,23 @@ finally:
             self.store.write(oversized)
         self.assertEqual(self.store.load(), old)
 
+    def test_directory_flush_failure_reports_commit_uncertainty_without_rollback(self):
+        old = record()
+        self.store.write(old)
+        replacement = {**old, "revision": 2}
+        actual_fsync = proof.os.fsync
+
+        def fail_directory(fd):
+            if fd == self.store.dir_fd:
+                raise OSError("SYNTHETIC_STORAGE_CANARY")
+            return actual_fsync(fd)
+
+        with patch.object(proof.os, "fsync", side_effect=fail_directory):
+            with self.assertRaisesRegex(compat.ProofError, "credential_commit_outcome_unknown") as caught:
+                self.store.write(replacement)
+        self.assertEqual(self.store.load(), replacement)
+        self.assertNotIn("SYNTHETIC_STORAGE_CANARY", json.dumps(proof.safe_error(caught.exception)))
+
     def test_real_refresh_request_profile_and_logout_tombstone(self):
         old = record()
         self.store.write(old)

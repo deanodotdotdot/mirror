@@ -81,7 +81,10 @@ directory between hosts.
    can also be pasted into the hidden terminal prompt. A browser-launch failure
    leaves this manual path available. The five-minute pending state/verifier
    live only in memory. Ctrl-C cancels, restores terminal echo and closes sockets.
-   The old grant remains intact on failed/cancelled/incomplete login.
+   The old grant remains intact on cancellation or failure before atomic commit.
+   If the directory flush fails after replacement, the helper reports
+   `credential_commit_outcome_unknown`: inspect status before proceeding; it
+   cannot promise durable storage or safely roll back a rotated refresh token.
 3. In separate helper processes, run local status, discovery and the first probe:
 
    ```sh

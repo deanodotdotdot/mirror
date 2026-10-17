@@ -15,8 +15,8 @@ Compatibility: `mirror-phase0-omp-df4f996-v1`, based on OMP
 
 | Check | Outcome and boundary |
 | --- | --- |
-| macOS arm64, Python 3.14.7 | 35 unittest cases pass after Astra review. Local callback tests exercise IPv4 and IPv6 when available. |
-| Linux arm64, Python 3.12.15 | The same 35 cases pass as nonroot `mirror-test` with source mounted read-only. Unmocked HTTP/browser launches are blocked by the tests. This is not an SSH/browser login observation. The original 26-case suite also passed with Docker networking disabled. |
+| macOS arm64, Python 3.14.7 | 36 unittest cases pass after Astra review. Local callback tests exercise IPv4 and IPv6 when available. |
+| Linux arm64, Python 3.12.15 | The same 36 cases pass as nonroot `mirror-test` with source mounted read-only. Unmocked HTTP/browser launches are blocked by the tests. This is not an SSH/browser login observation. The original 26-case suite also passed with Docker networking disabled. |
 | Independent wire oracle | Frozen synthetic request's UTF-16 billing seed and final-body CCH match Bun 1.4.3; five XXH64 vectors cover empty, small, 256-byte and complete request inputs. |
 | Login/callback fixtures | PKCE, exact redirect, URL and code-plus-state validation, wrong/duplicate state/code, bare code bound to pending state, replay, five-minute timeout, occupied port fallback, hidden manual pipe path, cancellation, browser-launch failure, restored terminal echo. |
 | Grant fixtures | Bearer/inference scope validation, rejection of API keys and malformed grants, authenticated bootstrap identity, no incomplete commit, newer logout wins over older login, actual-expiry calculation, refresh rotation/preservation, failed-refresh retention, generation tombstone. |
@@ -37,7 +37,9 @@ No P0/P1 findings. P2 findings corrected before first live use:
   ancestors. It now walks `O_NOFOLLOW` directory descriptors, validates the
   opened owner/mode, and rejects unsafe ancestors. A separate-process test
   verifies the stable lock survives atomic grant replacement. Oversized writes
-  cannot replace a record that must remain reloadable.
+  cannot replace a record that must remain reloadable. Directory-flush failure
+  after replacement explicitly reports uncertain durability without rolling
+  back a potentially rotated token.
 - Forced-tool fixtures kept adaptive thinking and clear-thinking fields,
   contradicting pinned OMP's `disableThinkingIfToolChoiceForced`. Those fields
   are omitted for forced selection; low effort remains. Bun 1.4.3 independently

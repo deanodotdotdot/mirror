@@ -258,7 +258,12 @@ class Store:
             else:
                 os.close(target)
             os.replace(name, "grant.json", src_dir_fd=self.dir_fd, dst_dir_fd=self.dir_fd)
-            os.fsync(self.dir_fd)
+            try:
+                os.fsync(self.dir_fd)
+            except OSError:
+                # Replacement already happened: claiming the old record was
+                # retained, or rolling a rotated refresh token back, is unsafe.
+                raise ProofError("credential_commit_outcome_unknown") from None
         except OSError:
             raise ProofError("credential_storage_error") from None
         finally:
@@ -887,6 +892,7 @@ def safe_error(error):
         "invalid_command_line": "Run proof.py --help; never pass credentials or callback codes in arguments.",
         "invalid_configuration": "Unset a conflicting ANTHROPIC_BASE_URL and use only this diagnostic's fixed endpoints.",
         "credential_storage_error": "Use a fresh private diagnostic-only state directory; keep any existing grant private for manual recovery.",
+        "credential_commit_outcome_unknown": "The complete new grant replaced the old file, but durable commit could not be confirmed. Inspect status; do not repeat the refresh blindly. Fix storage or establish a fresh login if needed.",
         "unknown_diagnostic_store_schema": "Use a fresh diagnostic-only state directory; do not point at another application's credentials.",
         "credential_lock_timeout": "Let the other diagnostic operation finish, then retry this command.",
         "login_required": "Run proof.py login yourself in a private terminal to establish a fresh Mirror-owned grant.",
