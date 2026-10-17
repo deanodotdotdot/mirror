@@ -5,13 +5,14 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mirror_agent::providers::claude::auth::{
     ClaudeAuthManager, ClaudeCallbackInput, ClaudeLoginEvent, CommandError, Phase,
 };
 use mirror_agent::providers::claude::{
-    ClaudeAuthStatus, ClaudeConfigurationError, ClaudeError, ClaudeErrorKind, CLAUDE_PROVIDER,
+    ClaudeError, ClaudeErrorKind, ClaudeIdentityBinding, CLAUDE_PROVIDER,
 };
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,24 @@ enum Action {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Params {}
+struct EmptyParams {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityParams {
+    expected_identity: Option<ClaudeIdentityBinding>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextParams {
+    expected_identity: ClaudeIdentityBinding,
+    model: String,
+    explicit_context_window: Option<u64>,
+}
+enum Params {
+    Empty,
+    Identity(IdentityParams),
+    Context(ContextParams),
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -46,7 +64,7 @@ struct Request {
     kind: String,
     provider: String,
     action: Action,
-    params: Params,
+    params: Value,
 }
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -218,9 +236,32 @@ pub async fn run() -> ExitCode {
         )
         .await;
     }
-    let _ = &request.params;
+    // Validate the complete action-specific shape before any filesystem or
+    // authority work. The raw private request is never logged or echoed.
+    let params = match request.action {
+        Action::Login | Action::Status | Action::Logout => {
+            serde_json::from_value::<EmptyParams>(request.params.clone()).map(|_| Params::Empty)
+        }
+        Action::Models | Action::Usage => {
+            serde_json::from_value::<IdentityParams>(request.params.clone()).map(Params::Identity)
+        }
+        Action::ModelContext => {
+            serde_json::from_value::<ContextParams>(request.params.clone()).map(Params::Context)
+        }
+    };
+    let params = match params {
+        Ok(params) => params,
+        Err(_) => {
+            return failure(
+                &output,
+                Some(&request),
+                &command_error(invalid(), Phase::Protocol),
+            )
+            .await
+        }
+    };
     let manager = match ClaudeAuthManager::new() {
-        Ok(manager) => manager,
+        Ok(manager) => Arc::new(manager),
         Err(error) => {
             return failure(
                 &output,
@@ -234,21 +275,57 @@ pub async fn run() -> ExitCode {
     let (callbacks, callback_rx) = mpsc::channel(4);
     let (events, mut event_rx) = mpsc::channel(32);
     let operation = async {
-        match request.action {
-            Action::Login => {
-                manager
-                    .login(callback_rx, events, Box::pin(cancelled(receiver)))
-                    .await
-            }
-            Action::Status => manager
+        match (request.action, params) {
+            (Action::Login, Params::Empty) => manager
+                .login(callback_rx, events, Box::pin(cancelled(receiver)))
+                .await
+                .map(|status| json!({"status":status})),
+            (Action::Status, Params::Empty) => manager
                 .status(Box::pin(cancelled(receiver)))
                 .await
+                .map(|status| json!({"status":status}))
                 .map_err(|error| command_error(error, Phase::Preparing)),
-            Action::Logout => manager.logout(Box::pin(cancelled(receiver))).await,
-            _ => Err(command_error(
-                ClaudeError::configuration(ClaudeConfigurationError::NotImplemented),
-                Phase::Protocol,
-            )),
+            (Action::Logout, Params::Empty) => manager
+                .logout(Box::pin(cancelled(receiver)))
+                .await
+                .map(|status| json!({"status":status})),
+            (action, params) => {
+                let service =
+                    mirror_agent::providers::claude::metadata::ClaudeMetadataService::new(
+                        manager.clone(),
+                    )
+                    .map_err(|error| command_error(error, Phase::Preparing))?;
+                let result = match (action, params) {
+                    (Action::Models, Params::Identity(params)) => service
+                        .models(
+                            params.expected_identity.as_ref(),
+                            None,
+                            Box::pin(cancelled(receiver)),
+                        )
+                        .await
+                        .map(|models| json!({"models":models})),
+                    (Action::Usage, Params::Identity(params)) => service
+                        .usage(
+                            params.expected_identity.as_ref(),
+                            None,
+                            Box::pin(cancelled(receiver)),
+                        )
+                        .await
+                        .map(|usage| json!({"usage":usage})),
+                    (Action::ModelContext, Params::Context(params)) => service
+                        .model_context(
+                            &params.expected_identity,
+                            &params.model,
+                            params.explicit_context_window,
+                            None,
+                            Box::pin(cancelled(receiver)),
+                        )
+                        .await
+                        .map(|model_context| json!({"model_context":model_context})),
+                    _ => Err(invalid()),
+                };
+                result.map_err(|error| command_error(error, Phase::Preparing))
+            }
         }
     };
     tokio::pin!(operation);
@@ -279,7 +356,7 @@ pub async fn run() -> ExitCode {
             // A commit returns its terminal result within this same poll.
             // Once selected, output delivery never polls cancellation again.
             result = &mut operation => return match result {
-                Ok(status) => completed(&output, &request, status).await,
+                Ok(result) => completed(&output, &request, result).await,
                 Err(error) => failure(&output, Some(&request), &error).await,
             },
             event = event_rx.recv(), if matches!(request.action, Action::Login) => {
@@ -304,9 +381,9 @@ pub async fn run() -> ExitCode {
         }
     }
 }
-async fn completed(output: &Pipe, request: &Request, status: ClaudeAuthStatus) -> ExitCode {
+async fn completed(output: &Pipe, request: &Request, result: Value) -> ExitCode {
     let mut value = base(Some(request), "completed");
-    value["result"] = json!({"status":status});
+    value["result"] = result;
     if output.write(&value).await.is_ok() {
         ExitCode::SUCCESS
     } else {

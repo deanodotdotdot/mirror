@@ -362,3 +362,135 @@ async fn terminal_input_is_rejected_without_changing_echo() {
     assert_eq!(before.c_lflag, after.c_lflag);
     assert!(output.stderr.is_empty());
 }
+
+#[tokio::test]
+async fn metadata_actions_validate_typed_params_and_never_hide_missing_login() {
+    let (_temp, path) = home();
+    let identity = json!({"account_id":Uuid::from_u128(1),"organization_id":Uuid::from_u128(2)});
+    for (action, params) in [
+        ("models", json!({})),
+        ("usage", json!({"expected_identity":identity})),
+        (
+            "model_context",
+            json!({"expected_identity":identity,"model":"claude-opus-4-8","explicit_context_window":200000}),
+        ),
+    ] {
+        let mut native = Native::start(&path);
+        native.write(json!({"schema_version":1,"request_id":native.id,"type":"request","provider":"anthropic-oauth","action":action,"params":params})).await;
+        let result = native.event().await;
+        assert_eq!(result["type"], "error");
+        assert_eq!(result["error"]["kind"], "login_required");
+        public_clean(&result);
+        native.finish(1).await;
+    }
+    assert!(!path.join(".mirror").exists());
+    for (action, params) in [
+        ("models", json!({"api_key":"SYNTHETIC_API_KEY_CANARY"})),
+        ("usage", json!({"base_url":"https://unreviewed.invalid"})),
+        ("model_context", json!({"model":"a"})),
+        ("status", json!({"expected_identity":identity})),
+        ("usage", Value::Null),
+    ] {
+        let mut native = Native::start(&path);
+        native.write(json!({"schema_version":1,"request_id":native.id,"type":"request","provider":"anthropic-oauth","action":action,"params":params})).await;
+        let result = native.event().await;
+        assert_eq!(result["type"], "error");
+        assert_eq!(result["error"]["kind"], "invalid_configuration");
+        assert_eq!(result["phase"], "protocol");
+        public_clean(&result);
+        native.finish(1).await;
+    }
+    assert!(!path.join(".mirror").exists());
+}
+
+fn seed_metadata_auth(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = path.join(".mirror");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let now = std::time::SystemTime::now();
+    let stamp = |t| prost_types::Timestamp::from(t).to_string();
+    let record = json!({"schema_version":1,"generation":Uuid::from_u128(3),"revision":1,"installation_id":Uuid::from_u128(4),"credential":{"access_token":"sk-ant-oat-SYNTHETIC_ACCESS_CANARY","refresh_token":"SYNTHETIC_REFRESH_CANARY","expires_at":stamp(now+Duration::from_secs(86400)),"authorized_at":stamp(now-Duration::from_secs(3600)),"account_id":Uuid::from_u128(1),"organization_id":Uuid::from_u128(2),"email":null,"organization_name":null,"scopes":["user:inference"]}});
+    for (name, bytes) in [
+        ("claude_oauth.json", serde_json::to_vec(&record).unwrap()),
+        ("claude_oauth.lock", Vec::new()),
+    ] {
+        let file = directory.join(name);
+        std::fs::write(&file, bytes).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+#[tokio::test]
+async fn explicit_context_native_result_is_safe_local_and_identity_bound() {
+    let (_temp, path) = home();
+    seed_metadata_auth(&path);
+    let before = std::fs::read(path.join(".mirror/claude_oauth.json")).unwrap();
+    let identity = json!({"account_id":Uuid::from_u128(1),"organization_id":Uuid::from_u128(2)});
+    let mut native = Native::start(&path);
+    native.write(json!({"schema_version":1,"request_id":native.id,"type":"request","provider":"anthropic-oauth","action":"model_context","params":{"expected_identity":identity,"model":"selected","explicit_context_window":123456}})).await;
+    let result = native.event().await;
+    assert_eq!(result["type"], "completed");
+    let context = &result["result"]["model_context"];
+    assert_eq!(context["context_window"], 123456);
+    assert_eq!(context["provenance"], "explicit");
+    assert_eq!(context["identity"], identity);
+    assert_eq!(context["fetched_at"], Value::Null);
+    public_clean(&result);
+    assert!(!result.to_string().contains("SYNTHETIC"));
+    native.finish(0).await;
+    let mut native = Native::start(&path);
+    native.write(json!({"schema_version":1,"request_id":native.id,"type":"request","provider":"anthropic-oauth","action":"model_context","params":{"expected_identity":{"account_id":Uuid::from_u128(77),"organization_id":Uuid::from_u128(2)},"model":"selected","explicit_context_window":123456}})).await;
+    let result = native.event().await;
+    assert_eq!(result["error"]["kind"], "account_changed");
+    native.finish(1).await;
+    assert_eq!(
+        before,
+        std::fs::read(path.join(".mirror/claude_oauth.json")).unwrap()
+    );
+    assert!(!path.join(".mirror/claude_metadata.lock").exists());
+}
+
+#[tokio::test]
+async fn metadata_cancel_eof_and_signals_interrupt_authority_lock_without_output_or_cache() {
+    for mode in ["cancel", "eof", "interrupt", "terminate"] {
+        let (_temp, path) = home();
+        seed_metadata_auth(&path);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join(".mirror/claude_oauth.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        let mut native = Native::start(&path);
+        native.request("usage").await;
+        // Authority is locked; this read-only operation cannot finish first.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match mode {
+            "cancel" => {
+                native
+                    .write(json!({"schema_version":1,"request_id":native.id,"type":"cancel"}))
+                    .await
+            }
+            "eof" => {
+                native.child.stdin.take();
+            }
+            name => {
+                nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(native.child.id().unwrap() as i32),
+                    if name == "interrupt" {
+                        nix::sys::signal::Signal::SIGINT
+                    } else {
+                        nix::sys::signal::Signal::SIGTERM
+                    },
+                )
+                .unwrap();
+            }
+        }
+        let result = native.event().await;
+        assert_eq!(result["type"], "error");
+        assert_eq!(result["error"]["kind"], "request_cancelled");
+        public_clean(&result);
+        native.finish(130).await;
+        assert!(!path.join(".mirror/claude_metadata.json").exists());
+    }
+}

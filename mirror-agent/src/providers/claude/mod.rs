@@ -3,6 +3,8 @@
 pub mod auth;
 mod contracts;
 mod history;
+pub mod metadata;
+mod private_files;
 pub mod profile;
 
 pub use contracts::*;
