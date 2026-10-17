@@ -44,6 +44,7 @@ from mirror.cli import (
   ],
 )
 @pytest.mark.parametrize('create_session', [False, True])
+@pytest.mark.parametrize('api', ['reflection', 'anthropic-oauth'])
 @pytest.mark.asyncio
 async def test_launch_reopens_workspace_and_honors_preference_precedence(
   tmp_path: pathlib.Path,
@@ -53,6 +54,7 @@ async def test_launch_reopens_workspace_and_honors_preference_precedence(
   expected_approval: str,
   expected_effort: str,
   create_session: bool,
+  api: str,
 ) -> None:
   primary = tmp_path / 'primary'
   feature = tmp_path / 'feature'
@@ -65,7 +67,17 @@ async def test_launch_reopens_workspace_and_honors_preference_precedence(
   monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(tmp_path / 'models.json'))
   monkeypatch.setenv('MIRROR_EXTENSIONS_ENABLED', 'false')
   monkeypatch.chdir(primary)
-  monkeypatch.setattr(sys, 'argv', ['mirror', *flags])
+  monkeypatch.setattr(
+    sys,
+    'argv',
+    ['mirror', *flags, *(['--api', api] if api == 'anthropic-oauth' else [])],
+  )
+  if (
+    api == 'anthropic-oauth'
+    and saved_effort is None
+    and '--reasoning-effort' not in flags
+  ):
+    expected_effort = 'low'
   config.save_approval_mode('approve')
   with cli_store.Store(database) as store:
     store.set_worktree_preferences(
@@ -134,8 +146,13 @@ async def test_launch_reopens_workspace_and_honors_preference_precedence(
       launch.agent.model, launch.agent.reasoning_effort, remote=False
     )
     assert inference.reasoning_effort == expected_effort
-    assert inference.api == 'reflection'
-    assert inference.model == 'Beam-1.0-501B-A23B'
+    assert inference.api == api
+    assert inference.model == models.default_model(api)
+    if saved_effort is not None and '--reasoning-effort' not in flags:
+      assert (
+        launch.agent._worker_configuration.values['reasoning_effort_saved']  # pyright: ignore[reportPrivateUsage]
+        is True
+      )
     await controller._reconcile()  # pyright: ignore[reportPrivateUsage]
     assert await controller.select(1)
     task = controller._reconcile_task  # pyright: ignore[reportPrivateUsage]

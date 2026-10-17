@@ -1051,3 +1051,33 @@ async def test_notice_fails_prompt_and_unstreamed_answer_is_forwarded(
   assert response['result'] == {'stopReason': 'end_turn'}
   assert _chunk_texts(preceding) == ['Whole answer']
   await _finish(client, task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('compactor', [False, True])
+async def test_acp_direct_session_rejects_subscription_before_worker(
+  tmp_path: pathlib.Path,
+  compactor: bool,
+) -> None:
+  from unittest import mock
+
+  config = {
+    'model': 'main',
+    'api': 'anthropic-messages' if compactor else 'anthropic-oauth',
+  }
+  if compactor:
+    config.update(
+      compaction_model='compact', compaction_model_api='anthropic-oauth'
+    )
+  transport = mock.Mock(
+    side_effect=AssertionError('excluded worker must not start')
+  )
+  server = acp.Server(
+    worker_config=lambda _: config,
+    transport=transport,
+    reasoning_effort='none',
+    record_history=False,
+  )
+  with pytest.raises(acp.RPCError, match='not supported'):
+    await server._new_session({'cwd': str(tmp_path)})  # pyright: ignore[reportPrivateUsage]
+  transport.assert_not_called()

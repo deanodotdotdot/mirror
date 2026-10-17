@@ -7,6 +7,7 @@ import dataclasses
 import json
 import os
 import pathlib
+from collections.abc import Mapping
 from typing import Any, cast
 
 from mirror.cli import reflection
@@ -32,7 +33,8 @@ WIRE_PROTOCOLS: tuple[tuple[str, str], ...] = (
   ('openai-codex-responses', 'ChatGPT plan billing (Codex login)'),
   ('openai-responses', 'OpenAI Responses API'),
   ('openai-chat-completions', 'OpenRouter'),
-  ('anthropic-messages', 'Anthropic Messages API'),
+  ('anthropic-oauth', 'Claude subscription'),
+  ('anthropic-messages', 'Anthropic API'),
 )
 
 
@@ -50,6 +52,38 @@ def default_model(api: str) -> str:
   if api in ('openai-responses', 'openai-codex-responses'):
     return 'gpt-6-astra'
   return 'openai/gpt-6-astra'
+
+
+def claude_reasoning_efforts(model: str) -> tuple[str, ...] | None:
+  """UI projection of the frozen native claude/wire.rs capability map."""
+  return {
+    'claude-opus-4-8': ('none', 'low'),
+    'claude-sonnet-4-6': ('none', 'low'),
+    'claude-sonnet-5': ('none',),
+  }.get(model)
+
+
+def default_reasoning_effort(api: str, model: str) -> str:
+  if api == 'anthropic-oauth':
+    efforts = claude_reasoning_efforts(model)
+    # Unknown candidates still require native capability validation. Do not
+    # infer signed reasoning from their names.
+    return efforts[-1] if efforts else 'none'
+  return 'max'
+
+
+def validate_claude_reasoning(model: str, effort: str) -> None:
+  efforts = claude_reasoning_efforts(model)
+  if efforts is not None and effort not in efforts:
+    raise ValueError(
+      'This Claude subscription model does not support the selected reasoning '
+      'effort. Use /effort ' + efforts[-1] + ' before selecting it, or launch '
+      'with --reasoning-effort '
+      + efforts[-1]
+      + '. Supported presets: '
+      + ', '.join(efforts)
+      + '.'
+    )
 
 
 def key_env(api: str) -> str:
@@ -76,6 +110,17 @@ def base_env(api: str) -> str | None:
 
 def validate_connection(api: str, base_url: str) -> None:
   """Check local provider prerequisites without probing model availability."""
+  if api == 'anthropic-oauth':
+    endpoints = (base_url, os.environ.get('ANTHROPIC_BASE_URL', ''))
+    if any(
+      endpoint and endpoint.rstrip('/') != 'https://api.anthropic.com'
+      for endpoint in endpoints
+    ):
+      raise ValueError(
+        'Claude subscription requires the default Anthropic endpoint. '
+        'Unset ANTHROPIC_BASE_URL or select Anthropic API.'
+      )
+    return
   if api == 'reflection':
     if base_url and base_url.rstrip('/') != reflection.BASE_URL:
       raise ValueError(
@@ -92,6 +137,46 @@ def validate_connection(api: str, base_url: str) -> None:
     raise ValueError(
       f'No API key found. Export {key_env(api)} or use --base-url '
       'for a keyless self-hosted endpoint.'
+    )
+
+
+def validate_claude_configuration(
+  values: Mapping[str, object], *, supported: bool
+) -> None:
+  """Fence every selected OAuth provider before launching excluded surfaces."""
+  api = values.get('model_api') or values.get('api')
+  compaction_api = (
+    (values.get('compaction_model_api') or api)
+    if values.get('compaction_model')
+    else None
+  )
+  remote_api = values.get('remote_model_api')
+  if 'anthropic-oauth' not in (api, compaction_api, remote_api):
+    return
+  if not supported:
+    raise ValueError(
+      'Claude subscription is not supported on this launch surface, including its compaction model.'
+    )
+  if api == 'anthropic-oauth':
+    if values.get('api_key') is not None:
+      raise ValueError('--api-key is not allowed with anthropic-oauth')
+    if values.get('auth_path') is not None:
+      raise ValueError(
+        'Claude subscription cannot use an external credential path.'
+      )
+    validate_connection(
+      'anthropic-oauth',
+      str(values.get('model_base_url') or values.get('base_url') or ''),
+    )
+  if compaction_api == 'anthropic-oauth':
+    inherited = (
+      (values.get('model_base_url') or values.get('base_url'))
+      if compaction_api == api
+      else None
+    )
+    validate_connection(
+      'anthropic-oauth',
+      str(values.get('compaction_model_base_url') or inherited or ''),
     )
 
 

@@ -70,6 +70,8 @@ _PROTOCOL_KEY_ENV = {
 
 def _credential_hint(api: str) -> str:
   """A short readiness note for a protocol, shown beside its picker row."""
+  if api == 'anthropic-oauth':
+    return 'Mirror login · select to connect'
   if api == 'anthropic-messages':
     return 'key set' if api_keys.has_anthropic_key() else 'select to sign in'
   if api == 'reflection':
@@ -286,6 +288,8 @@ def _select_inference(value: str) -> actions.Action:
       empty='Fetching OpenRouter models…',
       load=_fetch_openrouter_models,
     )
+  if value == 'anthropic-oauth':
+    return actions.ClaudeCommand('models')
   if value == 'anthropic-messages':
     if not api_keys.has_anthropic_key():
       return _default_model(value)
@@ -352,7 +356,10 @@ def model_selector(current_model: str) -> selection.Selector[actions.Action]:
 
 
 def _login(_: commands.CommandContext, arguments: str) -> actions.Action:
-  del arguments
+  if arguments == 'claude':
+    return actions.ClaudeCommand('login')
+  if arguments:
+    return actions.ShowText('Usage: /login [claude]', style='ui.warning')
   if reflection.has_key():
     source = (
       'REFLECTION_API_KEY'
@@ -366,8 +373,24 @@ def _login(_: commands.CommandContext, arguments: str) -> actions.Action:
   return _default_model('reflection')
 
 
+def _usage(context: commands.CommandContext, arguments: str) -> actions.Action:
+  del context
+  if arguments.strip() != 'claude':
+    return actions.ShowText('Usage: /usage claude', style='ui.warning')
+  return actions.ClaudeCommand('usage')
+
+
+def _reconnect(_: commands.CommandContext, arguments: str) -> actions.Action:
+  if arguments.strip() != 'claude':
+    return actions.ShowText('Usage: /reconnect claude', style='ui.warning')
+  return actions.ClaudeCommand('reconnect')
+
+
 def _logout(_: commands.CommandContext, arguments: str) -> actions.Action:
-  del arguments
+  if arguments == 'claude':
+    return actions.ClaudeCommand('logout')
+  if arguments:
+    return actions.ShowText('Usage: /logout [claude]', style='ui.warning')
   return actions.ForgetReflectionKey()
 
 
@@ -375,6 +398,16 @@ def _set_reasoning(
   context: commands.CommandContext, arguments: str
 ) -> actions.Action:
   effort = arguments.lower()
+  efforts = _REASONING_EFFORTS
+  if context.model_api == 'anthropic-oauth':
+    supported = models.claude_reasoning_efforts(context.model)
+    if supported is None:
+      return actions.ShowText(
+        'Reasoning capabilities are unavailable for this Claude model. '
+        'Choose a model with a reviewed compatibility preset.',
+        style='ui.warning',
+      )
+    efforts = supported
   if not effort:
     return actions.OpenSelector(
       selection.Selector(
@@ -383,9 +416,11 @@ def _set_reasoning(
         tuple(
           selection.Choice(
             value,
-            'provider default' if value == 'none' else value,
+            'no reasoning'
+            if value == 'none' and context.model_api == 'anthropic-oauth'
+            else ('provider default' if value == 'none' else value),
           )
-          for value in _REASONING_EFFORTS
+          for value in efforts
         ),
         actions.SetReasoning,
         current=context.reasoning_effort,
@@ -393,10 +428,9 @@ def _set_reasoning(
         selected=context.reasoning_effort,
       )
     )
-  if effort not in _REASONING_EFFORTS:
+  if effort not in efforts:
     return actions.ShowText(
-      f'Unknown reasoning effort: {arguments}. Choices: '
-      f'{", ".join(_REASONING_EFFORTS)}',
+      f'Unknown reasoning effort: {arguments}. Choices: {", ".join(efforts)}',
       style='ui.warning',
     )
   return actions.SetReasoning(effort)
@@ -422,13 +456,29 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
     return (
       commands.CommandDef(
         'login',
-        'Check Reflection credentials or sign in',
+        'Sign in to Reflection or use /login claude',
         _login,
+        arguments=commands.OptionalArguments('[claude]'),
       ),
       commands.CommandDef(
         'logout',
-        'Remove the saved Reflection API key',
+        'Remove Reflection credentials or use /logout claude',
         _logout,
+        arguments=commands.OptionalArguments('[claude]'),
+      ),
+      commands.CommandDef(
+        'reconnect',
+        'Reconnect this idle conversation to the current Claude login',
+        _reconnect,
+        arguments=commands.OptionalArguments('claude'),
+        available_when_busy=True,
+      ),
+      commands.CommandDef(
+        'usage',
+        'Show Claude subscription usage for this conversation’s account',
+        _usage,
+        arguments=commands.OptionalArguments('claude'),
+        available_when_busy=True,
       ),
       commands.CommandDef(
         'model',

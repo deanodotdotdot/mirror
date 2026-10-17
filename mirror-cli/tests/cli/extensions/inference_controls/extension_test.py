@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import pathlib
 from unittest import mock
@@ -61,6 +62,38 @@ def _commands(
 def _command_context() -> commands.CommandContext:
   return commands.CommandContext(
     'model', 'medium', 'conversation', False, '/workspace'
+  )
+
+
+@pytest.mark.parametrize(
+  ('model', 'efforts'),
+  [
+    ('claude-opus-4-8', ('none', 'low')),
+    ('claude-sonnet-4-6', ('none', 'low')),
+    ('claude-sonnet-5', ('none',)),
+    ('unknown-candidate', None),
+  ],
+)
+def test_claude_effort_picker_only_advertises_reviewed_capabilities(
+  model: str, efforts: tuple[str, ...] | None
+) -> None:
+  context = dataclasses.replace(
+    _command_context(), model=model, model_api='anthropic-oauth'
+  )
+  available = _commands(_state())
+  result = commands.dispatch('/effort', context, available)
+  if efforts is None:
+    assert isinstance(result, actions.ShowText)
+    assert 'capabilities are unavailable' in result.text
+  else:
+    assert isinstance(result, actions.OpenSelector)
+    assert tuple(choice.value for choice in result.selector.choices) == efforts
+    for effort in efforts:
+      assert commands.dispatch(
+        '/effort ' + effort, context, available
+      ) == actions.SetReasoning(effort)
+  assert isinstance(
+    commands.dispatch('/effort max', context, available), actions.ShowText
   )
 
 
@@ -160,8 +193,13 @@ def test_extension_commands_open_selectors(
           'openai-chat-completions · set $OPENROUTER_API_KEY',
         ),
         selection.Choice(
+          'anthropic-oauth',
+          'Claude subscription',
+          'anthropic-oauth · Mirror login · select to connect',
+        ),
+        selection.Choice(
           'anthropic-messages',
-          'Anthropic Messages API',
+          'Anthropic API',
           'anthropic-messages · select to sign in',
         ),
         selection.Choice('next', 'Next', 'next'),
@@ -213,6 +251,7 @@ def test_model_command_offers_protocols_without_a_config(
     'openai-codex-responses',
     'openai-responses',
     'openai-chat-completions',
+    'anthropic-oauth',
     'anthropic-messages',
   )
 
@@ -469,3 +508,57 @@ def test_saved_anthropic_key_enables_catalog(
   action = selector.on_select('anthropic-messages')
   assert isinstance(action, actions.OpenSelector)
   assert action.selector.id == 'anthropic-models'
+
+
+@pytest.mark.parametrize('action', ['login', 'logout'])
+def test_claude_auth_commands_are_explicit_and_reject_extra_arguments(
+  action: str,
+) -> None:
+  available = _commands(_state())
+  assert commands.dispatch(
+    f'/{action} claude', _command_context(), available
+  ) == actions.ClaudeCommand(action)
+  for arguments in ('other', 'claude extra', 'SYNTHETIC_PRIVATE_CANARY'):
+    result = commands.dispatch(
+      f'/{action} {arguments}', _command_context(), available
+    )
+    assert result == actions.ShowText(
+      f'Usage: /{action} [claude]', style='ui.warning'
+    )
+
+
+def test_claude_catalog_and_usage_are_explicit_native_commands() -> None:
+  available = _commands(_state())
+  assert commands.dispatch(
+    '/model anthropic-oauth', _command_context(), available
+  ) == actions.ClaudeCommand('models')
+  assert inference_controls.model_selector('current').on_select(
+    'anthropic-oauth'
+  ) == actions.ClaudeCommand('models')
+  assert commands.dispatch(
+    '/usage claude', _command_context(), available
+  ) == actions.ClaudeCommand('usage')
+  for text in (
+    '/usage',
+    '/usage other',
+    '/usage claude extra',
+    '/usage SYNTHETIC_PRIVATE_CANARY',
+  ):
+    assert commands.dispatch(
+      text, _command_context(), available
+    ) == actions.ShowText('Usage: /usage claude', style='ui.warning')
+
+
+@pytest.mark.parametrize(
+  'command', ['/reconnect', '/reconnect other', '/reconnect claude extra']
+)
+def test_reconnect_requires_exact_claude_argument(command: str) -> None:
+  result = commands.dispatch(command, _command_context(), _commands(_state()))
+  assert isinstance(result, actions.ShowText)
+  assert result.text == 'Usage: /reconnect claude'
+
+
+def test_reconnect_routes_only_explicit_claude() -> None:
+  assert commands.dispatch(
+    '/reconnect claude', _command_context(), _commands(_state())
+  ) == actions.ClaudeCommand('reconnect')

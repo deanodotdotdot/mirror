@@ -26,6 +26,21 @@ def test_launcher_import_does_not_import_cli() -> None:
   )
 
 
+def test_private_commands_import_without_chat_extensions_or_rpc() -> None:
+  subprocess.run(
+    [
+      sys.executable,
+      '-c',
+      'import sys; import mirror.claude_commands; '
+      'assert "mirror.cli.cli" not in sys.modules; '
+      'assert "mirror.cli.cli_store" not in sys.modules; '
+      'assert "mirror.cli.extensions.inference_controls.extension" not in sys.modules; '
+      'assert "grpc" not in sys.modules',
+    ],
+    check=True,
+  )
+
+
 def test_handoff_preserves_arguments_and_cwd(
   tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -65,6 +80,8 @@ def test_handoff_preserves_arguments_and_cwd(
     '--showcase',
     '--no-update',
     'exec',
+    'auth',
+    'usage',
   ],
 )
 def test_fast_paths_do_not_check(
@@ -81,6 +98,26 @@ def test_fast_paths_do_not_check(
   ):
     main.run()
   assert prepare.call_args.kwargs['check'] is False
+
+
+@pytest.mark.parametrize('command', ['auth', 'usage'])
+def test_private_commands_handoff_without_tui_or_update_prompt(
+  command: str,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.setattr(sys, 'argv', ['mirror', command, 'status', 'claude'])
+  python = pathlib.Path(sys.executable)
+  with (
+    mock.patch.object(
+      main.updater, 'prepare', return_value=main.updater.Launch(python)
+    ) as prepare,
+    mock.patch.object(main.os, 'execve') as execute,
+  ):
+    main.run()
+  prepare.assert_called_once_with(
+    check=False, interactive=False, update_only=False
+  )
+  assert execute.call_args.args[1][1:3] == ['-m', 'mirror.claude_commands']
 
 
 def test_console_version_contract_survives_handoff() -> None:

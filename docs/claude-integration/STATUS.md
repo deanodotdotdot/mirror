@@ -16,9 +16,9 @@ checks run locally.
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdbea79e97695a071b5067a5d0cbed088bab after independent Astra review and manager Linux verification; three P2 findings fixed. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
-| 6. Agent execution integration | 3 + 4 + 5 | Separate new Astra review completed across the full Task 6 delta, with no P2-or-higher findings. Native execution, durable binding and explicit idle reconnect await final manager verification/merge. See [execution notes](EXECUTION.md). |
-| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Astra private-command/TUI checkpoint e66866b is tested. Catalog and usage integration can resume after merged Task 5; final reconnect/runtime integration waits for Task 6. |
-| 8. Acceptance + packaging + docs | All preceding tasks | Independent packaging/harness preparation is checkpointed from reviewed Tasks 1–6. Final builds, public command verification, live evidence and docs wait for reviewed Task 7. [Acceptance runbook/matrix](ACCEPTANCE.md); production A1–A11 remain unproven. |
+| 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
+| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Merged as [PR 7](https://github.com/deanodotdotdot/mirror/pull/7) at 072be411ad25b25aa7a82ba9b486db9cecbdd315 after independent NEW Astra review fixed four P2 findings. Full Mac source CI passed 3,398 tests with five native-packaging skips; manager exact-candidate Linux coverage passed 265 tests. Final reviewed head c8db986 changes only the ledger from validated 246eb6; manager verified the merged tree matches exactly. Production acceptance remains Task 8. |
+| 8. Acceptance + packaging + docs | All preceding tasks | Packaging/harness/A5 preparation is integrated with reviewed Task 7. Final builds, public command verification, live evidence and documentation are underway. [Acceptance runbook/matrix](ACCEPTANCE.md); production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
@@ -27,8 +27,8 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Tasks 1–5 are merged; three production tasks (6–8)
-remain pending review, merge or implementation. These checks do not establish production
+manual/random callback fields. Tasks 1–7 are merged; final production acceptance Task 8
+remains in progress. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
 
@@ -348,6 +348,211 @@ launcher checks, including the Unicode-spill and `/dev/full` cases. Final
 reviewed-head verification and merge remain with the manager. No real credential
 reads or live provider calls were used; production A1–A11 remain with Task 8.
 
+Task 7's remaining implementation uses Astra xhigh per the user's updated model
+policy; its initial Sol checkpoint is preserved. The private auth client now
+honors a native terminal result received during bounded cancellation, including
+a completion after the UI requests cancellation. TUI Claude login uses an
+isolated hidden buffer and transient display, clears both on Escape/completion,
+and restores the prior draft. Explicit login changes the grant only; selecting
+the subscription commits a model only after local configuration validation and
+usable/refreshable native auth status or successful login. Reflection's bare
+login/logout behavior remains separate. At that checkpoint, metadata catalog/usage and authoritative
+conversation binding/reconnect still awaited the merged Task 5/6 interfaces.
+
+Task 7 checkpoint validation: the merged Task 1–4 native binary builds in its
+own target directory. Final installed-package checks passed 90 focused
+Claude/auth/error/model/Reflection/TUI tests, including real native status/logout
+with synthetic temporary HOME, actual controlling-PTY manual/loopback completion,
+immediate echo restoration, late native completion after Ctrl-C, timeout cleanup,
+private link/instruction rendering in both TUI layouts, typed incomplete output,
+and late committed login plus Escape preserving the prior model and draft.
+A separate launcher/model/updater suite passed 99 tests with one existing
+installed-worker skip; its synthetic wheel fixture now includes the lightweight
+command-routing module imported by the launcher. Pyright reports zero errors or
+warnings, and diff/format checks pass. All checks use synthetic fixtures and no
+live provider calls or real credential reads. This is an implementation
+checkpoint, not independent review or production acceptance. Full packaged CI
+and final native metadata/execution interoperability remain for the integrated
+Task 5/6 source before Task 7's single PR is opened.
+
+
+Task 7's second Astra implementation checkpoint integrates the reviewed and
+merged Task 5 metadata protocol. Its dedicated private client validates the
+models/model_context/usage result wrapper, schema/provider/action/request ID,
+identity, nullable fields and numeric bounds. UTC JSON retains native timestamp
+precision; human timestamps use the local timezone. Usage preserves all windows,
+inactive rows, percentages above 100, reported extra-usage state and raw amount
+units, currencies and scales. Malformed or unknown amount units are unavailable;
+there is no guessed currency, conversion, zero balance or unlimited allowance.
+The Python usage command renders native degraded states/errors and returns 1
+for `unavailable` reports, while retaining the report in `--json` output. Stale
+reports remain explicitly labeled with their original fetch time and age.
+
+`/model anthropic-oauth` now obtains the native catalog after local auth checks
+and offers labeled candidates without a completion probe or model substitution.
+Missing login resumes that requested picker after the private login flow; login
+alone does not commit a model. A candidate's observed native identity is checked
+again before selection. Escape during discovery or that final local check keeps
+the prior provider/model and draft. A cancelled login also resolves a pending
+onboarding choice. Both layouts show the offline/bundled candidate labels.
+`/usage claude` is on demand and currently labels the current Mirror login;
+the adapter accepts explicit expected identity for the authoritative Task 6
+conversation snapshot to supply after integration. No binding is inferred here.
+
+This checkpoint's installed-package focused run passed 191 tests, including all
+prior private-pipe/controlling-PTY/late-commit cases, login-to-catalog continuation,
+Escape after a committed grant, catalog identity changes, provider persistence,
+strict metadata parser edge cases, units/nulls/timezones, and usage failure
+preserving inference configuration. The rebuilt Task 5 native command passed
+real temporary-HOME status/logout and missing-login models/model_context/usage
+interoperability, including pre-chat JSON output. Pyright reports zero errors or
+warnings; formatting and diff checks pass. No real credentials or live provider
+calls were used. Task 6 reconnect/session-state/typed-Nack/runtime wiring and
+startup enablement remain gated on its reviewed merge. Full packaged Python CI,
+independent review, and the single final Task 7 PR remain outstanding. This is
+an implementation checkpoint, not production acceptance.
+
+Manager completed Task 6 verification and merged PR 6 as `ec54e51`. Reviewed
+`d15a1ff` differs from Linux-tested `67ef42e` only in EXECUTION and STATUS; runtime,
+tests and build files are byte-identical. The merged integration tree exactly
+matches `d15a1ff`. GitHub Actions remains disabled. Manager integrated that merge
+into Task 7's clean metadata checkpoint, resolving only this ledger conflict and
+preserving both tasks' evidence. Task 7 now owns the final Python enablement and
+ACP/remote rejection, including explicit OAuth compaction with an API main model.
+
+
+Task 7 final Astra implementation integrates the reviewed native execution
+protocol. Only native initial/reattach snapshots establish local knowledge of a
+conversation binding; unknown and explicitly unbound remain distinct. Snapshot
+state clears on detach, and old worker callbacks cannot overwrite a replacement
+session. Typed authentication rejection of initial inference configuration leaves
+history readable and explicit `/reconnect claude` available. Reconnect sends the
+native expected-binding CAS plus the current login target and succeeds only after
+its correlated state-before-Ack receipt. Typed Nack/busy/conflict/unknown outcomes
+never optimistically manufacture a target binding.
+
+Model/provider switches involving Claude wait for a correlated native
+configuration Ack before persisting their selection, including switches back to
+Anthropic API. Escape preserves the previous provider/model and draft; if native
+configuration already changed, the client confirms restoration before releasing
+queued turns. Missing binding requires explicit reconnect. Conversation metadata
+uses the native bound identity; unknown/unbound usage explicitly labels the
+current Mirror login. No identity is written into model/workspace preferences.
+
+Local native interactive and exec startup are enabled. ACP and remote startup,
+model-entry/saved selections, runtime selection and explicit OAuth compaction
+with another main provider remain excluded. Conflicting explicit keys/credential
+paths and both explicit/environment endpoints are rejected. Typed errors use the
+closed renderer; untyped Claude runtime error fallbacks do not echo raw provider
+text. Failed/truncated native responses retain visible partial content and
+incomplete-tool notices without executable tool fragments or successful exec
+output. The CLI README documents private login, SSH callback input, usage and
+explicit reconnect behavior.
+
+Final validation ran `mirror-cli/ci.sh` with Python 3.12, TERM=xterm-256color,
+NO_COLOR unset, and MIRROR_TEST_NATIVE_WORKER pointing to the separately rebuilt
+reviewed native development worker. The complete installed-source gate built
+sdist/wheels, checked packaging fixtures and all imports, regenerated protobufs,
+and passed Pyright with zero errors/warnings plus **3,314 tests passed, five
+skipped**, in 238.11 seconds of pytest execution. The five skips require actual
+bundled worker/sandbox wheels and remain Task 8. Four Python forkpty deprecation
+warnings came from intentional real controlling-PTY tests; those tests passed.
+An earlier run was intentionally interrupted after a final error-path audit and
+is not counted as completed evidence.
+
+The final suite includes actual native temporary-HOME status/logout and missing-
+login metadata, attachment Nack plus retained durable history for bound/unbound
+sessions, explicit reconnect rejection without mutation, and exec safe nonzero
+output. Synthetic gRPC regressions cover unknown/unbound authority, state/Ack
+ordering, unrelated/late receipts, busy/Nack/disconnect/timeout outcomes, expected
+bindings and queued-turn cancellation fencing. Both UI layouts cover native-Ack
+persistence in both billing directions, Escape and draft preservation; prior
+private-pipe/late-commit and metadata null/unit/timezone checks remain included.
+Focused final seam checks passed 88 tests, and the final untyped-error/bidirectional
+persistence check passed 18 tests before the full gate. Formatting and diff checks
+pass. Evidence logs are `/tmp/mirror-claude-task7-final-ci.log`,
+`/tmp/mirror-claude-task7-final-native-build.log`,
+`/tmp/mirror-claude-task7-final-format.log` and
+`/tmp/mirror-claude-task7-safe-runtime.log` on the implementation host.
+
+All checks used synthetic data and temporary HOME directories; no live provider
+calls or real credentials were used. Native Rust/protocol files are unchanged
+from reviewed Task 6. Actual bundled native-wheel macOS/Linux and production
+A1–A11/live-account acceptance remain Task 8. The implementer stops after the
+single Task 7 PR for a separate NEW Astra review; only the manager merges.
+
+Task 7 independent Astra review inspected the entire submitted `abace8b` delta
+against reviewed Task 6 merge `ec54e513ddc09388cd0014aeb07450bddd99b646` and
+reproduced four P2 findings:
+
+- Browser-launch failure replaced the dedicated TUI sign-in URL with a short
+  failure notice. Manual completion now retains the URL and hidden-input/Enter
+  instructions in that transient UI, including after a rejected callback.
+- The CLI's generic implicit `max` effort was incompatible with the frozen
+  subscription presets. Fresh startup/exec and choices with known implicit
+  provenance now use native defaults (`low` for Opus 4.8/Sonnet 4.6, `none` for
+  Sonnet 5). Model and effort commit together after native acknowledgment;
+  cancellation preserves the prior model, effort and draft. Explicit, saved or
+  unknown-provenance choices are preserved and incompatible switches give
+  concrete `/effort`/CLI guidance. The subscription effort picker only advertises
+  reviewed presets; unknown model capabilities remain unknown. Native child
+  requests inherit the selected inference settings, while native compaction
+  already leaves effort unset to use its own reviewed provider default.
+- A duplicate reconnect state arriving just after Ack/Nack could overwrite local
+  authority before the waiting task removed the completed control. Completed
+  controls now reject subsequent state receipts, with both outcomes covered.
+- Untyped attachment rejection bypassed the TUI error sanitizer. Attachment,
+  gRPC and protocol exception paths now keep raw native diagnostics private for
+  a worker that handles OAuth, including an OAuth compactor with another main
+  provider. The TUI also retains that sensitivity after an OAuth-to-API switch,
+  so late untyped errors cannot bypass the closed renderer. Ordinary workers
+  that never handled OAuth keep their prior diagnostics.
+
+All four were reproduced before their fixes. Regressions cover both layouts,
+browser failure, startup/model-entry/saved defaults, explicit effort rejection,
+workspace preference precedence, login/Ack/Escape model-and-effort commits,
+closed reconnect controls, and untyped attachment/transport/runtime failures.
+The reviewer rebuilt the unchanged native development worker and passed 195
+focused cases. No Rust or protocol source changed, and no live credentials or
+provider calls were used. Actual native-wheel and live acceptance remain Task 8.
+
+
+Final independent-review validation used the frozen source/test candidate
+`246eb6cc190c0ccaa1ac3f192b48b5aedfd1e6eb`. The complete macOS installed-source
+`mirror-cli/ci.sh` gate passed sdist/wheel and native-packaging fixtures,
+regenerated protobufs, all imports and Pyright with zero errors/warnings, then
+**3,398 tests passed, five skipped** in 224.44 seconds. The five skips require
+actual bundled worker/sandbox wheels and remain Task 8. Four expected forkpty
+warnings came from passing real controlling-PTY tests. The final focused
+installed-source gate also passed packaging/imports/Pyright and **31** attachment,
+reconnect and runtime cases, including both layouts, main/compactor/after-switch
+sensitivity, ordinary diagnostics and a real gRPC switch-Ack/late-failure sequence.
+Formatting and `git diff --check` pass. The completed final full run supersedes
+an earlier run whose four failures were confined to newly authored inline test
+assertions that inspected the prompt instead of conversation scrollback.
+
+The manager independently tested the exact same `246eb6c` candidate on Linux:
+native worker build, installed-source packaging/import/protobuf/Pyright and
+**265 passed, 793 deselected**, with four known passing forkpty warnings. This is
+scoped coverage of Claude/OAuth, reasoning/model/preference, attachment/reconnect
+and exec seams. The earlier manager Linux run on submitted `abace8b` passed
+1,114 tests with one native-wheel skip; it is submitted-head evidence only.
+
+Final reviewer logs are `/tmp/mirror-claude-task7-review-final-ci.log`,
+`/tmp/mirror-claude-task7-review-final-delta-ci.log`,
+`/tmp/mirror-claude-task7-review-focused.log`,
+`/tmp/mirror-claude-task7-review-native-build.log` and
+`/tmp/mirror-claude-task7-review-format.log`. Manager logs are
+`/tmp/mirror-claude-manager/pr7-reviewed-candidate-linux-cli.log` and
+`/tmp/mirror-claude-manager/pr7-initial-submitted-linux-cli.log`.
+
+No P2-or-higher findings remain in the entire Task 7 delta. Native/workspace/
+protocol source remains byte-identical to reviewed Task 6. This final evidence
+update changes only this ledger after the validated candidate; CLI source and
+tests are unchanged. The reviewer pushes the same PR and releases the review
+checkout/Cargo target without merging. Manager owns final verification/merge;
+Task 8 still owns actual macOS/Linux native wheels and live production A1–A11.
+
 Task 8 preparatory checkpoint adds a real installed-native-wheel Claude smoke
 suite to the actual `build.sh` invocation, preserving the existing OpenAI PTY
 and bundled-tool checks. The new suite requires real executable bytes and checks
@@ -393,3 +598,12 @@ complete native command suite now passes nine tests, and all three refresh
 harness safety/process tests pass with the live test ignored. Touched Rust
 formatting and diff checks pass. Public packaging, final builds and live A1–A11
 acceptance still await reviewed Task 7; no shipping implementation was changed.
+
+Manager merged PR 7 at `072be411ad25b25aa7a82ba9b486db9cecbdd315` after
+independently confirming final reviewed head `c8db986`, clean review source,
+local Mac and Linux results, and disabled GitHub Actions. The integration tree
+exactly matches that reviewed head. This merge into Task 8 checkpoint `2d0403a`
+resolves only ledger conflicts and preserves both tasks’ complete evidence.
+Runtime/test/build files merge unchanged from their respective clean checkpoints.
+The same Astra Task 8 implementer now resumes final acceptance and packaging; a
+separate new Astra reviewer follows before the manager’s final merge.

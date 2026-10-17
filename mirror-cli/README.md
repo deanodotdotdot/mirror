@@ -132,7 +132,8 @@ API key alone does not select that provider.
 | Reflection                       | `reflection`              | `/login`, a saved Reflection key, or `REFLECTION_API_KEY` |
 | OpenRouter                       | `openrouter`              | `OPENROUTER_API_KEY`                                      |
 | OpenAI Responses                 | `openai-responses`        | `OPENAI_API_KEY`                                          |
-| Anthropic Messages               | `anthropic-messages`      | `ANTHROPIC_API_KEY`                                       |
+| Anthropic API                    | `anthropic-messages`      | `ANTHROPIC_API_KEY`                                       |
+| Claude subscription              | `anthropic-oauth`         | Mirror-owned Claude login                                 |
 | ChatGPT plan through Codex       | `openai-codex-responses`  | Existing Codex CLI login                                  |
 | Custom Chat Completions endpoint | `openai-chat-completions` | Endpoint-specific; `--api-key` if required                |
 
@@ -183,6 +184,55 @@ to choose another model.
 revoke the key at the provider or cancel requests already in flight. If you
 set `REFLECTION_API_KEY`, unset it in your shell and restart Mirror as well.
 If Reflection is active and no key remains, Mirror reopens sign-in.
+
+### Claude subscription sign-in
+
+Claude subscription is a separate provider from Anthropic API. Sign in to
+Mirror's own account store before selecting it:
+
+```bash
+mirror auth login claude
+mirror auth status claude --json
+mirror usage claude
+mirror --api anthropic-oauth --model your-claude-model-id
+```
+
+Inside the local terminal UI, `/login claude` signs in, `/model anthropic-oauth`
+opens the native model catalog, and `/usage claude` shows usage on demand.
+Candidates show their source and freshness; listing a model does not guarantee
+account access. Missing usage fields stay unavailable. `mirror usage claude
+--json` preserves UTC times and the reported units. Usage commands do not change
+extra-usage settings.
+
+Implicit reasoning defaults follow the reviewed native presets: `low` for Opus
+4.8 and Sonnet 4.6, and `none` for Sonnet 5. `/effort` lists the supported presets
+for the selected subscription model. Explicit or saved effort choices are kept;
+if a provider switch rejects an incompatible choice, use `/effort low` (or
+`/effort none` for Sonnet 5), then select the model again. For exec, pass
+`--reasoning-effort` when overriding the default.
+
+Login changes the saved grant only. It does not select a provider, change the
+active model, or move a conversation to another account. An existing unbound
+conversation or an intentional account switch requires `/reconnect claude` while
+idle. Mirror waits for native confirmation and retains history and the draft.
+A new conversation binds through the native worker. Conversation usage uses its
+bound account; an unbound conversation labels usage as the current Mirror login.
+
+On SSH or without a browser, run `mirror auth login claude --no-browser` and keep
+that command running. Open its authorization link in your browser. A localhost
+connection error in a browser on another machine is expected: copy the **final
+callback URL** from the address bar, paste it into the waiting terminal's hidden
+input, and press Enter. Do not paste the callback into chat or a shell command.
+Ctrl-C cancels terminal login; Escape cancels UI login or a pending model choice.
+If login already committed when Escape arrived, the grant remains saved while
+the prior model and draft are preserved.
+
+`mirror auth logout claude` or `/logout claude` removes Mirror's local login.
+Mirror does not import Claude Code or OMP credentials. Subscription inference is
+supported in local interactive sessions and `mirror exec`; ACP, remote servers,
+and evaluation surfaces remain excluded. API keys and custom Anthropic endpoints
+cannot be used with this provider. Bare `/login` and `/logout` continue to manage
+Reflection.
 
 ## Working with Mirror
 
