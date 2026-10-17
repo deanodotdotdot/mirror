@@ -17,7 +17,7 @@ checks run locally.
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
-| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Implementation complete on reviewed Task 6 under the same Astra implementer. Full installed-source Python CI passed 3,314 tests with five packaging-dependent skips; native development-worker and controlling-PTY interoperability passed. One PR is ready for a separate NEW Astra review and manager verification; production acceptance remains Task 8. |
+| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Independent NEW Astra review complete on [PR 7](https://github.com/deanodotdotdot/mirror/pull/7); four P2 findings fixed. Final installed-source Python CI passed 3,398 tests with five packaging-dependent skips; manager Linux review-fix coverage passed 265 tests. Awaiting manager final verification/merge; production acceptance remains Task 8. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Task 7. Production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
@@ -504,7 +504,9 @@ reproduced four P2 findings:
 - Untyped attachment rejection bypassed the TUI error sanitizer. Attachment,
   gRPC and protocol exception paths now keep raw native diagnostics private for
   a worker that handles OAuth, including an OAuth compactor with another main
-  provider. Ordinary workers without OAuth keep their prior diagnostics.
+  provider. The TUI also retains that sensitivity after an OAuth-to-API switch,
+  so late untyped errors cannot bypass the closed renderer. Ordinary workers
+  that never handled OAuth keep their prior diagnostics.
 
 All four were reproduced before their fixes. Regressions cover both layouts,
 browser failure, startup/model-entry/saved defaults, explicit effort rejection,
@@ -513,3 +515,40 @@ closed reconnect controls, and untyped attachment/transport/runtime failures.
 The reviewer rebuilt the unchanged native development worker and passed 195
 focused cases. No Rust or protocol source changed, and no live credentials or
 provider calls were used. Actual native-wheel and live acceptance remain Task 8.
+
+
+Final independent-review validation used the frozen source/test candidate
+`246eb6cc190c0ccaa1ac3f192b48b5aedfd1e6eb`. The complete macOS installed-source
+`mirror-cli/ci.sh` gate passed sdist/wheel and native-packaging fixtures,
+regenerated protobufs, all imports and Pyright with zero errors/warnings, then
+**3,398 tests passed, five skipped** in 224.44 seconds. The five skips require
+actual bundled worker/sandbox wheels and remain Task 8. Four expected forkpty
+warnings came from passing real controlling-PTY tests. The final focused
+installed-source gate also passed packaging/imports/Pyright and **31** attachment,
+reconnect and runtime cases, including both layouts, main/compactor/after-switch
+sensitivity, ordinary diagnostics and a real gRPC switch-Ack/late-failure sequence.
+Formatting and `git diff --check` pass. The completed final full run supersedes
+an earlier run whose four failures were confined to newly authored inline test
+assertions that inspected the prompt instead of conversation scrollback.
+
+The manager independently tested the exact same `246eb6c` candidate on Linux:
+native worker build, installed-source packaging/import/protobuf/Pyright and
+**265 passed, 793 deselected**, with four known passing forkpty warnings. This is
+scoped coverage of Claude/OAuth, reasoning/model/preference, attachment/reconnect
+and exec seams. The earlier manager Linux run on submitted `abace8b` passed
+1,114 tests with one native-wheel skip; it is submitted-head evidence only.
+
+Final reviewer logs are `/tmp/mirror-claude-task7-review-final-ci.log`,
+`/tmp/mirror-claude-task7-review-final-delta-ci.log`,
+`/tmp/mirror-claude-task7-review-focused.log`,
+`/tmp/mirror-claude-task7-review-native-build.log` and
+`/tmp/mirror-claude-task7-review-format.log`. Manager logs are
+`/tmp/mirror-claude-manager/pr7-reviewed-candidate-linux-cli.log` and
+`/tmp/mirror-claude-manager/pr7-initial-submitted-linux-cli.log`.
+
+No P2-or-higher findings remain in the entire Task 7 delta. Native/workspace/
+protocol source remains byte-identical to reviewed Task 6. This final evidence
+update changes only this ledger after the validated candidate; CLI source and
+tests are unchanged. The reviewer pushes the same PR and releases the review
+checkout/Cargo target without merging. Manager owns final verification/merge;
+Task 8 still owns actual macOS/Linux native wheels and live production A1–A11.
