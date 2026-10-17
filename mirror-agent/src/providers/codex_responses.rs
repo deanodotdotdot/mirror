@@ -283,6 +283,12 @@ struct JwtClaims {
 }
 
 fn default_auth_path() -> Result<PathBuf, LlmError> {
+    // Resolve this only inside the Codex provider: a runtime switch or explicit
+    // Codex compactor must honor the override without retaining its path in
+    // another provider's configuration.
+    if let Some(path) = std::env::var_os("MIRROR_CODEX_AUTH_PATH") {
+        return Ok(PathBuf::from(path));
+    }
     let home = std::env::var_os("HOME")
         .ok_or_else(|| LlmError::Request(format!("HOME is not set; {LOGIN_HINT}")))?;
     Ok(PathBuf::from(home).join(".codex/auth.json"))

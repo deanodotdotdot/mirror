@@ -8,7 +8,7 @@ review/fix pass. The manager alone merges into the integration branch.
 | Task | Depends on | State |
 | --- | --- | --- |
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
-| 2. Shared contracts | 1 | Implemented; awaiting Astra review and manager Linux verification/merge. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
+| 2. Shared contracts | 1 | Implemented and Astra reviewed; one P2 regression fixed, awaiting manager Linux verification/merge. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Not started. |
 | 4. OAuth Messages transport | 2 | Not started. |
 | 5. Model discovery + usage | 3 | Not started. |
@@ -51,3 +51,21 @@ excluded on macOS; the existing microVM test remains ignored. An earlier full
 library run had 540 passes and one new test-helper assertion failure; that
 helper was corrected and its complete 77-test agent-service group passed.
 The manager runs final Linux verification against the reviewed commit.
+
+Task 2 independent Astra review fixed a P2 regression in Codex credential-path
+resolution. Clearing provider-specific references correctly stopped carrying
+`MIRROR_CODEX_AUTH_PATH` into other providers, but also lost the override when
+switching back to Codex or explicitly selecting a Codex compactor. Codex now
+resolves its own environment override when no explicit path is supplied. An
+isolated worker regression reproduced the failed compactor startup before the
+fix; a separate isolated subprocess verifies an API-to-Codex request uses only
+the synthetic Codex credential against a loopback server. Neither test touches
+the developer's credentials or mutates the parent process environment.
+
+Reviewer validation: 79 provider tests, 77 agent-service tests, ten worker tests,
+two lease doctests, three binary tests, the excluded-HTTP subscription guard,
+43 diagnostic tests, and workspace/all-target compilation including eval all
+passed. Python packaging/typechecking and the launcher suite passed (64 tests,
+one existing installed-worker skip). Touched Rust formatting and `git diff
+--check` passed. No remaining P2-or-higher review findings; final full Linux
+verification remains the manager's merge gate.
