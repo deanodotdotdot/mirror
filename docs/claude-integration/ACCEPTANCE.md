@@ -40,6 +40,8 @@ quota, revocation and crash/error behavior.
    real coverage gaps before requesting a live login.
 2. Run full source Python CI with `TERM=xterm-256color`, `NO_COLOR` unset and live
    credentials absent. Verify generated protocol bindings and launcher help.
+   Retain the workflow's hermetic `diagnostics/claude_oauth/tests` unittest gate;
+   passing those diagnostic fixtures does not establish production acceptance.
    Run the final Rust workspace with the real built `mirror-sandboxd` supplied as
    `SANDBOXD_BIN`. Linux is required for the unchanged `/dev/full` and bash `read
    -N` fixtures. Do not label a macOS-incompatible fixture a passing workspace
@@ -69,6 +71,7 @@ cargo +1.95.0 build --locked -p mirror-sandboxd
 SANDBOXD_BIN=/absolute/build/debug/mirror-sandboxd \
   cargo +1.95.0 test --locked --workspace
 env -u NO_COLOR TERM=xterm-256color bash mirror-cli/ci.sh
+python3 -m unittest discover -s diagnostics/claude_oauth/tests -v
 bash mirror-cli/build.sh /absolute/acceptance-wheel-output
 ```
 
@@ -172,13 +175,35 @@ preparation. Their presence is not a final rerun result. Task 7 Python assertion
 and final exact-source runs must be added after integration. All rows remain
 **pending production acceptance**.
 
+The A5 regression `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant`
+uses fresh native `auth --stdio` processes with a cleared environment and a
+disposable HOME. It places only synthetic fixtures at the documented
+[Claude Code credential-file path](https://code.claude.com/docs/en/authentication#credential-management)
+and OMP's `~/.omp/agent/agent.db`. The Claude Code JSON is a credential/account
+sentinel, not a validated application schema. The partial SQLite fixture uses
+the pinned OMP
+[credential-row representation](https://github.com/can1357/oh-my-pi/blob/df4f996e66a200ab7e0496114d43bdf85f32194d/packages/ai/src/auth/sqlite-credential-store.ts),
+without emulating its complete database or migrations.
+
+Foreign presence must leave missing Mirror auth logged out and explicit local
+context lookup login-required, with no Mirror store creation. After seeding a
+test-owned Mirror grant, two foreign account rewrites must preserve native
+status/identity, successful identity-bound local context and every byte of the
+Mirror record, including generation/revision. Mirror logout must change only
+its own grant and leave every foreign fixture byte unchanged; those foreign
+fixtures still cannot authenticate the logged-out Mirror. No provider call or
+external app is involved. This is a file-boundary isolation regression; it
+does not test macOS Keychain, prove either external app loads the fixtures or
+claim a live second-account switch. Normal live Claude Code coexistence remains
+a separate required observation.
+
 | Gate | Inspected deterministic evidence and its limit | Outstanding final evidence |
 | --- | --- | --- |
 | A1 fresh login | `auth/tests.rs::login_bootstrap_callbacks_and_generation_fence` and native auth-command tests cover synthetic login/status/commit. Service execution uses synthetic authority/loopback fixtures. | Installed Mac and Linux fresh grants, text/read/edit/command effects, restart/resume; no API key. |
 | A2 headless | Native `login_wrong_callback_eof_and_signals_leave_no_grant_or_listener` checks wrong-state/cancel/signal cleanup; auth `pending_login_timeout_closes_listener_without_exchange_or_commit` checks timeout without exchange/commit. | Final Task 7 controlling-PTY/browser-failure/occupied-port/replay/cancel/timeout assertions and actual Linux/SSH browser-on-Mac flow followed by prompt-free exec. |
 | A3 billing | Provider configuration tests reject key fallback; execution tests cover inherited OAuth and explicitly selected API compaction with actual billing labels. Missing-login packaging cases supply conflicting synthetic keys and require failure. | Final all-entry-point and child/retry/compaction failure assertions, actual account extra-usage display with no settings mutation. |
 | A4 renewal | `refresh_race_converges_and_logout_fences_old_lease` asserts revision 2 in both callers, exactly one synthetic refresh and logout fencing. `independent_process_refresh_race_and_death_after_synthetic_rotation` asserts two processes share one replacement, killed rotation preserves old bytes and later authority reports login-required. Atomic fault tests distinguish pre-rename not-committed from post-rename unknown. | Successful opt-in production harness, matching installed-artifact provenance and fresh-process request. Real server refresh is unproven until then; fixture timestamps are not live evidence. |
-| A5 coexistence | Production authority uses only Mirror's own store; acceptance tooling uses no Claude Code/OMP store. Separate-store design is not a live coexistence result. | Mac Claude Code requests before/after Mac/Linux Mirror operations and overlap; document synthetic account-switch independence scope without claiming a real second-account switch. |
+| A5 coexistence | `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant` covers missing-login isolation, unchanged native identity/Mirror generation/revision after two foreign rewrites, and foreign byte preservation through logout, as scoped above. Only disposable fixtures are read. | Mac Claude Code requests before/after Mac/Linux Mirror operations and overlap. The file-boundary fixture does not establish Keychain behavior or a live second-account switch. |
 | A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Final Task 7 authoritative initial snapshot/reattach/state-before-Ack/Nack/busy tests, exec nonzero/no-prompt tests, installed restore and explicit reconnect coverage. |
 | A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Final persistence/replay/nonzero checks plus both live models' signed-reasoning/tool replay and canonical order. Synthetic interleaving rejection is not proof of upstream conformity. |
 | A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Final Python picker/parser/identity/fallback assertions, real catalog/exact context, default Opus 4.8 and available Sonnet 4.6 tool/reasoning checks. No Sonnet 5 reasoning claim. |

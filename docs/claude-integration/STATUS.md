@@ -374,3 +374,22 @@ Python lint, shell syntax and diff checks passed. No installed-native-wheel
 pass, full final suite pass, real credential inspection, live login, provider
 request or refresh is claimed by this checkpoint. Final work resumes only after
 the manager integrates reviewed Task 7 into this clean checkpoint.
+
+Additional Task 8 A5 preparation adds a fresh-native-process regression under a
+disposable HOME with cleared environment. Synthetic external credential files
+cannot supply missing Mirror auth. After a test-owned Mirror grant is seeded,
+two foreign account rewrites leave native status/identity, identity-bound local
+context and the exact Mirror record (including generation/revision) unchanged.
+Native logout advances only Mirror's generation, preserves all foreign fixture
+bytes and still refuses to import them afterward. Explicit context keeps the
+entire regression local, including potential mistaken foreign-login handling.
+
+Fixture scope is documented in [ACCEPTANCE.md](ACCEPTANCE.md): Claude Code's
+documented file path contains a synthetic credential/account sentinel; OMP's
+path contains a partial database using its pinned credential-row representation.
+Neither fixture proves external-app loading, macOS Keychain behavior or live
+second-account switching. No real external credentials were accessed. The
+complete native command suite now passes nine tests, and all three refresh
+harness safety/process tests pass with the live test ignored. Touched Rust
+formatting and diff checks pass. Public packaging, final builds and live A1–A11
+acceptance still await reviewed Task 7; no shipping implementation was changed.
