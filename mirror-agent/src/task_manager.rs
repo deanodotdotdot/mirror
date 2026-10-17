@@ -297,11 +297,6 @@ impl TaskManagerHandle {
 }
 
 impl TaskContext {
-    /// The conversation-local task id.
-    pub(crate) fn task_id(&self) -> &str {
-        &self.task_id
-    }
-
     pub(crate) fn spawn(
         &self,
         task: impl Future<Output = ()> + Send + 'static,

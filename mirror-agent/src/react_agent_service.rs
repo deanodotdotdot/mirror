@@ -1,10 +1,14 @@
+use crate::providers::claude::{
+    ClaudeAuthorization, ClaudeConfigurationError, ClaudeError, ClaudeSession, ClaudeSessionBinding,
+};
+use mirror_protocol::{ClaudeSessionState, ReconnectClaude};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
 
 use crate::tools::ToolOutput;
@@ -77,11 +81,16 @@ pub struct ReactAgentService<Model> {
     pending_host_tools: HashMap<String, PendingHostTool>,
     inputs: HashMap<String, agent_message::Payload>,
     resume_turn: bool,
+    claude_session: ClaudeSession,
+    claude_authority: Option<Arc<dyn ClaudeAuthorization>>,
+    reconnects: HashMap<String, ReconnectReceipt>,
+    external_activity: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
 pub struct ReactAgentServiceHandle {
     session_id: String,
+    claude_session: ClaudeSession,
     busy: Arc<AtomicBool>,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<ReactServiceEvent>,
@@ -125,9 +134,11 @@ impl ReactServiceEvent {
     }
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 #[non_exhaustive]
 pub enum ReactServiceError {
+    #[error(transparent)]
+    Claude(#[from] ClaudeError),
     #[error("agent service closed")]
     Closed,
     #[error("cannot modify the conversation while a turn is running")]
@@ -140,7 +151,89 @@ pub enum ReactServiceError {
     Agent(String),
 }
 
+#[derive(Clone)]
+struct ReconnectReceipt {
+    request: ReconnectClaude,
+    result: Result<(), ReactServiceError>,
+}
+
+fn reconnect_duplicate(
+    receipts: &HashMap<String, ReconnectReceipt>,
+    id: &str,
+    request: &ReconnectClaude,
+) -> Option<Result<(), ReactServiceError>> {
+    receipts.get(id).map(|receipt| {
+        if receipt.request == *request {
+            receipt.result.clone()
+        } else {
+            Err(ReactServiceError::MessageIdConflict(id.into()))
+        }
+    })
+}
+
+async fn apply_inference(
+    provider: &crate::providers::ModelProvider,
+    input: &ExecutionContextInput,
+    mut inference: InferenceConfig,
+) -> Result<(), ReactServiceError> {
+    let selected = provider
+        .config_for(Some(&inference))
+        .map_err(|error| match error {
+            crate::providers::LlmError::Claude(error) => ReactServiceError::Claude(error),
+            error => ReactServiceError::Agent(error.to_string()),
+        })?;
+    if selected.api == crate::providers::ModelApi::AnthropicOAuth {
+        let authority = provider.authority().ok_or_else(|| {
+            ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface)
+        })?;
+        let current = crate::providers::claude::session::local_identity(authority.as_ref()).await?;
+        if selected
+            .claude_session
+            .as_ref()
+            .is_none_or(|binding| binding.identity != current)
+        {
+            return Err(crate::providers::claude::session::binding_changed(
+                selected.claude_session.as_ref(),
+                Some(&ClaudeSessionBinding::new(current)),
+            )
+            .into());
+        }
+    }
+    inference.claude_session = provider.session().binding().as_ref().map(Into::into);
+    input.set_inference_config(Some(inference));
+    Ok(())
+}
+
+/// Issued synchronously by the actor before a future can escape to a caller.
+struct ActivityPermit(Arc<AtomicUsize>);
+impl ActivityPermit {
+    fn acquire(activity: &Arc<AtomicUsize>) -> Self {
+        activity.fetch_add(1, Ordering::AcqRel);
+        Self(activity.clone())
+    }
+}
+impl Drop for ActivityPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+fn tracked_tool(
+    activity: &Arc<AtomicUsize>,
+    future: BoxFuture<'static, Result<ToolOutput, ToolExecutorError>>,
+) -> BoxFuture<'static, Result<ToolOutput, ToolExecutorError>> {
+    let permit = ActivityPermit::acquire(activity);
+    Box::pin(async move {
+        let _permit = permit;
+        future.await
+    })
+}
+
 enum Command {
+    ReconnectClaude {
+        message_id: String,
+        request: ReconnectClaude,
+        result: oneshot::Sender<Result<(), ReactServiceError>>,
+    },
     CallTool {
         name: String,
         arguments: String,
@@ -180,7 +273,7 @@ enum Command {
     },
     SetInferenceConfig {
         inference: InferenceConfig,
-        result: oneshot::Sender<()>,
+        result: oneshot::Sender<Result<(), ReactServiceError>>,
     },
     CloseIfIdle(oneshot::Sender<bool>),
     ResumeTurn(oneshot::Sender<bool>),
@@ -256,16 +349,73 @@ impl<Model: Llm + 'static> ReactAgentService<Model> {
     ) -> Result<(ReactAgentServiceHandle, impl Future<Output = ()> + Send), ReactServiceError> {
         let session_id = session_id.into();
         let approval_mode = approval_mode.into();
+        let settings_provider = agent.settings_provider();
+        let claude_authority = settings_provider.authority();
+        let mut binding = store.claude_session(&session_id).await?;
+        let mut binding_error = None;
+        if binding.is_none()
+            && store.created_session(&session_id)
+            && agent.needs_initial_claude_binding()
+        {
+            let identity = match claude_authority.as_deref() {
+                Some(authority) => {
+                    crate::providers::claude::session::local_identity(authority).await
+                }
+                None => Err(ClaudeError::configuration(
+                    ClaudeConfigurationError::UnsupportedSurface,
+                )),
+            };
+            match identity {
+                Ok(identity) => {
+                    let next = ClaudeSessionBinding::new(identity);
+                    match store
+                        .compare_set_claude_session(&session_id, None, &next, None)
+                        .await
+                    {
+                        Ok(()) => binding = Some(next),
+                        Err(_) => {
+                            binding_error = Some(ClaudeError::new(
+                                crate::providers::claude::ClaudeErrorKind::CredentialStorageError,
+                            ));
+                        }
+                    }
+                }
+                Err(error) => binding_error = Some(error),
+            }
+        }
+        let claude_session = ClaudeSession::new(binding);
+        agent.attach_claude_session(claude_session.clone());
+        let reconnects = store
+            .claude_reconnect_receipts(&session_id)
+            .await?
+            .into_iter()
+            .map(|(id, request)| {
+                (
+                    id,
+                    ReconnectReceipt {
+                        request,
+                        result: Ok(()),
+                    },
+                )
+            })
+            .collect();
         let entries = store.load(&session_id, false).await?;
         let entries = repair_saved_history(store.as_mut(), &session_id, entries).await?;
         let inputs = entries
             .iter()
             .filter_map(|entry| input_payload(entry).map(|payload| (entry.id.clone(), payload)))
             .collect();
-        let inference = entries
+        let mut inference = entries
             .iter()
             .rev()
             .find_map(|entry| entry.inference.clone());
+        if inference.is_none() && claude_authority.is_some() {
+            inference = agent.settings_provider().inference_defaults();
+        }
+        if let Some(inference) = &mut inference {
+            // Transcript settings are historical; only the store owns identity.
+            inference.claude_session = claude_session.binding().as_ref().map(Into::into);
+        }
         let (commands, command_receiver) = mpsc::unbounded_channel();
         let (approval_hook, approval_requests) = ApprovalHook::channel();
         let (task_manager, tasks, task_events, task_runner) = TaskManager::new();
@@ -275,7 +425,8 @@ impl<Model: Llm + 'static> ReactAgentService<Model> {
             tasks.clone(),
             approval_parent,
             agent.prompt_injection_policy(),
-        );
+        )
+        .with_claude(claude_session.clone(), claude_authority.clone());
         let execution_input = execution.input();
         execution_input.set_inference_config(inference);
         hooks.insert(0, Box::new(MentionedSkills::new(skills)));
@@ -286,7 +437,23 @@ impl<Model: Llm + 'static> ReactAgentService<Model> {
         while let Ok(event) = context_events.try_recv() {
             publish_context_event(&events, event);
         }
-        initialized.map_err(agent_error)?;
+        // Authentication failures block model work, never attachment/history or reconnect.
+        let binding_failed = binding_error.is_some();
+        if let Some(error) = binding_error {
+            let _ = events.send(ReactServiceEvent::from_agent_error(
+                &ReactAgentError::Model(error.into()),
+            ));
+        }
+        match initialized {
+            Err(error @ ReactAgentError::Model(crate::providers::LlmError::Claude(_))) => {
+                // Preserve the actionable login/storage cause rather than
+                // overwriting it with the consequent missing-binding failure.
+                if !binding_failed {
+                    let _ = events.send(ReactServiceEvent::from_agent_error(&error));
+                }
+            }
+            result => result.map_err(agent_error)?,
+        }
         let busy = Arc::new(AtomicBool::new(false));
         let service = Self {
             agent,
@@ -307,6 +474,10 @@ impl<Model: Llm + 'static> ReactAgentService<Model> {
             pending_host_tools: HashMap::new(),
             inputs,
             resume_turn: false,
+            claude_session: claude_session.clone(),
+            claude_authority,
+            reconnects,
+            external_activity: Arc::new(AtomicUsize::new(0)),
         };
         let runner = async move {
             join3(service.run(), task_manager.run(), task_runner).await;
@@ -314,6 +485,7 @@ impl<Model: Llm + 'static> ReactAgentService<Model> {
         Ok((
             ReactAgentServiceHandle {
                 session_id,
+                claude_session,
                 busy,
                 commands,
                 events,
@@ -333,6 +505,27 @@ impl ReactAgentServiceHandle {
             .send(command(result))
             .map_err(|_| ReactServiceError::Closed)?;
         receiver.await.map_err(|_| ReactServiceError::Closed)
+    }
+
+    pub fn claude_session_state(&self, message_id: Option<String>) -> ClaudeSessionState {
+        ClaudeSessionState {
+            conversation_id: self.session_id.clone(),
+            binding: self.claude_session.binding().as_ref().map(Into::into),
+            message_id,
+        }
+    }
+
+    pub async fn reconnect_claude(
+        &self,
+        message_id: String,
+        request: ReconnectClaude,
+    ) -> Result<(), ReactServiceError> {
+        self.request(|result| Command::ReconnectClaude {
+            message_id,
+            request,
+            result,
+        })
+        .await?
     }
 
     pub fn session_id(&self) -> &str {
@@ -514,7 +707,7 @@ impl ReactAgentServiceHandle {
         inference: InferenceConfig,
     ) -> Result<(), ReactServiceError> {
         self.request(|result| Command::SetInferenceConfig { inference, result })
-            .await
+            .await?
     }
 
     pub async fn close(&self) -> Result<(), ReactServiceError> {
@@ -546,8 +739,134 @@ impl<Model: Llm> ReactAgentService<Model> {
         name: String,
         arguments: String,
     ) -> BoxFuture<'static, Result<ToolOutput, ToolExecutorError>> {
-        self.tool_executor
-            .call_tool(name, arguments, self.context.execution().clone())
+        tracked_tool(
+            &self.external_activity,
+            self.tool_executor
+                .call_tool(name, arguments, self.context.execution().clone()),
+        )
+    }
+
+    async fn conversation_idle(&mut self) -> bool {
+        let tasks_idle = self.tasks.list().await.is_ok_and(|tasks| tasks.is_empty());
+        // Completion publication happens before task removal. Drain it after the
+        // task barrier, before checking queued child input.
+        self.publish_task_events();
+        let cancelled = self
+            .pending_approvals
+            .iter()
+            .filter(|(_, pending)| pending.response.is_closed())
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for call_id in cancelled {
+            self.pending_approvals.remove(&call_id);
+            let _ = self.events.send(ReactServiceEvent::HitlResolved {
+                call_id,
+                approved: false,
+            });
+        }
+        while let Some(Some(())) = self.approval_resolutions.next().now_or_never() {}
+        self.pending_host_tools
+            .retain(|_, pending| !pending.response.is_closed());
+        tasks_idle
+            && !self.busy.load(Ordering::Acquire)
+            && self.external_activity.load(Ordering::Acquire) == 0
+            && !self.context.has_pending()
+            && !self.resume_turn
+            && self.pending_approvals.is_empty()
+            && self.approval_resolutions.is_empty()
+            && self.pending_host_tools.is_empty()
+            && self.approval_requests.is_empty()
+            && self
+                .host_tool_requests
+                .as_ref()
+                .is_none_or(|requests| requests.is_empty())
+            && self.commands.is_empty()
+    }
+
+    async fn reconnect_claude(
+        &mut self,
+        message_id: &str,
+        request: &ReconnectClaude,
+    ) -> Result<(), ReactServiceError> {
+        if let Some(result) = reconnect_duplicate(&self.reconnects, message_id, request) {
+            return result;
+        }
+        let result = self.reconnect_once(message_id, request).await;
+        self.reconnects.insert(
+            message_id.into(),
+            ReconnectReceipt {
+                request: request.clone(),
+                result: result.clone(),
+            },
+        );
+        result
+    }
+
+    async fn reconnect_once(
+        &mut self,
+        message_id: &str,
+        request: &ReconnectClaude,
+    ) -> Result<(), ReactServiceError> {
+        if message_id.is_empty() {
+            return Err(ReactServiceError::Agent(
+                "message_id must not be empty".into(),
+            ));
+        }
+        if self.inputs.contains_key(message_id) {
+            return Err(ReactServiceError::MessageIdConflict(message_id.into()));
+        }
+        let expected = request
+            .expected_binding
+            .as_ref()
+            .map(ClaudeSessionBinding::try_from)
+            .transpose()?;
+        let target = request
+            .target_identity
+            .as_ref()
+            .ok_or_else(|| ClaudeError::configuration(ClaudeConfigurationError::InvalidIdentity))?;
+        let target = ClaudeSessionBinding::try_from(&mirror_protocol::ClaudeSessionBinding {
+            schema_version: crate::providers::claude::CLAUDE_SCHEMA_VERSION,
+            identity: Some(target.clone()),
+            compatibility_profile: crate::providers::claude::profile::PROFILE_ID.into(),
+        })?;
+        let authority = self.claude_authority.clone().ok_or_else(|| {
+            ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface)
+        })?;
+        if !self.conversation_idle().await {
+            return Err(ReactServiceError::ConversationBusy);
+        }
+        let current = self.claude_session.binding();
+        if current != expected {
+            return Err(crate::providers::claude::session::binding_changed(
+                expected.as_ref(),
+                current.as_ref(),
+            )
+            .into());
+        }
+        let identity =
+            crate::providers::claude::session::local_identity(authority.as_ref()).await?;
+        if identity != target.identity {
+            return Err(crate::providers::claude::session::binding_changed(
+                Some(&target),
+                Some(&ClaudeSessionBinding::new(identity)),
+            )
+            .into());
+        }
+        // The actor has exposed no new activity since the idle barrier. Check
+        // queued inputs synchronously after authority: no await before commit.
+        if !self.commands.is_empty() || self.context.has_pending() {
+            return Err(ReactServiceError::ConversationBusy);
+        }
+        self.context
+            .compare_set_claude_session(expected.as_ref(), &target, message_id, request)
+            .await?;
+        self.claude_session.publish(target);
+        if let Some(mut inference) = self.context.execution().inference_config() {
+            inference.claude_session = self.claude_session.binding().as_ref().map(Into::into);
+            self.execution_input.set_inference_config(Some(inference));
+        }
+        self.agent.invalidate_claude_context();
+        Ok(())
     }
 
     async fn run(mut self) {
@@ -623,6 +942,14 @@ impl<Model: Llm> ReactAgentService<Model> {
 
     async fn handle_command(&mut self, command: Command) -> bool {
         match command {
+            Command::ReconnectClaude {
+                message_id,
+                request,
+                result,
+            } => {
+                let outcome = self.reconnect_claude(&message_id, &request).await;
+                let _ = result.send(outcome);
+            }
             Command::CallTool {
                 name,
                 arguments,
@@ -643,7 +970,11 @@ impl<Model: Llm> ReactAgentService<Model> {
                 );
             }
             Command::Execute { message, accepted } => {
-                let result = accept_input(&self.context.input(), &mut self.inputs, *message);
+                let result = if self.reconnects.contains_key(&message.id) {
+                    Err(ReactServiceError::MessageIdConflict(message.id.clone()))
+                } else {
+                    accept_input(&self.context.input(), &mut self.inputs, *message)
+                };
                 if let Some(accepted) = accepted {
                     let _ = accepted.send(result);
                 } else if let Err(error) = result {
@@ -725,8 +1056,13 @@ impl<Model: Llm> ReactAgentService<Model> {
                 let _ = result.send(saved);
             }
             Command::SetInferenceConfig { inference, result } => {
-                self.execution_input.set_inference_config(Some(inference));
-                let _ = result.send(());
+                let outcome = apply_inference(
+                    &self.agent.settings_provider(),
+                    &self.execution_input,
+                    inference,
+                )
+                .await;
+                let _ = result.send(outcome);
             }
             Command::CloseIfIdle(result) => {
                 let tasks_idle = self.tasks.list().await.is_ok_and(|tasks| tasks.is_empty());
@@ -876,6 +1212,9 @@ impl<Model: Llm> ReactAgentService<Model> {
         let mut approval_mode = execution_input.approval_mode();
         let execution = self.context.execution().clone();
         let tool_executor = self.tool_executor.as_ref();
+        let settings_provider = self.agent.settings_provider();
+        let external_activity = &self.external_activity;
+        let reconnects = &mut self.reconnects;
         let outcome = {
             let run =
                 AssertUnwindSafe(operation(&mut self.agent, &mut self.context, tool_executor))
@@ -894,8 +1233,18 @@ impl<Model: Llm> ReactAgentService<Model> {
                         let (response, _) = oneshot::channel();
                         Command::Close(response)
                     }) {
+                        Command::ReconnectClaude { message_id, request, result } => {
+                            let outcome = reconnect_duplicate(reconnects, &message_id, &request).unwrap_or_else(|| {
+                                let outcome = Err(ReactServiceError::ConversationBusy);
+                                reconnects.insert(message_id, ReconnectReceipt { request, result: outcome.clone() });
+                                outcome
+                            });
+                            let _ = result.send(outcome);
+                        }
                         Command::Execute { message, accepted } => {
-                            let result = accept_input(&input, inputs, *message);
+                            let result = if reconnects.contains_key(&message.id) {
+                                Err(ReactServiceError::MessageIdConflict(message.id.clone()))
+                            } else { accept_input(&input, inputs, *message) };
                             if let Some(accepted) = accepted {
                                 let _ = accepted.send(result);
                             } else if let Err(error) = result {
@@ -958,11 +1307,10 @@ impl<Model: Llm> ReactAgentService<Model> {
                             let _ = result.send(saved);
                         }
                         Command::SetInferenceConfig { inference, result } => {
-                            execution_input.set_inference_config(Some(inference));
-                            let _ = result.send(());
+                            let _ = result.send(apply_inference(&settings_provider, execution_input, inference).await);
                         }
                         Command::CallTool { name, arguments, response } => {
-                            let _ = response.send(tool_executor.call_tool(name, arguments, execution.clone()));
+                            let _ = response.send(tracked_tool(external_activity, tool_executor.call_tool(name, arguments, execution.clone())));
                         }
                         Command::GetMessages { response, .. } => {
                             let _ = response.send(Err(ReactServiceError::ConversationBusy));
@@ -978,6 +1326,12 @@ impl<Model: Llm> ReactAgentService<Model> {
                         }
                     },
                     result = run.as_mut() => {
+                        // A terminal model error may arrive in the same poll as
+                        // its persisted partial output. Publish that output first
+                        // so consumers that stop on TurnError retain it.
+                        while let Ok(event) = context_events.try_recv() {
+                            publish_context_event(&events, event);
+                        }
                         match result {
                             Ok(Ok(())) => break OperationOutcome::Completed,
                             Ok(Err(error)) => {
@@ -1629,3 +1983,7 @@ fn task_result_message(info: TaskInfo, result: ToolOutput) -> AgentMessage {
 #[cfg(test)]
 #[path = "react_agent_service_test.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "react_agent_service_claude_test.rs"]
+mod claude_tests;

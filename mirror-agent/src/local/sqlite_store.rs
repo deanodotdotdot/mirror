@@ -32,6 +32,7 @@ use crate::Checkpoints;
 #[derive(Debug)]
 pub struct SQLiteStore {
     connection: Connection,
+    created_session: Option<String>,
     _lock: Option<SessionLock>,
     checkpoints: Checkpoints,
     /// Best-effort capture of repository state before persisting user messages.
@@ -62,7 +63,7 @@ impl SQLiteStore {
         let workspace = workspace.to_string_lossy().into_owned();
         let connection = connect(path)?;
         let lock = lock_session(path, session_id)?;
-        if create {
+        let inserted = if create {
             connection
                 .execute(
                     "INSERT INTO react_session(id, workspace, lineage, fork_points) \
@@ -70,8 +71,10 @@ impl SQLiteStore {
                      ON CONFLICT(id) DO NOTHING",
                     params![session_id, workspace, session_id, i64::MAX],
                 )
-                .map_err(persistence)?;
-        }
+                .map_err(persistence)?
+        } else {
+            0
+        };
         let saved_workspace = connection
             .query_row(
                 "SELECT workspace FROM react_session WHERE id = ?",
@@ -91,6 +94,7 @@ impl SQLiteStore {
         }
         Ok(Self {
             connection,
+            created_session: (inserted == 1).then(|| session_id.to_string()),
             _lock: lock,
             checkpoints,
             checkpoints_enabled: false,
@@ -343,13 +347,14 @@ impl SQLiteStore {
             .into_columns();
         transaction
             .execute(
-                "INSERT INTO react_session(id, workspace, lineage, fork_points) \
-                 VALUES (?, ?, ?, ?)",
+                "INSERT INTO react_session(id, workspace, lineage, fork_points, claude_session) \
+                 VALUES (?, ?, ?, ?, ?)",
                 params![
                     new_session,
                     parent.workspace,
                     serde_json::to_string(&lineage).map_err(persistence)?,
                     serde_json::to_string(&fork_points).map_err(persistence)?,
+                    parent.claude_session,
                 ],
             )
             .map_err(persistence)?;
@@ -358,6 +363,83 @@ impl SQLiteStore {
 }
 
 impl Store for SQLiteStore {
+    fn created_session(&self, session_id: &str) -> bool {
+        self.created_session.as_deref() == Some(session_id)
+    }
+
+    fn claude_session<'a>(
+        &'a mut self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::providers::claude::ClaudeSessionBinding>, StoreError>>
+    {
+        Box::pin(async move {
+            decode_binding(session_row(&self.connection, session_id)?.claude_session)
+        })
+    }
+
+    fn claude_reconnect_receipts<'a>(
+        &'a mut self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, mirror_protocol::ReconnectClaude)>, StoreError>> {
+        Box::pin(async move {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT message_id, request FROM react_claude_reconnect WHERE session_id = ?",
+                )
+                .map_err(persistence)?;
+            let rows = statement
+                .query_map([session_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(persistence)?;
+            rows.map(|row| {
+                let (id, bytes) = row.map_err(persistence)?;
+                Ok((
+                    id,
+                    mirror_protocol::ReconnectClaude::decode(bytes.as_slice())
+                        .map_err(persistence)?,
+                ))
+            })
+            .collect()
+        })
+    }
+
+    fn compare_set_claude_session<'a>(
+        &'a mut self,
+        session_id: &'a str,
+        expected: Option<&'a crate::providers::claude::ClaudeSessionBinding>,
+        binding: &'a crate::providers::claude::ClaudeSessionBinding,
+        receipt: Option<(&'a str, &'a mirror_protocol::ReconnectClaude)>,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            binding.validate().map_err(persistence)?;
+            let transaction = self
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(persistence)?;
+            if decode_binding(session_row(&transaction, session_id)?.claude_session)?.as_ref()
+                != expected
+            {
+                return Err(StoreError::Stale);
+            }
+            transaction
+                .execute(
+                    "UPDATE react_session SET claude_session = ? WHERE id = ?",
+                    params![
+                        serde_json::to_string(binding).map_err(persistence)?,
+                        session_id
+                    ],
+                )
+                .map_err(persistence)?;
+            if let Some((message_id, request)) = receipt {
+                transaction.execute("INSERT INTO react_claude_reconnect(session_id, message_id, request) VALUES (?, ?, ?)",
+                    params![session_id, message_id, request.encode_to_vec()]).map_err(persistence)?;
+            }
+            transaction.commit().map_err(persistence)
+        })
+    }
+
     fn load<'a>(
         &'a mut self,
         session_id: &'a str,
@@ -496,15 +578,30 @@ fn lock_session(database: &Path, session_id: &str) -> Result<Option<SessionLock>
 }
 
 struct SessionRow {
+    claude_session: Option<String>,
     workspace: String,
     lineage: String,
     fork_points: String,
 }
 
+fn decode_binding(
+    value: Option<String>,
+) -> Result<Option<crate::providers::claude::ClaudeSessionBinding>, StoreError> {
+    value
+        .map(|value| {
+            let binding: crate::providers::claude::ClaudeSessionBinding =
+                serde_json::from_str(&value)
+                    .map_err(|_| StoreError::Persistence("invalid saved Claude binding".into()))?;
+            binding.validate().map_err(persistence)?;
+            Ok(binding)
+        })
+        .transpose()
+}
+
 fn session_row(connection: &Connection, session_id: &str) -> Result<SessionRow, StoreError> {
     connection
         .query_row(
-            "SELECT workspace, lineage, fork_points \
+            "SELECT workspace, lineage, fork_points, claude_session \
              FROM react_session WHERE id = ?",
             [session_id],
             |row| {
@@ -512,6 +609,7 @@ fn session_row(connection: &Connection, session_id: &str) -> Result<SessionRow, 
                     workspace: row.get(0)?,
                     lineage: row.get(1)?,
                     fork_points: row.get(2)?,
+                    claude_session: row.get(3)?,
                 })
             },
         )

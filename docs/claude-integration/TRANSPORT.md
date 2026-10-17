@@ -4,9 +4,10 @@ Task 4 provides `providers::claude::{ClaudeMessages, ClaudeMessagesConfig}` as a
 library adapter. It consumes the shared `ClaudeAuthorization` interface, never a
 credential file, API key or imported token. Task 3 owns credentials; Task 6 owns
 runtime provider selection, conversation binding, compaction, children, and
-persistence of incomplete output. `ModelProvider` continues to fail explicitly
-for subscription inference until that wiring lands. This PR does not pass
-production A1–A11 and makes no new live-provider observation.
+persistence of incomplete output. The local native worker now opts into that
+execution path; default HTTP/eval constructors still reject subscription
+selection. See [native execution](EXECUTION.md). Production A1–A11 remain
+unproven, and the synthetic integration makes no new live-provider observation.
 
 The constructor accepts a model, existing conversation/session ID, pinned
 `ClaudeSessionBinding`, request timeout and authority. `stream_guarded` accepts
@@ -79,7 +80,8 @@ output, with no retry, successful final completion or executable tools.
 Independent review and Task 8's two-model live gate must check this boundary.
 Frames are bounded at 2 MiB and a response at 32 MiB; request lifetime follows
 the configured timeout or caller cancellation. Partial callbacks followed
-by a typed terminal failure remain available for Task 6 to persist as incomplete.
+by a typed terminal failure are persisted by native execution as incomplete,
+display-only output before its terminal error event.
 
 ## Error and retry provenance
 

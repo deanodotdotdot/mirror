@@ -3964,7 +3964,18 @@ async fn service_stops_after_maximum_completion_failures() {
         spawn_service(&database, directory.path(), true, model, Vec::new(), config).await;
     service.open().await.expect("open service");
 
-    run_turn(&service, "fail", "user-1").await;
+    let mut events = service.events();
+    service
+        .set_inference_config(default_inference())
+        .await
+        .unwrap();
+    service
+        .execute(user_message("fail".into(), "user-1".into(), None))
+        .unwrap();
+    let events = wait_for_turn(&mut events).await;
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, ReactServiceEvent::TurnError(_))));
 
     let entries = service.messages().await.expect("service messages");
     assert_final_answer(
@@ -4024,7 +4035,18 @@ async fn service_aborts_partial_stream_without_final_message() {
         spawn_service(&database, directory.path(), true, model, Vec::new(), config).await;
     service.open().await.expect("open service");
 
-    let events = run_turn(&service, "stream", "user-1").await;
+    let mut events = service.events();
+    service
+        .set_inference_config(default_inference())
+        .await
+        .unwrap();
+    service
+        .execute(user_message("stream".into(), "user-1".into(), None))
+        .unwrap();
+    let events = wait_for_turn(&mut events).await;
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, ReactServiceEvent::TurnError(_))));
 
     assert_matches!(
         events
@@ -5171,6 +5193,15 @@ async fn manual_compaction_is_interruptible_and_rejects_concurrent_compaction() 
     started_receiver.recv().await.expect("summary started");
     assert_matches!(
         service.compact().await,
+        Err(ReactServiceError::ConversationBusy)
+    );
+    assert_matches!(
+        service
+            .reconnect_claude(
+                "during-compaction".into(),
+                mirror_protocol::ReconnectClaude::default()
+            )
+            .await,
         Err(ReactServiceError::ConversationBusy)
     );
     assert!(service

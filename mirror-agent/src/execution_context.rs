@@ -24,6 +24,8 @@ pub struct ExecutionContext {
     approval_hook: Option<ApprovalHook>,
     prompt_injection_policy: Option<String>,
     tasks: TaskManagerHandle,
+    claude_session: crate::providers::claude::ClaudeSession,
+    claude_authority: Option<std::sync::Arc<dyn crate::providers::claude::ClaudeAuthorization>>,
 }
 
 /// Producer for live settings consumed by an active execution context.
@@ -71,7 +73,29 @@ impl ExecutionContext {
             prompt_injection_policy: prompt_injection_policy
                 .or_else(|| approval_parent.and_then(Self::prompt_injection_policy)),
             tasks,
+            claude_session: approval_parent
+                .map(|parent| parent.claude_session.clone())
+                .unwrap_or_default(),
+            claude_authority: approval_parent.and_then(|parent| parent.claude_authority.clone()),
         }
+    }
+
+    pub(crate) fn with_claude(
+        mut self,
+        session: crate::providers::claude::ClaudeSession,
+        authority: Option<std::sync::Arc<dyn crate::providers::claude::ClaudeAuthorization>>,
+    ) -> Self {
+        self.claude_session = session;
+        self.claude_authority = authority;
+        self
+    }
+    pub(crate) fn claude_binding(&self) -> Option<crate::providers::claude::ClaudeSessionBinding> {
+        self.claude_session.binding()
+    }
+    pub(crate) fn claude_authority(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::providers::claude::ClaudeAuthorization>> {
+        self.claude_authority.clone()
     }
 
     pub(crate) fn prompt_injection_policy(&self) -> Option<String> {

@@ -867,7 +867,7 @@ async fn assert_upgrade_without_metadata(
             .connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .expect("migrated version"),
-        3
+        4
     );
     let entries = store.load("legacy", true).await.expect("full history");
     let prompts: Vec<_> = entries
@@ -988,7 +988,7 @@ fn rejects_newer_agent_schema_version() {
     drop(SQLiteStore::open(&database, "session", directory.path(), true, false).expect("create"));
     let connection = Connection::open(&database).expect("open database");
     connection
-        .pragma_update(None, "user_version", 4)
+        .pragma_update(None, "user_version", 5)
         .expect("set future version");
     drop(connection);
 
@@ -1110,4 +1110,115 @@ fn an_in_memory_database_takes_no_lock() {
     let _first = open(Path::new(":memory:"), "session", directory.path(), true);
 
     open(Path::new(":memory:"), "session", directory.path(), true);
+}
+
+fn claude_binding(account: u128) -> crate::providers::claude::ClaudeSessionBinding {
+    crate::providers::claude::ClaudeSessionBinding::new(
+        crate::providers::claude::ClaudeIdentityBinding {
+            account_id: Uuid::from_u128(account),
+            organization_id: Uuid::from_u128(20),
+        },
+    )
+}
+
+#[tokio::test]
+async fn claude_binding_is_native_durable_and_forked_in_the_session_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("claude.db");
+    let mut store = open(&database, "parent", directory.path(), true);
+    assert!(store.created_session("parent"));
+    assert_eq!(store.claude_session("parent").await.unwrap(), None);
+    let first = claude_binding(1);
+    store
+        .compare_set_claude_session("parent", None, &first, None)
+        .await
+        .unwrap();
+    let mut entries = vec![system_entry("system"), identified("fork-point", "hello")];
+    store.append("parent", 0, &mut entries).await.unwrap();
+    let next = claude_binding(2);
+    let request = mirror_protocol::ReconnectClaude {
+        expected_binding: Some((&first).into()),
+        target_identity: Some((&next.identity).into()),
+    };
+    store
+        .compare_set_claude_session("parent", Some(&first), &next, Some(("reconnect", &request)))
+        .await
+        .unwrap();
+    drop(store);
+    let mut resumed = open(&database, "parent", directory.path(), true);
+    assert!(!resumed.created_session("parent"));
+    assert_eq!(
+        resumed.claude_session("parent").await.unwrap(),
+        Some(next.clone())
+    );
+    assert_eq!(
+        resumed.claude_reconnect_receipts("parent").await.unwrap(),
+        [("reconnect".into(), request)]
+    );
+    SQLiteStore::fork(&database, "parent", "fork-point", "child").unwrap();
+    let mut child = open(&database, "child", directory.path(), false);
+    assert!(!child.created_session("child"));
+    assert_eq!(child.claude_session("child").await.unwrap(), Some(next));
+    assert!(child
+        .claude_reconnect_receipts("child")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn claude_binding_cas_and_receipt_failures_roll_back_both_columns() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("claude.db");
+    let mut store = open(&database, "session", directory.path(), true);
+    let first = claude_binding(1);
+    let next = claude_binding(2);
+    let request = mirror_protocol::ReconnectClaude {
+        expected_binding: None,
+        target_identity: Some((&first.identity).into()),
+    };
+    store
+        .compare_set_claude_session("session", None, &first, Some(("id", &request)))
+        .await
+        .unwrap();
+    assert_matches!(
+        store
+            .compare_set_claude_session("session", None, &next, None)
+            .await,
+        Err(StoreError::Stale)
+    );
+    // Duplicate receipt constraint fires after UPDATE: transaction must undo it.
+    assert!(store
+        .compare_set_claude_session("session", Some(&first), &next, Some(("id", &request)))
+        .await
+        .is_err());
+    assert_eq!(
+        store.claude_session("session").await.unwrap(),
+        Some(first.clone())
+    );
+    store.connection.execute_batch("CREATE TRIGGER fail_claude BEFORE INSERT ON react_claude_reconnect BEGIN SELECT RAISE(FAIL, 'injected'); END;").unwrap();
+    assert!(store
+        .compare_set_claude_session("session", Some(&first), &next, Some(("new-id", &request)))
+        .await
+        .is_err());
+    assert_eq!(store.claude_session("session").await.unwrap(), Some(first));
+    assert_eq!(
+        store
+            .claude_reconnect_receipts("session")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn empty_existing_sqlite_conversation_is_not_new_and_old_schema_is_unbound() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("claude.db");
+    drop(open(&database, "empty", directory.path(), true));
+    let mut existing = open(&database, "empty", directory.path(), true);
+    assert!(!existing.created_session("empty"));
+    assert!(existing.load("empty", true).await.unwrap().is_empty());
+    assert_eq!(existing.claude_session("empty").await.unwrap(), None);
 }

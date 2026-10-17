@@ -43,6 +43,18 @@ pub trait ModelRequestGuard: Send + Sync {
 
 /// A streaming model provider.
 pub trait Llm: Send + Sync {
+    /// Native service-owned identity; custom model implementations need not use it.
+    fn set_claude_session(&mut self, _session: super::claude::ClaudeSession) {}
+    fn inference_defaults(&self) -> Option<mirror_protocol::InferenceConfig> {
+        None
+    }
+    fn compaction_inference(
+        &self,
+        _parent: Option<&mirror_protocol::InferenceConfig>,
+    ) -> Option<mirror_protocol::InferenceConfig> {
+        self.inference_defaults()
+    }
+
     /// The model identifier recorded in traces.
     fn model(&self) -> &str;
 

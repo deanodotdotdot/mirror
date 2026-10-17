@@ -45,13 +45,17 @@ use crate::TaskResolution;
 pub struct SubagentTool {
     workspace_root: PathBuf,
     working_directory: PathBuf,
-    parent_conversation_id: String,
     provider: ModelProviderConfig,
     request_guard: Option<Arc<dyn ModelRequestGuard>>,
     agent: ReactAgentConfig,
     environment: Option<EnvironmentInfo>,
     tools: Vec<Arc<dyn AnyTool>>,
     resolved: Option<ResolvedInstructions>,
+    #[cfg(test)]
+    test_claude: Option<(
+        Arc<crate::providers::claude::metadata::ClaudeMetadataService>,
+        &'static str,
+    )>,
 }
 
 /// Arguments accepted by the subagent tool.
@@ -65,7 +69,7 @@ impl SubagentTool {
     /// Create a task-backed subagent sharing the supplied tools.
     pub fn new(
         workspace_root: impl AsRef<Path>,
-        parent_conversation_id: impl Into<String>,
+        _parent_conversation_id: impl Into<String>,
         provider: ModelProviderConfig,
         agent: ReactAgentConfig,
         environment: Option<EnvironmentInfo>,
@@ -74,13 +78,15 @@ impl SubagentTool {
         Ok(Self {
             workspace_root: super::canonical_workspace(&workspace_root)?,
             working_directory: workspace_root.as_ref().to_path_buf(),
-            parent_conversation_id: parent_conversation_id.into(),
+
             provider,
             request_guard: None,
             agent,
             environment,
             tools,
             resolved: None,
+            #[cfg(test)]
+            test_claude: None,
         })
     }
 
@@ -95,6 +101,16 @@ impl SubagentTool {
     #[must_use]
     pub fn with_request_guard(mut self, guard: Arc<dyn ModelRequestGuard>) -> Self {
         self.request_guard = Some(guard);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_claude(
+        mut self,
+        metadata: Arc<crate::providers::claude::metadata::ClaudeMetadataService>,
+        endpoint: &'static str,
+    ) -> Self {
+        self.test_claude = Some((metadata, endpoint));
         self
     }
 }
@@ -192,9 +208,12 @@ impl SubagentTool {
         let tasks = context.tasks();
         let approval_parent = context.clone();
         let workspace_root = self.workspace_root.clone();
-        let parent_conversation_id = self.parent_conversation_id.clone();
+        let binding = context.claude_binding();
+        let authority = context.claude_authority();
         let provider = self.provider.clone();
         let request_guard = self.request_guard.clone();
+        #[cfg(test)]
+        let test_claude = self.test_claude.clone();
         let inference = context.inference_config().ok_or_else(|| {
             ToolError::Execution("active turn has no inference config".to_string())
         })?;
@@ -206,22 +225,28 @@ impl SubagentTool {
                 crate::TaskBehavior::Detach,
                 move |task_context| async move {
                     let result: Result<ToolOutput, ToolError> = async {
-                        let conversation_id = format!(
-                            "{parent_conversation_id}-subagent-{}",
-                            task_context.task_id()
-                        );
+                        let conversation_id = uuid::Uuid::new_v4().to_string();
+                        let mut provider = provider;
+                        provider.claude_session = binding.clone();
                         let provider = provider
                             .for_inference(&inference)
                             .map_err(|error| ToolError::Execution(error.to_string()))?;
-                        let model = ModelProvider::new(
+                        let model = ModelProvider::new_with_authority(
                             ModelProviderConfig {
                                 prompt_cache_key: conversation_id.clone(),
                                 ..provider
                             },
                             request_guard,
+                            authority,
                         )
                         .await
                         .map_err(|error| ToolError::Execution(error.to_string()))?;
+                        #[cfg(test)]
+                        let model = if let Some((metadata, endpoint)) = test_claude {
+                            model.with_test_claude(Some(metadata), Some(endpoint))
+                        } else {
+                            model
+                        };
                         let skills = if system_prompt.include_skills {
                             system_prompt.resolved.as_ref().map_or_else(
                                 || load_skills(&workspace_root, None),
@@ -242,7 +267,10 @@ impl SubagentTool {
                         let (service, runtime) = ReactAgentService::start(
                             agent,
                             tool_executor,
-                            Box::new(InMemoryStore::default()),
+                            Box::new(
+                                InMemoryStore::default()
+                                    .with_claude_session(&conversation_id, binding),
+                            ),
                             conversation_id,
                             approval_parent.approval_mode(),
                             skills,

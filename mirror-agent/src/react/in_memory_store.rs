@@ -13,10 +13,24 @@ use uuid::Uuid;
 #[derive(Debug, Default)]
 pub struct InMemoryStore {
     sessions: HashMap<String, Vec<AgentMessage>>,
+    claude_sessions: HashMap<String, crate::providers::claude::ClaudeSessionBinding>,
+    claude_receipts: HashMap<(String, String), mirror_protocol::ReconnectClaude>,
     lineages: HashMap<String, Lineage<String>>,
 }
 
 impl InMemoryStore {
+    /// A native child inherits its parent binding; it never binds from a login.
+    pub(crate) fn with_claude_session(
+        mut self,
+        session_id: &str,
+        binding: Option<crate::providers::claude::ClaudeSessionBinding>,
+    ) -> Self {
+        if let Some(binding) = binding {
+            self.claude_sessions.insert(session_id.into(), binding);
+        }
+        self
+    }
+
     /// Seed a disposable store without changing committed entry IDs, timestamps, or sequences.
     pub fn from_entries(session_id: String, entries: Vec<AgentMessage>) -> Self {
         Self {
@@ -66,6 +80,9 @@ impl InMemoryStore {
         let lineage = lineage
             .fork(child.to_string(), point)
             .map_err(|error| StoreError::Persistence(error.to_string()))?;
+        if let Some(binding) = self.claude_sessions.get(source).cloned() {
+            self.claude_sessions.insert(child.to_string(), binding);
+        }
         self.sessions.insert(child.to_string(), Vec::new());
         self.lineages.insert(child.to_string(), lineage);
         Ok(())
@@ -96,6 +113,53 @@ impl InMemoryStore {
 }
 
 impl Store for InMemoryStore {
+    fn claude_session<'a>(
+        &'a mut self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::providers::claude::ClaudeSessionBinding>, StoreError>>
+    {
+        Box::pin(async move { Ok(self.claude_sessions.get(session_id).cloned()) })
+    }
+    fn claude_reconnect_receipts<'a>(
+        &'a mut self,
+        session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, mirror_protocol::ReconnectClaude)>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .claude_receipts
+                .iter()
+                .filter(|((session, _), _)| session == session_id)
+                .map(|((_, id), request)| (id.clone(), request.clone()))
+                .collect())
+        })
+    }
+    fn compare_set_claude_session<'a>(
+        &'a mut self,
+        session_id: &'a str,
+        expected: Option<&'a crate::providers::claude::ClaudeSessionBinding>,
+        binding: &'a crate::providers::claude::ClaudeSessionBinding,
+        receipt: Option<(&'a str, &'a mirror_protocol::ReconnectClaude)>,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            if self.claude_sessions.get(session_id) != expected {
+                return Err(StoreError::Stale);
+            }
+            if let Some((id, request)) = receipt {
+                let key = (session_id.into(), id.into());
+                if self.claude_receipts.contains_key(&key) {
+                    return Err(StoreError::MessageIdConflict {
+                        session_id: session_id.into(),
+                        entry_id: id.into(),
+                    });
+                }
+                self.claude_receipts.insert(key, request.clone());
+            }
+            self.claude_sessions
+                .insert(session_id.into(), binding.clone());
+            Ok(())
+        })
+    }
+
     fn load<'a>(
         &'a mut self,
         session_id: &'a str,
