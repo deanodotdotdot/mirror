@@ -1288,6 +1288,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "globset",
+ "httpdate",
  "jsonschema",
  "libc",
  "mirror-protocol",
