@@ -14,7 +14,16 @@ use std::sync::Mutex;
 struct Authority {
     identity: Mutex<Option<ClaudeIdentityBinding>>,
     snapshots: AtomicUsize,
+    generation: Mutex<Option<Uuid>>,
     dispatches: AtomicUsize,
+    attempts: Mutex<
+        Vec<(
+            ClaudeOperation,
+            ClaudeIdentityBinding,
+            Option<ClaudeTokenVersion>,
+            bool,
+        )>,
+    >,
     allow_dispatch: bool,
     gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
 }
@@ -22,7 +31,7 @@ impl ClaudeAuthorization for Authority {
     fn authorize<'a>(
         &'a self,
         context: ClaudeAuthorizationContext<'a>,
-        _rejected: Option<ClaudeTokenVersion>,
+        rejected: Option<ClaudeTokenVersion>,
     ) -> BoxFuture<'a, Result<ClaudeAccessLease, ClaudeError>> {
         Box::pin(async move {
             assert!(
@@ -35,16 +44,32 @@ impl ClaudeAuthorization for Authority {
                     .await
                     .map_err(|_| ClaudeError::new(ClaudeErrorKind::RequestCancelled))?;
             }
-            if self.identity.lock().unwrap().as_ref() != Some(context.expected_identity) {
+            let current = self
+                .identity
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| ClaudeError::new(ClaudeErrorKind::LoginRequired))?;
+            if &current != context.expected_identity {
                 return Err(ClaudeError::new(ClaudeErrorKind::AccountChanged));
             }
+            self.attempts.lock().unwrap().push((
+                context.operation,
+                context.expected_identity.clone(),
+                rejected,
+                context.request_guard.is_some(),
+            ));
             self.dispatches.fetch_add(1, Ordering::SeqCst);
             Ok(ClaudeAccessLease {
                 access_token: ClaudeAccessToken::new("SYNTHETIC-TEST-ONLY".into()).unwrap(),
                 identity: context.expected_identity.clone(),
                 installation_id: Uuid::from_u128(4),
                 version: ClaudeTokenVersion {
-                    generation: Uuid::from_u128(5),
+                    generation: self
+                        .generation
+                        .lock()
+                        .unwrap()
+                        .unwrap_or(Uuid::from_u128(5)),
                     revision: 1,
                 },
                 expires_at: std::time::SystemTime::now() + std::time::Duration::from_secs(3600),
@@ -57,13 +82,13 @@ impl ClaudeAuthorization for Authority {
         _cancellation: BoxFuture<'a, ()>,
     ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
         self.snapshots.fetch_add(1, Ordering::SeqCst);
-        let identity = self.identity.lock().unwrap().clone();
         let gate = self.gate.lock().unwrap().take();
         Box::pin(async move {
             if let Some((started, release)) = gate {
                 let _ = started.send(());
                 let _ = release.await;
             }
+            let identity = self.identity.lock().unwrap().clone();
             let mut status = ClaudeAuthStatus::new(if identity.is_some() {
                 ClaudeAuthState::Usable
             } else {
@@ -72,8 +97,28 @@ impl ClaudeAuthorization for Authority {
             status.identity = identity;
             Ok(ClaudeLocalAuthSnapshot {
                 status,
-                version: None,
+                version: Some(ClaudeTokenVersion {
+                    generation: self
+                        .generation
+                        .lock()
+                        .unwrap()
+                        .unwrap_or(Uuid::from_u128(5)),
+                    revision: 1,
+                }),
             })
+        })
+    }
+    fn local_snapshot_guarded<'a>(
+        &'a self,
+        guard: &'a dyn crate::providers::ModelRequestGuard,
+        cancellation: BoxFuture<'a, ()>,
+    ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+        Box::pin(async move {
+            guard
+                .verify()
+                .await
+                .map_err(|_| ClaudeError::new(ClaudeErrorKind::RequestCancelled))?;
+            self.local_snapshot(cancellation).await
         })
     }
 }
@@ -1078,3 +1123,6 @@ async fn failed_initial_binding_commit_keeps_worker_attached_and_unbound() {
     );
     finish(&service, runtime).await;
 }
+
+#[path = "react_agent_service_claude_execution_test.rs"]
+mod execution;

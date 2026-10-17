@@ -51,6 +51,11 @@ pub struct SubagentTool {
     environment: Option<EnvironmentInfo>,
     tools: Vec<Arc<dyn AnyTool>>,
     resolved: Option<ResolvedInstructions>,
+    #[cfg(test)]
+    test_claude: Option<(
+        Arc<crate::providers::claude::metadata::ClaudeMetadataService>,
+        &'static str,
+    )>,
 }
 
 /// Arguments accepted by the subagent tool.
@@ -80,6 +85,8 @@ impl SubagentTool {
             environment,
             tools,
             resolved: None,
+            #[cfg(test)]
+            test_claude: None,
         })
     }
 
@@ -94,6 +101,16 @@ impl SubagentTool {
     #[must_use]
     pub fn with_request_guard(mut self, guard: Arc<dyn ModelRequestGuard>) -> Self {
         self.request_guard = Some(guard);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_claude(
+        mut self,
+        metadata: Arc<crate::providers::claude::metadata::ClaudeMetadataService>,
+        endpoint: &'static str,
+    ) -> Self {
+        self.test_claude = Some((metadata, endpoint));
         self
     }
 }
@@ -195,6 +212,8 @@ impl SubagentTool {
         let authority = context.claude_authority();
         let provider = self.provider.clone();
         let request_guard = self.request_guard.clone();
+        #[cfg(test)]
+        let test_claude = self.test_claude.clone();
         let inference = context.inference_config().ok_or_else(|| {
             ToolError::Execution("active turn has no inference config".to_string())
         })?;
@@ -222,6 +241,12 @@ impl SubagentTool {
                         )
                         .await
                         .map_err(|error| ToolError::Execution(error.to_string()))?;
+                        #[cfg(test)]
+                        let model = if let Some((metadata, endpoint)) = test_claude {
+                            model.with_test_claude(Some(metadata), Some(endpoint))
+                        } else {
+                            model
+                        };
                         let skills = if system_prompt.include_skills {
                             system_prompt.resolved.as_ref().map_or_else(
                                 || load_skills(&workspace_root, None),

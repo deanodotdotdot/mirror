@@ -580,7 +580,9 @@ async fn guarded_snapshot_checks_guard_after_lock_wait_without_renewal() {
         calls: AtomicUsize::new(0),
     };
     let locked = auth.store.lock(false).await.unwrap().unwrap();
-    let operation = auth.local_snapshot_guarded(&guard, Box::pin(std::future::pending()));
+    let native =
+        crate::providers::claude::session::NativeAuthority::for_test(manager(&path, mock.clone()));
+    let operation = native.local_snapshot_guarded(&guard, Box::pin(std::future::pending()));
     tokio::pin!(operation);
     assert!(
         tokio::time::timeout(Duration::from_millis(40), &mut operation)
@@ -599,7 +601,7 @@ async fn guarded_snapshot_checks_guard_after_lock_wait_without_renewal() {
         ClaudeErrorKind::RequestCancelled
     );
     guard.revoked.store(false, Ordering::SeqCst);
-    let snapshot = auth
+    let snapshot = native
         .local_snapshot_guarded(&guard, Box::pin(std::future::pending()))
         .await
         .unwrap();

@@ -9,7 +9,7 @@ use crate::compaction::Compactor;
 use crate::compaction::CompactorConfig;
 use crate::providers::Completion;
 use crate::providers::CompletionRequest;
-use crate::providers::{model_context_window, ModelProvider};
+use crate::providers::{model_context, ModelProvider};
 use crate::tools::ToolOutput;
 use crate::AgentError;
 use futures_util::StreamExt;
@@ -47,6 +47,8 @@ pub struct ReactAgent<Model> {
     inference_provider: ModelProvider,
     inference_config: Option<InferenceConfig>,
     context_window: Option<usize>,
+    context_notice: Option<String>,
+    last_context_notice: Option<String>,
     compaction_model: Option<Model>,
     system_prompt: SystemPromptConfig,
     config: ReactAgentConfig,
@@ -69,6 +71,8 @@ where
             inference_provider,
             inference_config: None,
             context_window: None,
+            context_notice: None,
+            last_context_notice: None,
             compaction_model,
             system_prompt,
             config,
@@ -155,17 +159,23 @@ where
             .await
     }
 
-    /// Discover once per model selection, caching the fallback on failure too.
+    /// API providers discover once per selection. Claude's metadata service owns
+    /// its cache so every use revalidates identity, generation and the guard.
     pub async fn context_window(&mut self) -> Result<usize, ReactAgentError> {
-        if let Some(window) = self.context_window {
-            return Ok(window);
-        }
         let config = self
             .inference_provider
             .config_for(self.inference_config.as_ref())?;
-        let window = model_context_window(&self.inference_provider, &config).await?;
-        self.context_window = Some(window);
-        Ok(window)
+        if config.api != crate::providers::ModelApi::AnthropicOAuth {
+            if let Some(window) = self.context_window {
+                return Ok(window);
+            }
+        }
+        let resolved = model_context(&self.inference_provider, &config).await?;
+        self.context_notice = resolved
+            .notice
+            .filter(|notice| self.last_context_notice.as_ref() != Some(notice));
+        self.context_window = Some(resolved.window);
+        Ok(resolved.window)
     }
 
     fn compactor(
@@ -259,6 +269,7 @@ where
             return Err(AgentError::InvalidInput("compaction is disabled".into()).into());
         }
         let window = self.context_window().await?;
+        self.publish_context_notice(context).await?;
         self.compact(
             context,
             tool_executor,
@@ -685,17 +696,31 @@ where
     }
 
     async fn report_context_usage(
-        &self,
+        &mut self,
         context: &mut ReactContext,
         tool_executor: &dyn ToolExecutor,
         context_window: usize,
     ) -> Result<(), ReactAgentError> {
+        self.publish_context_notice(context).await?;
         context
             .push(AgentEvent::ContextUsage {
                 tokens: self.prompt_tokens(context, tool_executor, context_window)?,
                 window: context_window,
             })
             .await?;
+        Ok(())
+    }
+
+    async fn publish_context_notice(
+        &mut self,
+        context: &mut ReactContext,
+    ) -> Result<(), ReactAgentError> {
+        if let Some(notice) = &self.context_notice {
+            context
+                .push(AgentEvent::Entries(vec![log_message(notice, "info")]))
+                .await?;
+            self.last_context_notice = self.context_notice.take();
+        }
         Ok(())
     }
 

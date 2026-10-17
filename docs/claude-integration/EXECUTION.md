@@ -72,6 +72,23 @@ compaction provider records its actual provider/model. Explicit API-key
 compaction remains a separate selection. No account, provider or model is
 silently substituted after an OAuth failure.
 
+Context discovery uses `ClaudeMetadataService` with the durable identity and
+request guard, including when the user supplies an explicit context window.
+The lazy native authority explicitly forwards guarded local snapshots. Explicit
+configuration, exact model metadata, reviewed model fallback and conservative
+fallback retain the service's precedence and validation; conversion to native
+`usize` is checked. Auth, guard, account and storage failures remain terminal.
+
+The agent delegates every subscription context lookup to the metadata service,
+which owns cache freshness and identity/generation/profile fencing. Its generic
+context-number cache cannot bypass those fences on a later turn. A persisted
+`LogRecord`/`Entries` notice precedes context usage and model work and reports
+the selected model, limit, provenance, cache state and original source fetch
+time. Metadata errors use only closed error/recovery fields. Identical notices
+are not repeated; a real state or source change produces a new notice. An
+explicit API-key compactor is visibly labeled with its provider, model and
+API-key billing before it runs.
+
 The transport's canonical ordering restriction remains: signed thinking must
 precede text, which must precede tools. Unsupported interleaving is a typed
 terminal compatibility/partial-stream failure, never reordered signed history.
@@ -85,3 +102,10 @@ output before the typed `TurnError`; `TurnCompleted` only closes the turn and
 does not erase the failure. Native exception-limit exhaustion also remains an
 error. Noninteractive consumers must return a nonzero exit for failed final
 records or terminal errors.
+
+Exception-limit exhaustion now propagates the actual model error to all native
+consumers. The HTTP adapter consequently returns 502 instead of its former 204
+after the configured failed-attempt limit; attempt counts and persisted error
+traces are retained. Successful API-key/HTTP turns keep their existing success
+behavior. This broader error-result correction is covered by the HTTP suite
+and is part of Task 6's independent review scope.

@@ -4,8 +4,10 @@
 accepts an `Arc<dyn ClaudeAuthorization>`; production passes `ClaudeAuthManager`.
 Python uses the private native actions documented in
 [AUTH-PROTOCOL.md](../../../../../docs/claude-integration/AUTH-PROTOCOL.md), and
-never reads a credential file or issues bearer HTTP. Runtime provider/session
-binding and Python UI wiring remain Tasks 6 and 7.
+never reads a credential file or issues bearer HTTP. Task 6 connects native
+provider/session binding and guarded context lookup as documented in
+[EXECUTION.md](../../../../../docs/claude-integration/EXECUTION.md). Python UI
+wiring remains Task 7.
 
 ## Rust seam
 

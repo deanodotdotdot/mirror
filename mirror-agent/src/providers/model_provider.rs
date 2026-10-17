@@ -41,6 +41,10 @@ pub struct ModelProvider {
     pub(super) claude_authority: Option<Arc<dyn ClaudeAuthorization>>,
     claude_session: ClaudeSession,
     compaction_inherits_provider: bool,
+    #[cfg(test)]
+    pub(super) test_metadata: Option<Arc<super::claude::metadata::ClaudeMetadataService>>,
+    #[cfg(test)]
+    test_messages_endpoint: Option<&'static str>,
 }
 
 /// Configuration shared by root agents and subagents.
@@ -141,6 +145,10 @@ impl ModelProvider {
             request_guard,
             claude_authority: authority,
             compaction_inherits_provider: false,
+            #[cfg(test)]
+            test_metadata: None,
+            #[cfg(test)]
+            test_messages_endpoint: None,
         })
     }
 }
@@ -290,6 +298,17 @@ impl ModelProviderConfig {
 }
 
 impl ModelProvider {
+    #[cfg(test)]
+    pub(crate) fn with_test_claude(
+        mut self,
+        metadata: Option<Arc<super::claude::metadata::ClaudeMetadataService>>,
+        messages_endpoint: Option<&'static str>,
+    ) -> Self {
+        self.test_metadata = metadata;
+        self.test_messages_endpoint = messages_endpoint;
+        self
+    }
+
     pub(super) async fn verify_request(&self) -> Result<(), LlmError> {
         if let Some(guard) = &self.request_guard {
             guard.verify().await?;
@@ -376,6 +395,8 @@ impl Llm for ModelProvider {
         let client = self.client.clone();
         let request_guard = self.request_guard.clone();
         let authority = self.claude_authority.clone();
+        #[cfg(test)]
+        let test_messages_endpoint = self.test_messages_endpoint;
         try_stream! {
             let config = config?;
             // OAuth never enters the API-key resolver, even on failure.
@@ -461,6 +482,11 @@ impl Llm for ModelProvider {
                     let provider = super::claude::ClaudeMessages::new(super::claude::ClaudeMessagesConfig {
                         model: config.model, session_id: config.prompt_cache_key, binding, request_timeout: config.request_timeout,
                     }, authority)?;
+                    #[cfg(test)]
+                    let provider = match test_messages_endpoint {
+                        Some(endpoint) => provider.with_test_endpoint(endpoint),
+                        None => provider,
+                    };
                     let stream = provider.stream_guarded(request, request_guard.as_deref(), std::future::pending().boxed());
                     pin_mut!(stream);
                     while let Some(event) = stream.next().await { yield event?; }

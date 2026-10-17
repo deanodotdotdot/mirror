@@ -63,6 +63,10 @@ pub(crate) struct NativeAuthority(
     std::sync::OnceLock<Result<super::auth::ClaudeAuthManager, ClaudeError>>,
 );
 impl NativeAuthority {
+    #[cfg(test)]
+    pub(crate) fn for_test(manager: super::auth::ClaudeAuthManager) -> Self {
+        Self(std::sync::OnceLock::from(Ok(manager)))
+    }
     fn manager(&self) -> Result<&super::auth::ClaudeAuthManager, ClaudeError> {
         self.0
             .get_or_init(super::auth::ClaudeAuthManager::new)
@@ -84,5 +88,17 @@ impl ClaudeAuthorization for NativeAuthority {
     ) -> futures_util::future::BoxFuture<'a, Result<super::ClaudeLocalAuthSnapshot, ClaudeError>>
     {
         Box::pin(async move { self.manager()?.local_snapshot(cancellation).await })
+    }
+    fn local_snapshot_guarded<'a>(
+        &'a self,
+        guard: &'a dyn crate::providers::ModelRequestGuard,
+        cancellation: futures_util::future::BoxFuture<'a, ()>,
+    ) -> futures_util::future::BoxFuture<'a, Result<super::ClaudeLocalAuthSnapshot, ClaudeError>>
+    {
+        Box::pin(async move {
+            self.manager()?
+                .local_snapshot_guarded(guard, cancellation)
+                .await
+        })
     }
 }

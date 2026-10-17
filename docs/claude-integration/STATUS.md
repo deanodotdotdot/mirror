@@ -16,9 +16,9 @@ checks run locally.
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdbea79e97695a071b5067a5d0cbed088bab after independent Astra review and manager Linux verification; three P2 findings fixed. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
-| 6. Agent execution integration | 3 + 4 + 5 | Independent native storage/protocol/reconnect/stream slice checkpointed at 81b551f. Reviewed Task 5 is integrated; final metadata routing and integration checks resume under Astra. See [execution notes](EXECUTION.md). |
+| 6. Agent execution integration | 3 + 4 + 5 | Astra implementation connects reviewed Tasks 3–5 to native execution, durable binding and explicit idle reconnect. Awaiting a separate new Astra review/fix pass and manager verification. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Astra private-command/TUI checkpoint e66866b is tested. Catalog and usage integration can resume after merged Task 5; final reconnect/runtime integration waits for Task 6. |
-| 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 5–7. Production A1–A11 remain unproven. |
+| 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 6–7. Production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
@@ -228,7 +228,8 @@ serialization failure or immediate retries. Production A1–A11 remain unproven.
 
 Manager integrated Task 4 before Task 5 independent review, retaining both
 module exports, OMP attributions and validation evidence. Runtime wiring remains
-Task 6. The combined Task 5 head awaits independent review and Linux validation.
+Task 6. The combined Task 5 head subsequently completed independent review and
+Linux validation as recorded below.
 
 
 Task 5 independent Astra review of manager-integrated head `72a609e` against
@@ -271,8 +272,8 @@ barriers, native provider opt-in, inherited child UUIDs/binding, and persisted
 incomplete Claude output are implemented. A real loopback truncated-tool fixture
 proves exactly one failed/truncated final record followed by one typed error,
 with zero tool execution. Noninteractive regression fixtures return exit 1 for
-both failed final records and typed terminal errors. Metadata execution remains
-explicitly blocked until the reviewed Task 5 service is merged and connected.
+both failed final records and typed terminal errors. This checkpoint preceded
+the reviewed Task 5 merge and final metadata execution integration below.
 
 Intermediate Task 6 validation: 482 affected native library tests passed with
 one intentional ignore; two protocol wire/projection tests, workspace/all-target
@@ -280,5 +281,46 @@ compilation including eval, and nine worker tests passed; Python packaging/typec
 and the complete CI script passed 3,091 tests with five skips. An earlier broad
 library attempt was stopped before the unrelated Unicode-spill test finished;
 it is incomplete, not a passing full-suite result. Race, store, protocol, fork and restarted-child UUID checks pass; final
-metadata/provider integration checks are pending. No live login,
+metadata/provider integration checks followed that checkpoint. No live login,
 credential inspection, live provider request or production acceptance was run.
+
+Task 6 final integration connects `ModelProvider` to the real metadata service
+and OAuth transport, forwards the guarded authority snapshot operation, and
+retains lazy authority construction for API conversations. Context precedence,
+source timestamp, fallback/stale provenance and closed error/recovery details
+reach persisted log entries before context usage/model work. Every OAuth context
+use passes through metadata's identity/generation/guard checks rather than the
+agent's generic cached context number. Explicit API compaction is labeled with
+its actual model/provider and API-key billing. Canonical signed-history ordering
+restrictions remain unchanged.
+
+Synthetic composed regressions exercise real provider/service seams: offline
+metadata followed by 401 recovery and a partial-tool failure; zero tool
+execution and exactly one persisted incomplete output before one typed terminal
+error; account/guard/logout failures before model dispatch; generation changes
+invalidating cached context; fresh/cached notices retaining source time without
+identical repetition; inherited OAuth and explicit API compaction; and OAuth
+children/grandchildren inheriting authorization with unique native UUIDs despite
+restarted task IDs. Production A1–A11 and live two-model acceptance remain
+deferred to Task 8.
+
+Final Task 6 local macOS validation passed 521 affected library tests, with two
+subprocess helpers intentionally ignored standalone and exercised by parent
+tests. The focused Claude group passed 127 tests. Eight native private-command,
+three binary, 36 headless, nine worker-environment, three worker-shutdown, two
+protocol and two lease doctests passed. The Linux-only `/dev/full` headless
+fixture remains excluded on macOS. Workspace/all-target compilation, including
+the eval binding, Rust formatting and diff checks passed. Three focused Python
+exec tests passed; the earlier complete Python CI result remains 3,091 passed
+with five skips. A final packaging/regeneration/typechecking CI run passed all
+31 focused Python protocol, turn-replay and exec tests, with zero pyright errors
+or warnings. The stopped broad native attempt above remains incomplete;
+these are affected-suite results, not a new full native-suite claim.
+
+The initial final headless run exposed two old expectations of HTTP 204 after
+model exception-limit exhaustion. The intended native error propagation now
+returns HTTP 502 with the actual model error. Updated regressions retain the
+one-/two-attempt counts and persisted trace assertions, and normal HTTP success
+cases pass unchanged. The independent review must assess this broader result
+correction along with subscription behavior. No production credential, live
+provider call or A1–A11 acceptance was used in Task 6.

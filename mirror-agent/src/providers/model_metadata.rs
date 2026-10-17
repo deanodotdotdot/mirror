@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
 
@@ -9,19 +10,68 @@ use super::{LlmError, ModelApi, ModelProvider, ModelProviderConfig};
 
 pub const DEFAULT_CONTEXT_WINDOW: usize = 256_000;
 
-/// Discover the model's context limit, using a provider fallback on failure.
+pub(crate) struct ModelContext {
+    pub window: usize,
+    pub notice: Option<String>,
+}
+
+/// Discover context with the selected provider's own auth and fallback policy.
 pub async fn model_context_window(
     provider: &ModelProvider,
     config: &ModelProviderConfig,
 ) -> Result<usize, LlmError> {
-    // Missing subscription support/auth is never a successful offline catalog.
+    Ok(model_context(provider, config).await?.window)
+}
+
+pub(crate) async fn model_context(
+    provider: &ModelProvider,
+    config: &ModelProviderConfig,
+) -> Result<ModelContext, LlmError> {
     config.validate_subscription_configuration()?;
-    // Task5 owns metadata. Keep this fail-closed until its reviewed service is integrated.
     if config.api == ModelApi::AnthropicOAuth {
-        return Err(super::claude::ClaudeError::configuration(
-            super::claude::ClaudeConfigurationError::NotImplemented,
-        )
-        .into());
+        use super::claude::{
+            metadata::ClaudeMetadataService, ClaudeConfigurationError, ClaudeError,
+        };
+        let authority = provider.claude_authority.clone().ok_or_else(|| {
+            ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface)
+        })?;
+        let binding = provider
+            .session()
+            .binding()
+            .ok_or_else(|| ClaudeError::configuration(ClaudeConfigurationError::MissingBinding))?;
+        if config.claude_session.as_ref() != Some(&binding) {
+            return Err(super::claude::session::binding_changed(
+                config.claude_session.as_ref(),
+                Some(&binding),
+            )
+            .into());
+        }
+        let explicit = config
+            .context_window
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ClaudeError::configuration(ClaudeConfigurationError::InvalidRequestOptions)
+            })?;
+        let service = ClaudeMetadataService::new(authority)?;
+        #[cfg(test)]
+        let service = provider.test_metadata.as_deref().unwrap_or(&service);
+        let result = service
+            .model_context(
+                &binding.identity,
+                &config.model,
+                explicit,
+                provider.request_guard.as_deref(),
+                std::future::pending().boxed(),
+            )
+            .await?;
+        let window = usize::try_from(result.context_window).map_err(|_| {
+            ClaudeError::configuration(ClaudeConfigurationError::InvalidRequestOptions)
+        })?;
+        return Ok(ModelContext {
+            window,
+            notice: Some(claude_context_notice(&result)),
+        });
     }
     let fallback = match config.api {
         ModelApi::CodexResponses => 272_000,
@@ -29,7 +79,7 @@ pub async fn model_context_window(
         _ => DEFAULT_CONTEXT_WINDOW,
     };
     // Bound connection resolution and authorization, not only the HTTP request.
-    Ok(tokio::time::timeout(
+    let window = tokio::time::timeout(
         Duration::from_secs(10),
         discover_context_window(provider, config),
     )
@@ -38,7 +88,45 @@ pub async fn model_context_window(
     .unwrap_or_else(|reason| {
         eprintln!("{reason}; using a {fallback}-token fallback");
         fallback
-    }))
+    });
+    Ok(ModelContext {
+        window,
+        notice: None,
+    })
+}
+
+fn claude_context_notice(result: &super::claude::metadata::ClaudeModelContextResult) -> String {
+    use super::claude::metadata::{ContextProvenance, MetadataState};
+    let provenance = match result.provenance {
+        ContextProvenance::Explicit => "explicit configuration",
+        ContextProvenance::ModelMetadata => "selected-model metadata",
+        ContextProvenance::KnownModelFallback => "reviewed model fallback",
+        ContextProvenance::ConservativeFallback => "conservative fallback",
+    };
+    let state = match result.info.state {
+        MetadataState::Fresh => "fresh",
+        MetadataState::Cached => "cached",
+        MetadataState::Stale => "stale",
+        MetadataState::Offline => "offline",
+        MetadataState::Unavailable => "unavailable",
+    };
+    let fetched = result
+        .info
+        .fetched_at
+        .map(|time| prost_types::Timestamp::from(time).to_string())
+        .unwrap_or_else(|| "not fetched".into());
+    let mut notice = format!(
+        "Claude context for {}: {} tokens; {provenance}; {state}; source fetched: {fetched}.",
+        result.model, result.context_window
+    );
+    if let Some(error) = &result.info.error {
+        let error = error.to_protocol();
+        notice.push_str(&format!(
+            " Metadata error: {}; recovery: {}.",
+            error.kind, error.recovery
+        ));
+    }
+    notice
 }
 
 async fn discover_context_window(
@@ -162,6 +250,39 @@ fn positive_limit(value: &Value) -> Option<usize> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stale_context_notice_retains_source_time_provenance_and_closed_error() {
+        use super::super::claude::{metadata::*, *};
+        let result = ClaudeModelContextResult {
+            info: MetadataInfo {
+                schema_version: 1,
+                provider: CLAUDE_PROVIDER,
+                identity: ClaudeIdentityBinding {
+                    account_id: uuid::Uuid::from_u128(1),
+                    organization_id: uuid::Uuid::from_u128(2),
+                },
+                state: MetadataState::Stale,
+                fetched_at: Some(std::time::UNIX_EPOCH + Duration::from_secs(42)),
+                age_seconds: Some(999),
+                retry_at: None,
+                error: Some(ClaudeError::new(
+                    ClaudeErrorKind::AuthTemporarilyUnavailable,
+                )),
+            },
+            model: "claude-opus-4-8".into(),
+            context_window: 1_000_000,
+            provenance: ContextProvenance::ModelMetadata,
+        };
+        let notice = claude_context_notice(&result);
+        assert!(
+            notice.contains("selected-model metadata; stale; source fetched: 1970-01-01T00:00:42Z")
+        );
+        assert!(
+            notice.contains("Metadata error: auth_temporarily_unavailable; recovery: retry_later")
+        );
+        assert!(!notice.contains("fallback") && !notice.contains("fresh"));
+    }
 
     #[test]
     fn reads_reflection_models_contract_without_confusing_output_and_context_limits() {
