@@ -640,8 +640,17 @@ controlling-terminal supervisor alive to measure restoration before macOS
 invalidates the parent's terminal handle. A separate pipe reports closed results;
 the actual CLI receives terminal Ctrl-C and both CLI/native processes and both
 listeners must be gone. Real native prevalidation passed ordinary and
-space-containing helper paths against installed Python; fresh native wheel runs
-are still required. All shipping runtime/build source remains unchanged.
+space-containing helper paths against installed Python. The corrected clean
+candidate `7371897f9128488a7610f60286a6339241f7273d` then passed actual fresh
+Mac `build.sh` (16 passed, one Linux-only guest-load skip) and Linux `build.sh`
+(17 passed), retaining wheel/native artifacts and their provenance. Existing
+OpenAI installed PTY/tool tests and all Claude native cases ran. All six native opt-ins
+also passed against each platform's retained wheel worker. All shipping runtime/build
+source remains unchanged from `591e089`; original source gates keep their actual
+revision with explicit file-equality proof. See the [artifact hashes](ACCEPTANCE.md#passing-native-artifacts).
+Mac and isolated Linux/SSH installed-package byte verification passed without
+an auth/provider call. Each host has its own fresh private HOME; no grants have
+been transferred.
 
 Documentation now describes the shipped local/SSH command contract, independent
 grant storage, automatic renewal, billing isolation/extra usage, explicit
@@ -652,3 +661,10 @@ passed, including unsigned/mutated/missing-tool failures and signature-canary
 redaction. They do not establish live behavior. All production login, two-model
 signed-thinking/tool replay, canonical-order acceptance, genuine refresh and
 Claude Code coexistence observations remain pending manager coordination.
+
+The external manager-facing controller now has syntax and synthetic validation
+for both model IDs, default TUI/exec, model/effort/usage screens, new signed tool
+records after restart, unchanged prior bytes, exact synthetic file effects and
+closed error/size/timeout failures. Separate tests verify descendant cleanup
+after a leader exits and terminal failure before startup. These are observation
+tooling checks only; the controller requires explicit opt-in for live phases.

@@ -4,8 +4,10 @@ Status: **final validation in progress**. Reviewed Task 7 is merged at
 `072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's first runtime/test/build
 candidate was `591e0898df2f37260557c66ed86567cc5c545aab`. Its full source gates
 are recorded below; both actual native builds exposed defects in the new
-terminal fixture. The corrected fixture is awaiting fresh native wheel builds.
-Later documentation or test changes do not relabel earlier artifacts. A1–A11 are not yet declared complete. Historical
+terminal fixture. Corrected candidate
+`7371897f9128488a7610f60286a6339241f7273d` now passes actual fresh native-wheel
+builds on Mac and Linux. Later changes do not relabel earlier artifacts.
+Production A1–A11 observations remain open. Historical
 [Phase 0 evidence](../../diagnostics/claude_oauth/EVIDENCE.md) does not establish
 production behavior.
 
@@ -32,7 +34,7 @@ All results in this table refer to source
 | --- | --- |
 | Linux full Rust workspace | Manager: 839 passed, zero failed, five intentional ignores across 20 suites, with the real built `SANDBOXD_BIN`. The ignores are two subprocess fixture helpers exercised by their parent tests, opt-in live refresh, and two real microVM tests requiring external runtime setup. |
 | Linux diagnostic / binding / launcher | Manager: 43 diagnostic fixtures passed, Python binding check and source launcher help passed. |
-| Linux Python source CI | Manager: 3,392 passed, 22 skipped, Pyright zero errors/warnings; 200.31 seconds. Skip categories match the Mac source run below. Six development-native opt-ins are being checked separately; the native wheel gate remains separate. |
+| Linux Python source CI | Manager: 3,392 passed, 22 skipped, Pyright zero errors/warnings; 200.31 seconds. Skip categories match the Mac source run below. Six development-native opt-ins later passed against the exact `7371897` wheel worker; the native-wheel gate remains separate. |
 | Mac Python source CI | 3,392 passed, 22 skipped; Pyright zero errors/warnings; archives, synthetic native packaging hook, generated imports/protobuf and type checks passed. Skips are six development-native opt-ins and 16 installed-wheel cases. Four existing `forkpty` deprecation warnings. |
 | Mac development-native opt-ins | All six passed separately against the built candidate worker: private status/logout, metadata missing-login, actual prechat usage, two native attachment/reconnect cases and missing-login exec. |
 | Mac Rust agent/protocol | 728 passed across the original run and remaining suites, four intentional ignores. The original run failed only the unchanged `/dev/full` headless fixture, which requires Linux; this is **not** a passing Mac full-workspace claim. Linux's full workspace passed that fixture. The long Unicode spill case completed normally. |
@@ -60,6 +62,53 @@ Local raw deterministic logs (synthetic data only) are under
 `/tmp/mirror-claude-manager/final-linux-591e0898df2f37260557c66ed86567cc5c545aab/`.
 The final committed record will contain artifact hashes and sanitized outcomes;
 these temporary paths alone are not release evidence that another host can use.
+
+### Passing native artifacts
+
+Both fresh `bash mirror-cli/build.sh <output>` runs used exact archived source
+`7371897f9128488a7610f60286a6339241f7273d` (tree
+`46a455d4be45a23fa131871e2774d17f33f7ee4f`), Rust 1.95.0, jobs 2, the configured
+protobuf compiler and pinned cargo-zigbuild 0.23.4 / ziglang 0.17.0 for the Linux
+guest. `build.sh` owns a new Cargo target each time; no development binary is
+substituted. The Mac run completed at 2026-10-17 22:42 UTC with **16 passed and
+one Linux-only guest-load skip**. The manager's Linux aarch64 run completed at
+22:42 UTC with **17 passed**. Existing OpenAI installed PTY/tool tests and all
+new native Claude checks ran in both builds, including bundled and helper paths
+with spaces. OMP/ripgrep/dependency notices were preserved. Six additional native
+opt-ins passed against each retained wheel worker: Mac 6/6 (2.43 seconds),
+Linux 6/6. These exercise native private status/logout, metadata missing-login,
+prechat usage, both attachment/reconnect variants and safe nonzero exec.
+
+The native worker and Linux guest bytes inside each wheel equal the retained
+native artifacts. These SHA-256 values identify artifacts, never credentials:
+
+| Artifact | Mac arm64 | Linux aarch64 |
+| --- | --- | --- |
+| Wheel filename | `mirror-0.1.0-py3-none-macosx_15_0_arm64.whl` | `mirror-0.1.0-py3-none-linux_aarch64.whl` |
+| Wheel SHA-256 | `166d4552081bade0f87a9f781bb03159fe68d07fc48514194e3dc16501dc566a` | `4fe0b34ee40a843a6660dde20c6b9dbed26070d8134ffbbe172777cc12e761c1` |
+| Embedded worker SHA-256 | `bdb16c1f1f418b509d4fa875510f4c39a025767e079ae6f755ab304fad70f77c` | `5c7e64f3c0beacdcdc4301ba5d98733ebbbb8d49815acfc6ccfbd423e91a2549` |
+| Embedded Linux guest SHA-256 | `eda6b40d0422c945d9b5490faf31ce23ad28d539a9f0f7a8da3f572857497901` | `d720d973292e61222f74d82ff76b9e29c71423cf87fac946e0069ab468344ddf` |
+
+Source checks remain attributed to `591e089`; exact Git comparison proves all
+shipping runtime/build files and their executed non-packaged source tests are
+unchanged at `7371897`. Only nine Markdown documents and the packaged Claude
+fixture differ. Each platform's `reused-gates.json` records that comparison and
+original log hashes. The two failed native builds remain recorded separately.
+
+Mac artifacts/manifests/logs are retained under
+`/tmp/mirror-claude-task8-final-7371897/`; Linux under
+`/tmp/mirror-claude-manager/final-linux-7371897f9128488a7610f60286a6339241f7273d/`.
+The Mac wheel is installed at
+`/tmp/mirror-claude-task8-final-7371897/live/installed wheel/`. A no-network
+preflight compared every installed `mirror/` payload byte against the wheel and
+checked the bundled native hash. Its fresh private HOME uses the canonical
+`/private/tmp/mirror-claude-task8-final-7371897/live/home` path: native private
+storage deliberately rejects symlink ancestors such as macOS `/tmp`.
+The same Linux wheel is installed on the isolated SSH host at
+`/home/mirror-test/production-7371897/installed wheel/`; the manager verified
+all installed package bytes using the same preflight, with a separate fresh
+canonical HOME and synthetic workspaces. No production grant or live result is
+implied by artifact readiness.
 
 Keep synthetic assertions, actual installed-artifact checks and live observations
 separate. A test name or compilation result does not prove an assertion ran.
@@ -116,7 +165,8 @@ python3 -m unittest discover -s diagnostics/claude_oauth/tests -v
 bash mirror-cli/build.sh /absolute/acceptance-wheel-output
 ```
 
-No final build or workspace success is recorded by this preparation document.
+The exact source/workspace and native-build outcomes above are recorded separately
+from the still-pending production observations.
 
 ## Live production sequence
 
@@ -212,8 +262,8 @@ The new-process marker is only a normal inference check, not A1 tool execution.
 ## A1–A11 matrix
 
 The assertions below were inspected in the reviewed native/CLI source. Their
-presence is not a final rerun result. Exact-source deterministic runs and live
-observations are recorded separately; no pending live row is replaced by a
+presence alone is not a rerun result; the exact-source source gates above cover
+these fixtures. Deterministic runs and live observations remain separate; no pending live row is replaced by a
 fixture pass. Follow [LIVE-RUNBOOK.md](LIVE-RUNBOOK.md) for the installed commands,
 read-only protobuf/database observer and two-model TUI restart procedure.
 
@@ -257,27 +307,27 @@ does not test macOS Keychain, prove either external app loads the fixtures or
 claim a live second-account switch. Normal live Claude Code coexistence remains
 a separate required observation.
 
-| Gate | Inspected deterministic evidence and its limit | Outstanding final evidence |
+| Gate | Deterministic evidence and its limit | Remaining artifact/live evidence |
 | --- | --- | --- |
 | A1 fresh login | `auth/tests.rs::login_bootstrap_callbacks_and_generation_fence` and native auth-command tests cover synthetic login/status/commit. Service execution uses synthetic authority/loopback fixtures. | Installed Mac and Linux fresh grants, text/read/edit/command effects, restart/resume; no API key. |
-| A2 headless | Native `login_wrong_callback_eof_and_signals_leave_no_grant_or_listener` checks wrong-state/cancel/signal cleanup; auth `pending_login_timeout_closes_listener_without_exchange_or_commit` checks timeout without exchange/commit. | Final Task 7 controlling-PTY/browser-failure/occupied-port/replay/cancel/timeout assertions and actual Linux/SSH browser-on-Mac flow followed by prompt-free exec. |
-| A3 billing | Provider configuration tests reject key fallback; execution tests cover inherited OAuth and explicitly selected API compaction with actual billing labels. Missing-login packaging cases supply conflicting synthetic keys and require failure. | Final all-entry-point and child/retry/compaction failure assertions, actual account extra-usage display with no settings mutation. |
+| A2 headless | Native `login_wrong_callback_eof_and_signals_leave_no_grant_or_listener` checks wrong-state/cancel/signal cleanup; auth `pending_login_timeout_closes_listener_without_exchange_or_commit` checks timeout without exchange/commit. | Actual Linux/SSH browser-on-Mac flow followed by prompt-free exec. Task 7 controlling-PTY/browser-failure and native occupied-port/replayed-state/timeout fixtures are included in the passing source gates; actual native-wheel cancellation now passes on both platforms after the fixture correction. |
+| A3 billing | Provider configuration tests reject key fallback; execution tests cover inherited OAuth and explicitly selected API compaction with actual billing labels. Missing-login packaging cases supply conflicting synthetic keys and require failure. | Actual account extra-usage display with no settings mutation. Source gates include entry-point, child/retry/compaction and credential-conflict fixtures; no forced quota exhaustion or settings mutation is part of live acceptance. |
 | A4 renewal | `refresh_race_converges_and_logout_fences_old_lease` asserts revision 2 in both callers, exactly one synthetic refresh and logout fencing. `independent_process_refresh_race_and_death_after_synthetic_rotation` asserts two processes share one replacement, killed rotation preserves old bytes and later authority reports login-required. Atomic fault tests distinguish pre-rename not-committed from post-rename unknown. | Successful opt-in production harness, matching installed-artifact provenance and fresh-process request. Real server refresh is unproven until then; fixture timestamps are not live evidence. |
 | A5 coexistence | `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant` covers missing-login isolation, unchanged native identity/Mirror generation/revision after two foreign rewrites, and foreign byte preservation through logout, as scoped above. Only disposable fixtures are read. | Mac Claude Code requests before/after Mac/Linux Mirror operations and overlap. The file-boundary fixture does not establish Keychain behavior or a live second-account switch. |
-| A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Final Task 7 authoritative initial snapshot/reattach/state-before-Ack/Nack/busy tests, exec nonzero/no-prompt tests, installed restore and explicit reconnect coverage. |
-| A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Final persistence/replay/nonzero checks plus both live models' signed-reasoning/tool replay and canonical order. Synthetic interleaving rejection is not proof of upstream conformity. |
-| A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Final Python picker/parser/identity/fallback assertions, real catalog/exact context, default Opus 4.8 and available Sonnet 4.6 tool/reasoning checks. No Sonnet 5 reasoning claim. |
-| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Final human/JSON timezone/age/units/null/extra-usage rendering and actual on-demand account usage, with no timers or billing mutation. |
-| A10 secrets/endpoints | Native public-clean assertions exclude synthetic secrets from normalized events; new packaging cases check stdout/stderr and all newly created files. Metadata redirect fixture asserts the redirect target receives no connection. Private storage/Debug/transport tests cover mode/link/schema, bounded payloads and fixed endpoints. | Installed synthetic process/argv/chat/history/log/preferences canary sweep, final private TTY restoration/cancellation, final all-entry-point custom-host/provider-switch checks. |
-| A11 compatibility | Reviewed native protocol adds fields without changing old tags; default HTTP/eval paths fail closed. Existing API/Reflection/Codex tests and OpenAI packaged PTY/tools stay in place. New wheel checks preserve OMP license text. | Full final Python CI/Rust workspace/binding/launcher checks, Task 7 main and compactor ACP/remote guards, older saved selections, real Mac/Linux native wheels and all packaging checks. |
+| A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Installed restart/restore observations. Source gates include authoritative snapshots, attachment Nack retaining history, explicit native reconnect, queued-turn fences, completed-reconnect receipts and exec nonzero/no-prompt failures; real account switching remains deliberately synthetic. |
+| A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Both live models' signed-reasoning/tool replay and canonical-order inference. Source gates include persistence/replay/nonzero checks. Synthetic interleaving rejection is not proof of upstream conformity. |
+| A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Real picker/catalog/exact context, default Opus 4.8 and available Sonnet 4.6 tool/reasoning checks. Source gates include picker/parser/identity/fallback and implicit-startup effort assertions. No Sonnet 5 reasoning claim. |
+| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Actual on-demand account usage, with no timers or billing mutation. Source gates include human/JSON local-time/UTC/age/unit/null/extra-usage rendering and response/request identity matching. |
+| A10 secrets/endpoints | Native public-clean assertions exclude synthetic secrets from normalized events; new packaging cases check stdout/stderr and all newly created files. Metadata redirect fixture asserts the redirect target receives no connection. Private storage/Debug/transport tests cover mode/link/schema, bounded payloads and fixed endpoints. | Installed seeded-output/new-file canary and real private-TTY cancellation checks pass both fresh wheel builds. Source gates cover private stdin versus argv, bounded/error redaction, all-entry-point custom hosts and provider-switch secrecy. |
+| A11 compatibility | Reviewed native protocol adds fields without changing old tags; default HTTP/eval paths fail closed. Existing API/Reflection/Codex tests and OpenAI packaged PTY/tools stay in place. New wheel checks preserve OMP license text. | Both actual native-wheel builds and all packaging checks now pass. Full Linux Rust workspace and both Python source gates passed as recorded above, including binding/launcher checks, main/compactor ACP/remote guards and older saved selections; Mac has the stated Linux-fixture limitation. |
 
 ## Documentation completion checklist
 
-After shipping Task 7 behavior is verified, update the root and CLI READMEs,
-`mirror-cli/docs/configuration.md`, `architecture.md`, `building.md` and the
-actual CLI/TUI help. Explain the separate subscription/API choices, Mirror-owned
+The root and CLI READMEs, `mirror-cli/docs/configuration.md`, `architecture.md`,
+`building.md` and actual CLI help have been updated against reviewed Task 7.
+They explain the separate subscription/API choices, Mirror-owned
 grant/private files, host-local SSH login and hidden callback, on-demand usage
 and existing extra usage, identity/reconnect, failure recovery, unsupported
 surfaces and explicit capability/order limits. Avoid claims beyond the recorded
-production observations. Update [STATUS.md](STATUS.md) and this matrix with exact
-results before opening the single Task 8 PR for a new independent Astra review.
+production observations. Complete [STATUS.md](STATUS.md) and this matrix with exact
+artifact/live results before opening the single Task 8 PR for a new independent Astra review.

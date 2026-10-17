@@ -104,6 +104,8 @@ async def main():
         if not isinstance(result, auth.MetadataCompleted) or result.metadata.identity != identity:
             raise ValueError()
         data = result.metadata
+        if data.state not in ('fresh', 'cached') or data.error is not None:
+            raise ValueError()
         if data.payload['model'] != model or data.payload['provenance'] != 'model_metadata':
             raise ValueError()
         print(json.dumps(dict(stage='context', model=model, state=data.state,
