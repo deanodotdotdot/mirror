@@ -40,6 +40,12 @@ display name/email or change billing settings. Open `/model anthropic-oauth` in
 the installed TUI and verify the catalog source/freshness and default selection.
 Inspect `/effort` to verify the implicit supported preset; canceling a selection
 must preserve the prior model. A saved explicit effort is separate intent.
+Before starting a conversation, invoke `/usage claude` at an ordinary terminal
+size in both inline and fullscreen layouts. Page Up / Page Down must expose all
+reported windows and the extra-usage fields; Close or Escape returns to the
+unchanged draft. A large terminal alone cannot establish this access. The original
+`7371897` live observer used 240 rows; the later `7c4884a` presentation fix has
+separate installed, synthetic actual-render/key-input acceptance at 24 and 65 rows.
 
 A1 requires normal startup and exec **without** `--reasoning-effort` overrides:
 

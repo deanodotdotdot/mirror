@@ -67,7 +67,8 @@
     "No Linux-local Claude Code claim",
     "No actual server401 or time-expired-grant claim; genuine production-authority refresh exercised",
     "Canonical signed-block order inferred from strict parser acceptance",
-    "Original observer failures retained separately; new successful observations establish acceptance"
+    "Original observer failures retained separately; new successful observations establish acceptance",
+    "Original 7371897 default/usage UI observations used a 240-row terminal; ordinary-size prechat access is supplied by separate 7c4884a installed synthetic render/key-input checks"
   ],
   "artifacts": {
     "mac": {
@@ -82,5 +83,102 @@
     }
   },
   "completed_date_utc": "2026-10-17",
-  "task_grants_after_acceptance": "both_locally_logged_out"
+  "task_grants_after_acceptance": "both_locally_logged_out",
+  "independent_review": {
+    "status": "acceptance and independent review complete; see PR8 for merge status",
+    "pr": "https://github.com/deanodotdotdot/mirror/pull/8",
+    "base_revision": "072be411ad25b25aa7a82ba9b486db9cecbdd315",
+    "python_and_test_revision": "7c4884ad624c681adab9484dccc6eb753f30aea4",
+    "native_artifact_revision": "7371897f9128488a7610f60286a6339241f7273d",
+    "findings": [
+      {
+        "priority": "P2",
+        "finding": "early terminal fixture failure leaked separate-session worker",
+        "disposition": "fixed with bounded owned-descendant cleanup and synthetic pre-notice failure regression"
+      },
+      {
+        "priority": "P2",
+        "finding": "ordinary-size prechat usage lines inaccessible in both layouts",
+        "disposition": "fixed with existing read-only paged header and asynchronous panel ownership; four render/key-input cases plus six ownership cases"
+      },
+      {
+        "priority": "P2",
+        "finding": "acceptance harness timeout missed detached native worker",
+        "disposition": "fixed with bounded owned-descendant cleanup and synthetic separate-group worker/listener regression"
+      }
+    ],
+    "remaining_p2_or_higher": 0,
+    "native_shipping_auth_provider_protocol_and_build_inputs_unchanged": true,
+    "whole_cli_unchanged": false,
+    "fresh_native_compilation": false,
+    "live_provider_calls_repeated": false,
+    "build_kind": "new Python wheels from exact reviewed source using verified retained737 native worker, guest and notices",
+    "ordinary_size_usage_evidence": {
+      "kind": "installed synthetic actual render and key input",
+      "rows": [
+        24,
+        65
+      ],
+      "layouts": [
+        "inline",
+        "fullscreen"
+      ],
+      "render_cases_per_platform": 4,
+      "async_ownership_cases_per_platform": 6,
+      "original_live_observer_rows": 240
+    },
+    "platforms": {
+      "mac": {
+        "wheel": "mirror-0.1.0-py3-none-macosx_15_0_arm64.whl",
+        "wheel_sha256": "8992bbf5351bf81f34f4fbe81ac502245bb7f7e8961925ad4982cbcb66e83b9c",
+        "installed_payload_files_verified": 187,
+        "python_ci_passed": 3402,
+        "python_ci_skipped": 23,
+        "pyright_errors": 0,
+        "pyright_warnings": 0,
+        "installed_suite_passed": 17,
+        "installed_suite_skipped": 1,
+        "installed_skip_reason": "Linux-only guest-load check",
+        "usage_tests_passed": 10,
+        "native_optins_passed": 6,
+        "rust_harness_passed": 4,
+        "rust_harness_ignored": 2
+      },
+      "linux": {
+        "wheel": "mirror-0.1.0-py3-none-linux_aarch64.whl",
+        "wheel_sha256": "400557cfa7fc828204c072e678dc75e052e2cea443da8351028e4460aab84efd",
+        "installed_payload_files_verified": 187,
+        "python_ci_passed": 3402,
+        "python_ci_skipped": 23,
+        "pyright_errors": 0,
+        "pyright_warnings": 0,
+        "installed_suite_passed": 18,
+        "installed_suite_skipped": 0,
+        "usage_tests_passed": 10,
+        "native_optins_passed": 6,
+        "rust_harness_passed": 4,
+        "rust_harness_ignored": 2
+      }
+    },
+    "closed_review_evidence_sha256": {
+      "mac/python_ci": "832e4c475057a1171e35425f3680e2937a9b9f36b2aba31f9f062a4c4bbf256c",
+      "mac/wheel_build": "7f58d78a07d64643943c62a0edd708c4d3afb3086c6070b43ed74c15b7264973",
+      "mac/installed_native": "22e5ab2c9ea65683c3978430d49e3078ad5be31676523b76c12d88dc946cbf3c",
+      "mac/installed_usage": "75fd132733c3d95c4c06657802d47a8ee0bfaed3b5d763c39f7ef55d0533642e",
+      "mac/native_optins": "a600ca1478c9964892196afcf4b0c79ab22aefed7615a7d2d537fd529101af47",
+      "mac/rust_harness": "61d663e411069f9bdf12c67cac2b76633aa1d620c31e3403774ebdfb98329d9f",
+      "mac/artifact_manifest": "0e882760c0a5234a27cf2c993e267e31c903adc43c7a751cfd080c3f409f11c0",
+      "mac/ruff_comparison": "3f2ad68e44df06e6a602195107c64abdbf59cb860cad3e9b384fb300642a235a",
+      "linux/python-ci.log": "6b5785ab9ba98848770f20ca835866e2fe4465ada68ef985e89337ff3b02c2c9",
+      "linux/repackage.log": "90935dbd0924d84b7721619f20397674482b2637ed0a87d4e6bad3ba88909151",
+      "linux/install.log": "8a806eb209436827c14669773b3183632f8c6dceaeaa3b3d22b246f11686d69b",
+      "linux/installed-native-tests.log": "9b6eae35d5d711a84b5a1055a84454ceffe1b2feae04de5dbf04d71756d89741",
+      "linux/installed-usage-tests.log": "ff98b8f9532a45cf2e41abbea10fd4c536fc18d96b4c8e0c244eda04a7e1f80f",
+      "linux/acceptance-harness-tests.log": "1f8b3d388cbe467f2470a1f62478213e034c1a785ef1e1093a23ed0a4fe90273",
+      "linux/native-optins.log": "4cbbaefb687bc9f679e9e216a1dcc798bff6e0d522d16dfa4abe63dfe82b16f8",
+      "linux/artifact-manifest.json": "ba5555893060822a09f2c30e25138ecbc72a44369d13cefb3ab4eca7558d3697",
+      "linux/source-scope-verification.json": "71917dd7e07c9ba37b63f10161b7a6ed7bce308bcd6c82081e36c0d59e3976a9"
+    },
+    "completed_date_utc": "2026-10-17"
+  }
 }

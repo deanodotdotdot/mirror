@@ -69,7 +69,11 @@ local time and labels freshness; JSON retains UTC and reported units. Missing
 windows, limits or currency data remain unavailable. Percentages are not summed
 across shared/model windows. Existing extra usage may be enabled on the account;
 Mirror displays that setting without changing it or treating it as API fallback.
-Usage-reporting failure alone does not disable inference.
+Usage-reporting failure alone does not disable inference. Before the first
+conversation, `/usage claude` opens a read-only panel in either layout. Use
+Page Up / Page Down to read the full report, then Close or Escape to return to
+your unchanged draft. Closing the loading panel does not reopen it when the
+request finishes.
 
 New conversations bind to the native account and organization identity. An
 existing unbound conversation or changed identity needs `/reconnect claude`

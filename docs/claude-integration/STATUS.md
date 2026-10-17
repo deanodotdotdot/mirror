@@ -18,7 +18,7 @@ checks run locally.
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Merged as [PR 7](https://github.com/deanodotdotdot/mirror/pull/7) at 072be411ad25b25aa7a82ba9b486db9cecbdd315 after independent NEW Astra review fixed four P2 findings. Full Mac source CI passed 3,398 tests with five native-packaging skips; manager exact-candidate Linux coverage passed 265 tests. Final reviewed head c8db986 changes only the ledger from validated 246eb6; manager verified the merged tree matches exactly. Production acceptance remains Task 8. |
-| 8. Acceptance + packaging + docs | All preceding tasks | A1–A11 validation complete on the frozen installed `7371897` artifacts, with documented fixture/live limits. Actual Mac/Linux native wheels, both model signed-history replay, genuine refresh and Claude Code coexistence passed. [Acceptance matrix](ACCEPTANCE.md) and [safe evidence index](PRODUCTION-EVIDENCE.json). Separate NEW Astra review and manager merge pending. |
+| 8. Acceptance + packaging + docs | All preceding tasks | Acceptance and separate NEW Astra review complete; three P2 findings fixed. Original `7371897` native/live evidence and final `7c4884a` Python wheels/ordinary-size usage checks pass with explicit limits. See [PR 8](https://github.com/deanodotdotdot/mirror/pull/8) for merge status; manager owns verification/merge. [Acceptance matrix](ACCEPTANCE.md) and [safe evidence index](PRODUCTION-EVIDENCE.json). |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
@@ -29,8 +29,8 @@ Tasks 1–7 are merged. Task 8 now records passing production A1–A11 validatio
 with the exact-source and platform limits in [ACCEPTANCE.md](ACCEPTANCE.md),
 separate from historical Phase 0 evidence. Both Opus 4.8 and Sonnet 4.6 passed
 installed signed-history/tool replay on Mac and Linux. Sonnet 5 reasoning remains
-unverified. The implementation is ready for the required independent review;
-no Task 8 merge is implied.
+unverified. The separate independent review is complete with no remaining
+P2-or-higher findings; see PR 8 for merge status. No Task 8 merge is implied.
 
 ## Historical implementation checkpoints
 
@@ -592,9 +592,10 @@ Linux-only guest-load skip; Linux 17. Both retain existing OpenAI installed
 PTY/tool checks and run all new native Claude cases, including helper paths with
 spaces, private JSONL, seeded secret/output/new-file canaries and OMP notices.
 Six source-native opt-ins passed separately against each retained wheel worker.
-All runtime/build files and non-packaged source tests are identical to the
-original source-gate candidate; exact Git comparisons and log hashes record that
-reuse. Final documentation changes do not relabel either candidate. Artifact
+At `7371897`, all runtime/build files and non-packaged source tests are identical
+to the original source-gate candidate; exact Git comparisons and log hashes
+record that reuse. The later review changes three shipping Python UI files, so
+that whole-CLI equality does not extend to the final candidate. Artifact
 hashes, source tree, commands and installed paths are in [ACCEPTANCE.md](ACCEPTANCE.md).
 
 Fresh production Mac and independent Linux/SSH logins passed with the installed
@@ -603,8 +604,10 @@ models, current low effort and on-demand usage, then completed normal default
 TUI and exec text requests without model/effort overrides. Remote catalog count
 was 14; both exact selected-model contexts were 1,000,000, from model metadata.
 Usage had seven windows and reported disabled extra usage from `spend`, used
-amount present and limit absent. Those metadata observations do not establish
-long-context entitlement or mutate billing settings.
+amount present and limit absent. The original usage observer needed a 240-row
+terminal; ordinary-size prechat access was reopened and fixed in the independent
+review below. Those metadata observations do not establish long-context
+entitlement or mutate billing settings.
 
 Both required models completed actual read/edit/bash effects and signed-history
 replay on both hosts. Opus puzzle history had two signed tool messages/blocks on
@@ -653,5 +656,42 @@ The [A1–A11 matrix](ACCEPTANCE.md), [installed procedure](LIVE-RUNBOOK.md) and
 artifact and live observations. README/configuration/architecture/build/help
 now document Mirror-owned host-local login, SSH hidden callback, explicit
 identity reconnect, on-demand usage/unchanged extra usage, failure behavior and
-unsupported launch surfaces. The single Task 8 PR is ready for a separate NEW
-Astra review. The manager alone merges; GitHub Actions remains disabled.
+unsupported launch surfaces. The separate NEW Astra review audited the entire
+Task 8 delta against Task 7, inspected A1–A11 source assertions and all 21 closed
+production/coexistence evidence records, and fixed three P2 findings:
+
+- The installed terminal fixture leaked a separate-session native worker when
+  failure preceded its first login notice. Owned descendants are now discovered
+  before terminating the parent, with bounded reaping and PTY/report cleanup;
+  a synthetic early-failure worker/listener regression complements the preserved
+  actual native cancellation/terminal-restoration assertions.
+- Prechat `/usage claude` clipped inaccessible report lines at 24/65 rows in both
+  layouts. It now uses the existing paged read-only selector header, Close/Escape
+  and an owned loading panel. Draft/focus/configuration stay intact; a late result
+  cannot reopen a dismissed panel or replace a newer selector. Four actual-render
+  and key-input cases failed against the old wheel and now pass, plus six async
+  ownership cases.
+- The opt-in Rust acceptance harness killed only the CLI process group on
+  timeout, missing the launcher's detached worker. Bounded PID/PPID discovery
+  now stops owned descendants first and permits reaping. A synthetic worker in
+  a separate group proves process/listener cleanup. The real production refresh
+  proof remains attributed to the earlier successful harness.
+
+Frozen review candidate `7c4884ad624c681adab9484dccc6eb753f30aea4` passed full
+Python CI on both hosts: 3,402 passed, 23 expected skips, four known forkpty
+warnings and Pyright zero errors/warnings. Both new Python wheels were packaged
+from that exact source with verified unchanged `7371897` native worker/guest/
+notices, without claiming a fresh native compilation. Every installed payload
+file (187 per platform) matches its new wheel. Actual installed suites passed
+Mac 17 plus one Linux-only skip / Linux 18; ten new usage tests and six native
+opt-ins passed on each new wheel. The updated Rust harness passed four checks
+with two intentional ignores on each platform. The native/provider/auth/build
+inputs remain unchanged, so original native builds, full Linux Rust and live
+observations retain their earlier exact-source attribution. No live calls or
+new login were needed for this presentation change.
+
+[ACCEPTANCE.md](ACCEPTANCE.md) records artifact hashes, the fixture/live limits,
+review scope and validation details. Acceptance and independent review are
+complete with no remaining P2-or-higher findings. See
+[PR 8](https://github.com/deanodotdotdot/mirror/pull/8) for merge status; the manager
+alone verifies and merges. GitHub Actions remains disabled.

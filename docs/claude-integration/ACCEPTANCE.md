@@ -1,10 +1,11 @@
 # Production acceptance record and runbook
 
-Status: **independent review in progress; ordinary-size prechat usage UI gate reopened**.
-The review reproduced inaccessible usage lines before the first conversation in
-both layouts at 24 and 65 rows. The 240-row live observation below remains a
-valid observation at that size; it does not establish ordinary-size access.
-A paged usage view and new ordinary-size checks are being validated separately.
+Status: **acceptance and independent review complete; see [PR 8](https://github.com/deanodotdotdot/mirror/pull/8) for merge status**.
+The separate Astra review fixed three P2 findings, including ordinary-size prechat
+usage access. The final reviewed Python wheels and their checks are attributed
+to `7c4884a`; the native builds and live observations remain attributed to
+`7371897`, including the original 240-row usage observation. No P2-or-higher
+review findings remain. Manager verification and merge are separate.
 Reviewed Task 7 is merged at
 `072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's first runtime/test/build
 candidate was `591e0898df2f37260557c66ed86567cc5c545aab`. Its full source gates
@@ -61,7 +62,9 @@ and permits exactly the 0700 private directory plus 0600 lock after cancellation
 No grant, chat, history, preferences or log file is allowed. Direct real-native
 prevalidation passed both ordinary and space-containing helper paths with the
 installed Python CLI. This is fixture prevalidation, not native-wheel acceptance.
-Shipping runtime/build sources remain byte-identical to the first candidate.
+Shipping runtime/build sources at `7371897` remain byte-identical to the first
+candidate. The later independent-review Python presentation change is recorded
+separately below; this equality does not apply to the final whole CLI.
 
 Local raw deterministic logs (synthetic data only) are under
 `/tmp/mirror-claude-task8-final-591e089/` on the Mac, and the manager's
@@ -127,6 +130,100 @@ callback input take place in private browser/terminal UI, never chat or captured
 tool output. Keep Mac and Linux grants independent. Do not force quota exhaustion
 or revoke the user's real grant to test an error; use fixtures for account switch,
 quota, revocation and crash/error behavior.
+
+## Independent review and final Python artifacts
+
+A separate NEW Astra xhigh reviewer inspected the entire Task 8 delta against
+`072be411ad25b25aa7a82ba9b486db9cecbdd315`, the accepted specification, native and
+CLI assertions, build hook, foreign-store fixture, opt-in harness, observer code
+and the 21 closed production/coexistence evidence records. Three P2 findings
+were reproduced or established from the process-launch path and fixed:
+
+- **Early terminal-fixture failure leaked a worker.** Before the first expected
+  login notice, no child PIDs had been recorded. Killing the supervisor left a
+  native child in a separate session. Cleanup now discovers owned descendants
+  while their parent is alive, stops the worker first, permits bounded CLI
+  restoration/reaping and closes all PTY/report descriptors. A separate synthetic
+  pre-notice failure case asserts both children disappear and its listener closes.
+  Actual native Ctrl-C/exit 130/full terminal restoration/listener/file assertions
+  remain intact. The test-only correction at `7e3c57a` passed against retained
+  `7371897` wheels (Mac 17 plus one Linux-only skip; Linux 18).
+- **Prechat usage was inaccessible at ordinary terminal sizes.** The original
+  non-scrollable welcome notice clipped earlier report lines at 24 and 65 rows
+  in both layouts. Fullscreen reading controls address a hidden transcript there;
+  inline scrollback also excludes these live notices. Four real render/key-input
+  regressions failed against the old installed CLI. The fix opens the existing
+  read-only paged selector header, bounded to the composer height, with Close and
+  Escape. It preserves the draft/focus/configuration and creates no conversation,
+  model turn, trust or history state. A request owns its loading panel: closing it
+  or replacing it prevents late completion from reopening or clearing another
+  selector. Other selector defaults and in-conversation output remain unchanged.
+- **Refresh-harness timeout missed the detached worker.** Killing only the CLI
+  process group cannot reach the installed launcher's `setsid()` worker. The
+  harness now discovers owned PID/PPID descendants with bounded output/time,
+  terminates descendants first, allows bounded reaping and retains the private
+  group guard. A hermetic separate-group worker/listener regression passes.
+  Production authority calls, real dedup wait, opt-in and closed outcomes are
+  unchanged. Original successful live runs remain attributed to the old harness.
+
+The frozen reviewed source/test revision is
+`7c4884ad624c681adab9484dccc6eb753f30aea4`, tree
+`4680ded3c7105472fa0ad915ea23a4c81b6a9d31`. Relative to the fresh native-build
+revision `7371897`, the only shipping changes are `cli.py`, `selection.py` and
+`components/selector.py`. All native/provider/auth/protocol/build inputs remain
+identical. Three test files and documentation also changed. This supports reusing
+the original native build, unchanged native source gates and production transport,
+auth, renewal, model/tool/replay and coexistence observations. It does **not**
+claim whole-CLI equality or a fresh native compilation at the reviewed revision.
+
+Both new Python wheels use exact archived `7c4884a` source with the retained
+`7371897` worker (including embedded ripgrep), Linux guest and dependency notices.
+The build command is `uv build --python 3.12 --wheel --out-dir <wheels>
+<source>/mirror-cli`, with `MIRROR_BUILD_RUST_WORKER`, `MIRROR_BUILD_SANDBOXD`,
+`MIRROR_THIRD_PARTY_NOTICES` and `MIRROR_WHEEL_PLATFORM` selecting those verified
+artifacts. Every installed `mirror/` payload file is compared byte-for-byte to
+its new wheel; the native worker, guest and all bundled notices equal the retained
+artifacts. No login or provider request was repeated for this presentation change.
+
+| Final reviewed gate | Mac arm64 | Linux aarch64 |
+| --- | --- | --- |
+| Full Python source CI | 3,402 passed, 23 skipped, Pyright zero errors/warnings; 248.11 seconds | 3,402 passed, 23 skipped, Pyright zero errors/warnings; 195.85 seconds |
+| New wheel: exact three `build.sh` installed pytest targets | 17 passed, one Linux-only guest-load skip; 14.65 seconds | 18 passed; 8.46 seconds |
+| New wheel: ordinary-size usage and ownership | 10 passed; 8.26 seconds | 10 passed; 8.53 seconds |
+| New wheel worker: six native opt-ins | 6 passed | 6 passed |
+| Updated Rust acceptance harness, no live opt-in | 4 passed, two intentional ignores | 4 passed, two intentional ignores |
+
+The 23 source skips are six development-native opt-ins and 17 installed-wheel
+cases; the separate installed runs above supply those gates. Four known Python
+`forkpty` deprecation warnings occurred in each full source run. The harness
+ignores the explicitly live test and a synthetic helper exercised by its parent.
+The unchanged native workspace result remains the exact `591e089` Linux 839-pass
+run; no new full native workspace or passing Mac `/dev/full` claim is made.
+Python/Rust formatting and diff checks pass. Optional Ruff 0.16.6 checks retain
+exactly the same 16 unrelated pre-existing diagnostics as `7371897`, with no new
+diagnostics across the five changed Python files.
+
+| New Python wheel | Mac arm64 | Linux aarch64 |
+| --- | --- | --- |
+| Filename | `mirror-0.1.0-py3-none-macosx_15_0_arm64.whl` | `mirror-0.1.0-py3-none-linux_aarch64.whl` |
+| SHA-256 | `8992bbf5351bf81f34f4fbe81ac502245bb7f7e8961925ad4982cbcb66e83b9c` | `400557cfa7fc828204c072e678dc75e052e2cea443da8351028e4460aab84efd` |
+| Installed payload verified | All 187 files | All 187 files |
+
+The embedded worker/guest hashes remain those in the `7371897` artifact table.
+Mac review artifacts and closed logs are under
+`/tmp/mirror-claude-task8-review/candidate-7c4884a/`, with the full source log at
+`/tmp/mirror-claude-task8-review/python-ci-7c4884a.log`; Linux records are under
+`/tmp/mirror-claude-manager/pr8-review-7c4884ad624c681adab9484dccc6eb753f30aea4/`.
+The [safe evidence index](PRODUCTION-EVIDENCE.json) retains original live hashes
+and separately identifies the new artifact manifests and closed review logs.
+
+The four ordinary-size tests use parsed synthetic native metadata with seven
+windows, actual rendered frames and Page Up / Page Down key input at 24/65 rows
+in both layouts. Six additional cases exercise Escape, replacement and failure
+while the request is pending. These establish ordinary-size presentation and
+ownership, not new live metadata. The original production default/usage UI
+observations required a 240-row terminal and retain that limit. Failed source,
+build and controller attempts remain separately recorded rather than relabeled.
 
 ## Final deterministic and packaging sequence
 
@@ -255,8 +352,10 @@ verification turns have read 2 / edit 1 / bash 1 and zero new thinking. The chec
 still rejects unsigned present thinking or invalid provenance. Logs are
 `model-opus-replay-verification.jsonl` under each host's live evidence directory.
 This proves signed-history replay without requiring the adaptive model to emit
-fresh thinking in every later response. No shipping code changed for any
-controller correction or acceptance stimulus.
+fresh thinking in every later response. No shipping code changed for those
+controller corrections or acceptance stimuli. The later independent review found
+and fixed the ordinary-size usage presentation defect; the original live
+observations remain attributed to `7371897` and its 240-row usage viewport.
 
 The completed Sonnet runs each recorded one signed tool message/block in the
 first turn and one in the resumed turn, with new read 2 / edit 1 / bash 2,
@@ -345,7 +444,11 @@ It then invokes the installed CLI directly by argv (paths with spaces work),
 with isolated conversation/model databases and no inherited API credentials or
 worker override. The fixed no-tool prompt must return one exact success marker.
 Stdout is bounded and never printed; stderr is discarded, including failure
-paths. Timeout/error cleanup terminates its private process group. Output is
+paths. The reviewed timeout/error cleanup discovers only owned descendant
+PID/PPID relationships, terminates workers outside the CLI process group before
+the CLI, permits bounded reaping and retains the private-group drop guard. A
+synthetic separate-group worker/listener regression verifies this path; the live
+success records below use the earlier `7371897` harness. Output is
 limited to fixed stage/reason fields, closed authority error kinds, revision
 numbers, supplied source label, profile, platform, model and time.
 
@@ -422,7 +525,7 @@ baseline, after-login/refresh/logout and overlap requests.
 | A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Both installed models restarted the same native session on both hosts, preserved prior records and identity, and completed new tools. Source gates include authoritative snapshots, attachment Nack retaining history, explicit native reconnect, queued-turn fences, completed-reconnect receipts and exec nonzero/no-prompt failures; real account switching remains deliberately synthetic. |
 | A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Passed on both hosts: Opus 4.8 and Sonnet 4.6 signed-history/tool replay with exact prior record preservation and actual new tools. Canonical order is inferred from successful strict-parser acceptance. Source gates include persistence/replay/nonzero checks. Synthetic interleaving rejection is not proof of upstream conformity. |
 | A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Real picker/catalog/exact context and no-override default Opus startup/exec pass on both hosts. Required Opus 4.8/Sonnet 4.6 signed-tool/replay checks also pass on each host. Source gates include picker/parser/identity/fallback and implicit-startup effort assertions. No Sonnet 5 reasoning claim. |
-| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Actual native metadata and on-demand TUI usage passed on both hosts, with no timers or billing mutation. Source gates include human/JSON local-time/UTC/age/unit/null/extra-usage rendering and response/request identity matching. |
+| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Actual native metadata and on-demand TUI usage passed on both original `7371897` hosts using a 240-row observer viewport. Independent review fixed ordinary-size prechat access in `7c4884a`: both new installed wheels pass actual-render/Page Up/Down checks at 24/65 rows in both layouts plus asynchronous ownership/draft checks. No new live calls; native metadata/auth/provider behavior is unchanged. Source gates retain local-time/UTC/age/unit/null/extra-usage rendering and identity matching. |
 | A10 secrets/endpoints | Native public-clean assertions exclude synthetic secrets from normalized events; new packaging cases check stdout/stderr and all newly created files. Metadata redirect fixture asserts the redirect target receives no connection. Private storage/Debug/transport tests cover mode/link/schema, bounded payloads and fixed endpoints. | Installed seeded-output/new-file canary and real private-TTY cancellation checks pass both fresh wheel builds. Source gates cover private stdin versus argv, bounded/error redaction, all-entry-point custom hosts and provider-switch secrecy. |
 | A11 compatibility | Reviewed native protocol adds fields without changing old tags; default HTTP/eval paths fail closed. Existing API/Reflection/Codex tests and OpenAI packaged PTY/tools stay in place. New wheel checks preserve OMP license text. | Both actual native-wheel builds and all packaging checks now pass. Full Linux Rust workspace and both Python source gates passed as recorded above, including binding/launcher checks, main/compactor ACP/remote guards and older saved selections; Mac has the stated Linux-fixture limitation. |
 
@@ -436,4 +539,6 @@ and existing extra usage, identity/reconnect, failure recovery, unsupported
 surfaces and explicit capability/order limits. Avoid claims beyond the recorded
 production observations. [STATUS.md](STATUS.md), this matrix and the sanitized
 [production evidence index](PRODUCTION-EVIDENCE.json) record the completed gates.
-The single Task 8 PR still requires a new independent Astra review and manager merge.
+Acceptance and the separate NEW Astra review are complete. The manager alone
+verifies and merges; consult [PR 8](https://github.com/deanodotdotdot/mirror/pull/8)
+for its current merge status.
