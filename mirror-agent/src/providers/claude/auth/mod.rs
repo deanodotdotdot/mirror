@@ -521,6 +521,34 @@ impl ClaudeAuthorization for ClaudeAuthManager {
             }
         })
     }
+
+    fn local_snapshot_guarded<'a>(
+        &'a self,
+        request_guard: &'a dyn crate::providers::ModelRequestGuard,
+        mut cancellation: BoxFuture<'a, ()>,
+    ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+        Box::pin(async move {
+            let result = tokio::select! { biased;
+                _ = &mut cancellation => Err(cancelled()),
+                result = async {
+                    let Some(locked) = self.store.lock(false).await? else {
+                        return Ok(snapshot(None));
+                    };
+                    request_guard.verify().await.map_err(|error| match error {
+                        crate::providers::LlmError::Claude(error) => error,
+                        _ => cancelled(),
+                    })?;
+                    // No await after the guard: load checks the stable lock and
+                    // reads the current record before the snapshot is published.
+                    Ok(snapshot(locked.load()?.as_ref()))
+                } => result,
+            }?;
+            if cancellation.now_or_never().is_some() {
+                return Err(cancelled());
+            }
+            Ok(result)
+        })
+    }
 }
 
 #[cfg(test)]
