@@ -199,7 +199,8 @@ uv pip install --python "$scratch/tools/$distribution/bin/python" \
   env -u PYTHONPATH -u MIRROR_RUST_WORKER MIRROR_TEST_PACKAGED_WHEEL=1 \
     "$scratch/tools/$distribution/bin/python" -m pytest -q \
     "$source_dir/tests/cli/main_test.py::test_installed_worker_tools" \
-    "$source_dir/tests/cli/packaged_cli_test.py"
+    "$source_dir/tests/cli/packaged_cli_test.py" \
+    "$source_dir/tests/cli/packaged_claude_test.py"
 )
 cp "$scratch"/wheels/*.whl "$output/"
 native_output="${MIRROR_NATIVE_OUTPUT:-}"

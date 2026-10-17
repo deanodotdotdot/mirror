@@ -17,8 +17,9 @@ impl Native {
     fn with_stdin(home: &std::path::Path, stdin: std::process::Stdio, id: Uuid) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mirror-agent"))
             .args(["auth", "--stdio"])
+            // No foreign-store overrides or credentials may escape the test HOME.
+            .env_clear()
             .env("HOME", home)
-            .env_remove("ANTHROPIC_BASE_URL")
             .env("ANTHROPIC_API_KEY", "SYNTHETIC_API_KEY_CANARY")
             .env("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_BEARER_CANARY")
             .current_dir(home)
@@ -104,6 +105,7 @@ fn public_clean(value: &Value) {
         "SYNTHETIC_API_KEY_CANARY",
         "SYNTHETIC_BEARER_CANARY",
         "SYNTHETIC_CALLBACK_CANARY",
+        "SYNTHETIC_FOREIGN_",
         "code_verifier",
         "access_token",
         "refresh_token",
@@ -420,6 +422,190 @@ fn seed_metadata_auth(path: &std::path::Path) {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 }
+
+/// Synthetic foreign stores under a disposable HOME, never real user files.
+/// Claude Code's path is documented at
+/// https://code.claude.com/docs/en/authentication#credential-management.
+/// Its JSON is only a credential/account sentinel, not a validated Claude Code
+/// schema or a macOS Keychain emulation. The partial OMP database uses the
+/// auth_credentials columns and OAuth row representation from pinned
+/// packages/ai/src/auth/sqlite-credential-store.ts at df4f996e66a200ab7e0496114d43bdf85f32194d;
+/// it does not emulate OMP's complete schema, migrations, or process behavior.
+fn foreign_account_fixtures(
+    home: &std::path::Path,
+    account: u128,
+) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    use std::os::unix::fs::PermissionsExt;
+    for directory in [".claude", ".omp", ".omp/agent"] {
+        let path = home.join(directory);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let account_id = Uuid::from_u128(account);
+    let organization_id = Uuid::from_u128(account + 1);
+    let expires_at = (std::time::SystemTime::now() + Duration::from_secs(86400))
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let claude = home.join(".claude/.credentials.json");
+    let sentinel = json!({
+        "claudeAiOauth": {
+            "accessToken":format!("sk-ant-oat-SYNTHETIC_FOREIGN_CLAUDE_ACCESS_{account}"),
+            "refreshToken":format!("SYNTHETIC_FOREIGN_CLAUDE_REFRESH_{account}"),
+            "expiresAt":expires_at,
+            "scopes":["user:inference"]
+        },
+        "syntheticFixtureIdentity": {
+            "account_id":account_id,
+            "organization_id":organization_id
+        }
+    });
+    std::fs::write(&claude, serde_json::to_vec(&sentinel).unwrap()).unwrap();
+    let omp = home.join(".omp/agent/agent.db");
+    let database = rusqlite::Connection::open(&omp).unwrap();
+    database
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS auth_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            provider TEXT NOT NULL,
+            credential_type TEXT NOT NULL,
+            data TEXT NOT NULL,
+            disabled_cause TEXT DEFAULT NULL,
+            identity_key TEXT DEFAULT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        ); DELETE FROM auth_credentials;",
+        )
+        .unwrap();
+    let oauth = json!({
+        "access":format!("sk-ant-oat-SYNTHETIC_FOREIGN_OMP_ACCESS_{account}"),
+        "refresh":format!("SYNTHETIC_FOREIGN_OMP_REFRESH_{account}"),
+        "expires":expires_at,
+        "accountId":account_id,
+        "orgId":organization_id
+    });
+    database
+        .execute(
+            "INSERT INTO auth_credentials
+            (provider, credential_type, data, identity_key, created_at, updated_at)
+            VALUES ('anthropic', 'oauth', ?1, ?2, 1, 1)",
+            rusqlite::params![
+                oauth.to_string(),
+                format!("account:{account_id}|org:{organization_id}")
+            ],
+        )
+        .unwrap();
+    database.close().unwrap();
+    [claude, omp]
+        .into_iter()
+        .map(|path| {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
+async fn native_status(home: &std::path::Path) -> Value {
+    let mut native = Native::start(home);
+    native.request("status").await;
+    let event = native.event().await;
+    assert_eq!(event["type"], "completed");
+    public_clean(&event);
+    native.finish(0).await;
+    event["result"]["status"].clone()
+}
+
+async fn native_local_context(home: &std::path::Path, logged_in: bool) {
+    let mut native = Native::start(home);
+    // Explicit context is entirely local: this fixture never calls a provider,
+    // even if a regression mistakenly treats a foreign grant as a local login.
+    native.write(json!({
+        "schema_version":1,"request_id":native.id,"type":"request",
+        "provider":"anthropic-oauth","action":"model_context",
+        "params":{
+            "expected_identity":{"account_id":Uuid::from_u128(1),"organization_id":Uuid::from_u128(2)},
+            "model":"claude-opus-4-8","explicit_context_window":123456
+        }
+    })).await;
+    let event = native.event().await;
+    public_clean(&event);
+    if logged_in {
+        assert_eq!(event["type"], "completed");
+        assert_eq!(event["result"]["model_context"]["context_window"], 123456);
+        assert_eq!(event["result"]["model_context"]["provenance"], "explicit");
+        native.finish(0).await;
+    } else {
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["error"]["kind"], "login_required");
+        native.finish(1).await;
+    }
+}
+
+#[tokio::test]
+async fn foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant() {
+    let (_temp, home) = home();
+    let mut foreign = foreign_account_fixtures(&home, 101);
+    let missing = native_status(&home).await;
+    assert_eq!(missing["state"], "logged_out");
+    assert!(missing["identity"].is_null());
+    native_local_context(&home, false).await;
+    assert!(!home.join(".mirror").exists());
+    for (path, bytes) in &foreign {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+
+    seed_metadata_auth(&home);
+    let mirror_path = home.join(".mirror/claude_oauth.json");
+    let mirror_before = std::fs::read(&mirror_path).unwrap();
+    let mirror_version: Value = serde_json::from_slice(&mirror_before).unwrap();
+    assert_eq!(mirror_version["generation"], Uuid::from_u128(3).to_string());
+    assert_eq!(mirror_version["revision"], 1);
+    let expected = native_status(&home).await;
+    assert_eq!(expected["state"], "usable");
+    assert_eq!(expected["source"], "Mirror login");
+    assert_eq!(
+        expected["identity"],
+        json!({
+            "account_id":Uuid::from_u128(1),"organization_id":Uuid::from_u128(2)
+        })
+    );
+
+    for account in [201, 301] {
+        let changed = foreign_account_fixtures(&home, account);
+        assert!(changed
+            .iter()
+            .zip(&foreign)
+            .all(|(new, old)| new.1 != old.1));
+        foreign = changed;
+        assert_eq!(native_status(&home).await, expected);
+        native_local_context(&home, true).await;
+        // Public status deliberately has no version. Equality of the entire
+        // test-owned record proves generation/revision and grant are unchanged.
+        assert_eq!(std::fs::read(&mirror_path).unwrap(), mirror_before);
+        for (path, bytes) in &foreign {
+            assert_eq!(&std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    let mut native = Native::start(&home);
+    native.request("logout").await;
+    let event = native.event().await;
+    assert_eq!(event["type"], "completed");
+    assert_eq!(event["result"]["status"]["state"], "logged_out");
+    public_clean(&event);
+    native.finish(0).await;
+    assert_eq!(native_status(&home).await["state"], "logged_out");
+    native_local_context(&home, false).await;
+    let tombstone: Value = serde_json::from_slice(&std::fs::read(&mirror_path).unwrap()).unwrap();
+    assert!(tombstone["credential"].is_null());
+    assert_eq!(tombstone["revision"], 0);
+    assert_ne!(tombstone["generation"], mirror_version["generation"]);
+    for (path, bytes) in &foreign {
+        assert_eq!(&std::fs::read(path).unwrap(), bytes);
+    }
+}
+
 #[tokio::test]
 async fn explicit_context_native_result_is_safe_local_and_identity_bound() {
     let (_temp, path) = home();

@@ -6,8 +6,9 @@ credential file, API key or imported token. Task 3 owns credentials; Task 6 owns
 runtime provider selection, conversation binding, compaction, children, and
 persistence of incomplete output. The local native worker now opts into that
 execution path; default HTTP/eval constructors still reject subscription
-selection. See [native execution](EXECUTION.md). Production A1–A11 remain
-unproven, and the synthetic integration makes no new live-provider observation.
+selection. See [native execution](EXECUTION.md). The original transport tests
+use synthetic fixtures; subsequent installed Mac/Linux production observations
+are recorded separately in [ACCEPTANCE.md](ACCEPTANCE.md).
 
 The constructor accepts a model, existing conversation/session ID, pinned
 `ClaudeSessionBinding`, request timeout and authority. `stream_guarded` accepts

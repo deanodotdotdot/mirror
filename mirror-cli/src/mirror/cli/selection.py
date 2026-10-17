@@ -73,5 +73,7 @@ class Selector[ActionT]:
   on_adjust: Callable[[str, int], ActionT] | None = None
   # Context above the choices, scrollable in a bounded viewport.
   header: console.RenderableType = ''
+  # Optional view-specific bound, evaluated again when the terminal resizes.
+  max_height: Callable[[], int] | None = None
   # Preserve filenames or other meaningful suffixes when labels are too wide.
   truncate_labels_from_start: bool = False

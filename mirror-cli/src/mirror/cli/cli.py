@@ -1440,6 +1440,24 @@ class _Repl:
       return None
     self._claude_operation = True
     cancelled_choice = False
+    pending_usage = None
+    if (
+      action == 'usage'
+      and not self._transcript.has_conversation
+      and not self._modal_ui_active()
+    ):
+      # Welcome notices have a small, non-scrollable viewport. Give the whole
+      # on-demand report the existing read-only, paged selector header instead.
+      pending_usage = _selection.Selector[_actions.Action](
+        'claude-usage',
+        'Claude subscription usage',
+        (),
+        lambda _: _actions.ClearSelector(),
+        empty='Fetching Claude subscription usage…',
+        numbered=True,
+        max_height=self._composer_pane.selector_max_height,
+      )
+      self.dispatch(_actions.OpenSelector(pending_usage))
     try:
       if action == 'login':
         outcome = await self._prompt_claude_login(offer=offer)
@@ -1467,20 +1485,33 @@ class _Repl:
         return None
       if isinstance(result, _claude_auth.MetadataCompleted):
         if action == 'usage':
-          self.dispatch(
-            _actions.ShowText(
-              _claude_metadata.text(
-                result.metadata,
-                result.compatibility_profile,
-                account_scope='conversation account'
-                if expected_identity is not None
-                else 'current Mirror login',
-              ),
-              style='ui.warning'
-              if result.metadata.state in ('stale', 'offline', 'unavailable')
-              else '',
-            )
+          message = _claude_metadata.text(
+            result.metadata,
+            result.compatibility_profile,
+            account_scope='conversation account'
+            if expected_identity is not None
+            else 'current Mirror login',
           )
+          style = (
+            'ui.warning'
+            if result.metadata.state in ('stale', 'offline', 'unavailable')
+            else ''
+          )
+          self.dispatch(_actions.ShowText(message, style=style))
+          # Escape or another selector owns the UI after the request completes.
+          if (
+            pending_usage is not None
+            and self._state.selector.selector is pending_usage
+          ):
+            self.dispatch(
+              _actions.OpenSelector(
+                dataclasses.replace(
+                  pending_usage,
+                  choices=(_selection.Choice('close', 'Close'),),
+                  header=_text.Text(message, style=style),
+                )
+              )
+            )
         return result
       if not isinstance(result, _claude_auth.Completed):
         raise _claude_auth.ProtocolError()
@@ -1528,6 +1559,11 @@ class _Repl:
       return None
     finally:
       self._claude_operation = False
+      if (
+        pending_usage is not None
+        and self._state.selector.selector is pending_usage
+      ):
+        self.dispatch(_actions.ClearSelector())
 
   async def _choose_claude_model(self) -> None:
     pending = _selection.Selector[_actions.Action](
