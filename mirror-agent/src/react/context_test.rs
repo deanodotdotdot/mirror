@@ -158,17 +158,33 @@ async fn in_memory_fork_preserves_the_window_and_commits_only_to_the_child() {
         .await
         .expect("active window");
     history.extend_from_slice(&entries);
+    let binding = crate::providers::claude::ClaudeSessionBinding::new(
+        crate::providers::claude::ClaudeIdentityBinding {
+            account_id: uuid::Uuid::from_u128(1),
+            organization_id: uuid::Uuid::from_u128(2),
+        },
+    );
+    let native_session = crate::providers::claude::ClaudeSession::new(Some(binding.clone()));
     let (mut parent, mut events) = ReactContext::new(
         "parent",
         entries.clone(),
         Box::new(store),
-        execution_context(),
+        execution_context().with_claude(native_session.clone(), None),
     );
     let mut child = parent
         .in_memory_fork(execution_context())
         .await
         .expect("fork after final entry");
     assert_eq!(child.entries(), entries);
+    assert_ne!(child.session_id, parent.session_id);
+    assert_eq!(child.execution().claude_binding(), Some(binding.clone()));
+    native_session.publish(crate::providers::claude::ClaudeSessionBinding::new(
+        crate::providers::claude::ClaudeIdentityBinding {
+            account_id: uuid::Uuid::from_u128(3),
+            organization_id: uuid::Uuid::from_u128(2),
+        },
+    ));
+    assert_eq!(child.execution().claude_binding(), Some(binding));
     child
         .push(AgentEvent::Entries(vec![AgentMessage::default()]))
         .await

@@ -76,6 +76,43 @@ where
         Ok(agent)
     }
 
+    pub(crate) fn settings_provider(&self) -> ModelProvider {
+        self.inference_provider.clone()
+    }
+
+    pub(crate) fn attach_claude_session(
+        &mut self,
+        session: crate::providers::claude::ClaudeSession,
+    ) {
+        self.inference_provider.set_claude_session(session.clone());
+        self.model.set_claude_session(session.clone());
+        if let Some(model) = &mut self.compaction_model {
+            model.set_claude_session(session);
+        }
+        self.context_window = None;
+    }
+
+    pub(crate) fn needs_initial_claude_binding(&self) -> bool {
+        self.inference_provider.uses_subscription()
+            || self
+                .compaction_model
+                .as_ref()
+                .and_then(Llm::inference_defaults)
+                .is_some_and(|inference| inference.api.as_deref() == Some("anthropic-oauth"))
+    }
+
+    pub(crate) fn invalidate_claude_context(&mut self) {
+        self.context_window = None;
+        if let Some(inference) = &mut self.inference_config {
+            inference.claude_session = self
+                .inference_provider
+                .session()
+                .binding()
+                .as_ref()
+                .map(Into::into);
+        }
+    }
+
     pub(crate) fn prompt_injection_policy(&self) -> Option<String> {
         self.system_prompt.prompt_injection_policy.clone()
     }
@@ -90,6 +127,7 @@ where
                 previous.model != next.model
                     || previous.api != next.api
                     || previous.base_url != next.base_url
+                    || previous.claude_session != next.claude_session
             }
             _ => true,
         };
@@ -186,17 +224,13 @@ where
         if let Some(inference) = context.execution().inference_config() {
             self.update_inference(inference);
         }
-        let context_window = self.context_window().await?;
         let inference = self.inference_config.clone();
         if context.entries().is_empty() {
             let system_prompt = self.snapshot_system_prompt(tool_executor).await?;
-            let validation = self.validate_budget(context_window, &system_prompt.0, tool_executor);
             let window = self.context_window_record(inference, system_prompt, None);
-            if let Err(error) = validation {
-                context.publish(AgentEvent::Entries(vec![window]));
-                return Err(error);
-            }
             context.push(AgentEvent::Entries(vec![window])).await?;
+            let context_window = self.context_window().await?;
+            self.validate_budget(context_window, context.system_prompt()?, tool_executor)?;
             self.report_context_usage(context, tool_executor, context_window)
                 .await?;
             return Ok(());
@@ -210,6 +244,7 @@ where
                 }
             }
         }
+        let context_window = self.context_window().await?;
         self.report_context_usage(context, tool_executor, context_window)
             .await
     }
@@ -294,7 +329,7 @@ where
                                 self.config.max_exceptions
                             ))]))
                             .await?;
-                        return Ok(());
+                        return Err(error);
                     }
                 }
                 Err(error) => return Err(error),
@@ -425,15 +460,33 @@ where
         if !warnings.is_empty() {
             context.push(AgentEvent::Entries(warnings)).await?;
         }
-        let used_inference = if request.is_some() && self.compaction_model.is_none() {
-            inference.cloned()
+        let used_inference = if request.is_some() {
+            self.compaction_model
+                .as_ref()
+                .and_then(|model| model.compaction_inference(inference))
+                .or_else(|| inference.cloned())
         } else {
             None
         };
         let completion = match request {
             Some(mut request) => {
                 request.inference = used_inference.clone();
-                Some(self.summarize(request).await?)
+                if let Some(selected) = &used_inference {
+                    if let Some(api) = &selected.api {
+                        let billing = if api == "anthropic-messages" {
+                            " (API-key billing)"
+                        } else {
+                            ""
+                        };
+                        context
+                            .push(AgentEvent::Entries(vec![log_message(
+                                &format!("Compaction uses {} via {api}{billing}.", selected.model),
+                                "info",
+                            )]))
+                            .await?;
+                    }
+                }
+                Some(self.summarize(context, request).await?)
             }
             None => None,
         };
@@ -476,14 +529,19 @@ where
         });
         futures_util::pin_mut!(events);
         let mut final_completion = None;
+        let mut partial = PartialResponse::default();
         while let Some(event) = events.next().await {
             let event = match event {
                 Ok(event) => event,
                 Err(error) => {
                     context.push(AgentEvent::StreamAborted).await?;
+                    if matches!(error, LlmError::Claude(_)) {
+                        partial.persist(context, inference.cloned()).await?;
+                    }
                     return Err(error.into());
                 }
             };
+            partial.observe(&event);
             if final_completion.is_some() && !matches!(event, StreamEvent::Final(_)) {
                 context.push(AgentEvent::StreamAborted).await?;
                 return Err(ReactAgentError::InvalidStream(
@@ -542,12 +600,26 @@ where
         Ok((completion, tokens_per_second))
     }
 
-    async fn summarize(&self, request: CompletionRequest) -> Result<Completion, ReactAgentError> {
+    async fn summarize(
+        &self,
+        context: &mut ReactContext,
+        request: CompletionRequest,
+    ) -> Result<Completion, ReactAgentError> {
         let events = self.compaction_model().stream(request);
         futures_util::pin_mut!(events);
         let mut completion = None;
+        let mut partial = PartialResponse::default();
         while let Some(event) = events.next().await {
-            let event = event?;
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    if matches!(error, LlmError::Claude(_)) {
+                        partial.persist_summary(context).await?;
+                    }
+                    return Err(error.into());
+                }
+            };
+            partial.observe(&event);
             if completion.is_some() && !matches!(event, StreamEvent::Final(_)) {
                 return Err(ReactAgentError::InvalidStream(
                     "summarization stream produced a partial after its final message".to_string(),
@@ -770,6 +842,91 @@ fn chat_record_message(message: chat_record::Message) -> AgentMessage {
             ..ChatRecord::default()
         })),
         ..AgentMessage::default()
+    }
+}
+
+#[derive(Default)]
+struct PartialResponse {
+    content: String,
+    reasoning: String,
+    refusal: String,
+    tools: std::collections::BTreeMap<u32, (String, String)>,
+}
+impl PartialResponse {
+    fn observe(&mut self, event: &StreamEvent) {
+        match event {
+            StreamEvent::Content(value) => self.content.push_str(&value.content),
+            StreamEvent::Reasoning(value) => self.reasoning.push_str(&value.reasoning),
+            StreamEvent::Refusal(value) => self.refusal.push_str(&value.refusal),
+            StreamEvent::ToolCall(value) => {
+                let tool = self.tools.entry(value.index).or_default();
+                tool.0.push_str(&value.name);
+                tool.1.push_str(&value.arguments);
+            }
+            _ => {}
+        }
+    }
+    async fn persist_summary(self, context: &mut ReactContext) -> Result<(), ReactAgentError> {
+        if self.content.is_empty()
+            && self.reasoning.is_empty()
+            && self.refusal.is_empty()
+            && self.tools.is_empty()
+        {
+            return Ok(());
+        }
+        let mut text = format!(
+            "Incomplete compaction summary\n{}{}{}",
+            self.reasoning, self.content, self.refusal
+        );
+        for (name, arguments) in self.tools.values() {
+            text.push_str(&format!("\nIncomplete tool call {name}: {arguments}"));
+        }
+        context
+            .push(AgentEvent::Entries(vec![log_message(&text, "error")]))
+            .await?;
+        Ok(())
+    }
+    async fn persist(
+        self,
+        context: &mut ReactContext,
+        inference: Option<InferenceConfig>,
+    ) -> Result<(), ReactAgentError> {
+        if self.content.is_empty()
+            && self.reasoning.is_empty()
+            && self.refusal.is_empty()
+            && self.tools.is_empty()
+        {
+            return Ok(());
+        }
+        // No tool call IDs, complete calls or invented signatures enter canonical
+        // history. Fragments remain a display-only record beside visible output.
+        let mut display = String::from("Incomplete response");
+        for (name, arguments) in self.tools.values() {
+            display.push_str(&format!("\nIncomplete tool call {name}: {arguments}"));
+        }
+        let entry = AgentMessage {
+            inference,
+            payload: Some(agent_message::Payload::Chat(ChatRecord {
+                message: Some(chat_record::Message::Assistant(AssistantMessage {
+                    content: (!self.content.is_empty()).then_some(self.content),
+                    reasoning_content: (!self.reasoning.is_empty()).then_some(self.reasoning),
+                    refusal: (!self.refusal.is_empty()).then_some(self.refusal),
+                    ..Default::default()
+                })),
+                success: false,
+                truncated: true,
+                display: Some(display),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        context
+            .push(AgentEvent::StreamFinal {
+                entry: Box::new(entry),
+                tokens_per_second: None,
+            })
+            .await?;
+        Ok(())
     }
 }
 

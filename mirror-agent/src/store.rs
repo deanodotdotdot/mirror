@@ -13,6 +13,43 @@ use thiserror::Error;
 /// backend that is not `Sync` (a SQLite connection, for example) still yields
 /// `Send` futures.
 pub trait Store: Send {
+    /// True only when this native store inserted this conversation, never inferred
+    /// from its transcript length. Disposable/custom stores default to false.
+    fn created_session(&self, _session_id: &str) -> bool {
+        false
+    }
+
+    fn claude_session<'a>(
+        &'a mut self,
+        _session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::providers::claude::ClaudeSessionBinding>, StoreError>>
+    {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Successful reconnect receipts survive worker/transport restart. A receipt
+    /// and its binding update must be committed in the same transaction.
+    fn claude_reconnect_receipts<'a>(
+        &'a mut self,
+        _session_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<(String, mirror_protocol::ReconnectClaude)>, StoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn compare_set_claude_session<'a>(
+        &'a mut self,
+        _session_id: &'a str,
+        _expected: Option<&'a crate::providers::claude::ClaudeSessionBinding>,
+        _binding: &'a crate::providers::claude::ClaudeSessionBinding,
+        _receipt: Option<(&'a str, &'a mirror_protocol::ReconnectClaude)>,
+    ) -> BoxFuture<'a, Result<(), StoreError>> {
+        Box::pin(async {
+            Err(StoreError::Persistence(
+                "conversation store does not support Claude binding".into(),
+            ))
+        })
+    }
+
     /// Load the current window, or the full transcript when explicitly requested.
     fn load<'a>(
         &'a mut self,
@@ -134,7 +171,7 @@ impl<Id: Eq> Lineage<Id> {
 }
 
 /// A durable conversation operation failure.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 #[non_exhaustive]
 pub enum StoreError {
     #[error("entry {entry_id:?} is not a user-message rewind boundary")]

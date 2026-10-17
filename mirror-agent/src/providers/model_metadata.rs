@@ -15,7 +15,14 @@ pub async fn model_context_window(
     config: &ModelProviderConfig,
 ) -> Result<usize, LlmError> {
     // Missing subscription support/auth is never a successful offline catalog.
-    config.ensure_subscription_available()?;
+    config.validate_subscription_configuration()?;
+    // Task5 owns metadata. Keep this fail-closed until its reviewed service is integrated.
+    if config.api == ModelApi::AnthropicOAuth {
+        return Err(super::claude::ClaudeError::configuration(
+            super::claude::ClaudeConfigurationError::NotImplemented,
+        )
+        .into());
+    }
     let fallback = match config.api {
         ModelApi::CodexResponses => 272_000,
         ModelApi::AnthropicMessages | ModelApi::AnthropicOAuth => 200_000,

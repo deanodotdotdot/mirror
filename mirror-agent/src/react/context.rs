@@ -48,6 +48,23 @@ impl ReactContextInput {
 }
 
 impl ReactContext {
+    pub(crate) async fn compare_set_claude_session(
+        &mut self,
+        expected: Option<&crate::providers::claude::ClaudeSessionBinding>,
+        binding: &crate::providers::claude::ClaudeSessionBinding,
+        message_id: &str,
+        request: &mirror_protocol::ReconnectClaude,
+    ) -> Result<(), StoreError> {
+        self.store
+            .compare_set_claude_session(
+                &self.session_id,
+                expected,
+                binding,
+                Some((message_id, request)),
+            )
+            .await
+    }
+
     pub fn new(
         session_id: impl Into<String>,
         entries: Vec<AgentMessage>,
@@ -91,9 +108,15 @@ impl ReactContext {
             .into_iter()
             .cloned()
             .collect();
-        let mut store = super::InMemoryStore::from_entries(self.session_id.clone(), entries);
+        let binding = self.execution.claude_binding();
+        let mut store = super::InMemoryStore::from_entries(self.session_id.clone(), entries)
+            .with_claude_session(&self.session_id, binding.clone());
         store.fork(&self.session_id, None, &session_id)?;
         let entries = store.load(&session_id, false).await?;
+        let execution = execution.with_claude(
+            crate::providers::claude::ClaudeSession::new(binding),
+            self.execution.claude_authority(),
+        );
         execution
             .input()
             .set_inference_config(self.execution.inference_config());

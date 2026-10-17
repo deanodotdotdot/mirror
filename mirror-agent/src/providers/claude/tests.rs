@@ -147,7 +147,7 @@ async fn subscription_configuration_never_resolves_an_api_key_or_succeeds_with_f
     for (mut selected, reason) in [
         (
             config(ModelApi::AnthropicOAuth),
-            ClaudeConfigurationError::NotImplemented,
+            ClaudeConfigurationError::UnsupportedSurface,
         ),
         (
             {

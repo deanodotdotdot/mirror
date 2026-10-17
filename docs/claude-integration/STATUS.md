@@ -12,9 +12,9 @@ verification and merge into the integration branch.
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
 | 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after Astra review and final Linux verification. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdb after independent Astra review and manager verification. Three P2 findings fixed; final Linux verification passed 622 tests plus binding and launcher checks. See [native protocol](AUTH-PROTOCOL.md). |
-| 4. OAuth Messages transport | 2 | Implemented and independently Astra reviewed; three P2 findings fixed, awaiting manager verification/merge. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
-| 5. Model discovery + usage | 3 | Astra implementation underway from merged Task 3. |
-| 6. Agent execution integration | 3 + 4 | Not started. |
+| 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4 after independent Astra review/fixes and manager verification. Frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
+| 5. Model discovery + usage | 3 | Astra implementation complete; independent Astra review/fixes and manager verification underway. |
+| 6. Agent execution integration | 3 + 4 + 5 | Astra implementation underway. Independent native storage/protocol/reconnect/stream slice implemented; final metadata wiring waits for reviewed Task 5 merge. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Initial private-command/terminal slice checkpointed; remaining Astra integration waits for Tasks 5–6. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Not started. |
 
@@ -25,7 +25,7 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Tasks 1–3 are merged; five production tasks (4–8)
+manual/random callback fields. Tasks 1–4 are merged; four production tasks (5–8)
 remain pending review, merge or implementation. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
@@ -167,3 +167,22 @@ workspace/all-target compilation including the Python/eval binding passed.
 No remaining P2-or-higher findings. Final reviewed/integrated Linux verification
 remains with the manager, and Task 8 must exercise the approved ordering boundary
 with both live acceptance models. No live calls or credential reads were used.
+
+
+Task 6 independent-slice checkpoint: native SQLite binding and transactional
+reconnect receipts, additive reconnect/state/Nack protocol, actor idle/activity
+barriers, native provider opt-in, inherited child UUIDs/binding, and persisted
+incomplete Claude output are implemented. A real loopback truncated-tool fixture
+proves exactly one failed/truncated final record followed by one typed error,
+with zero tool execution. Noninteractive regression fixtures return exit 1 for
+both failed final records and typed terminal errors. Metadata execution remains
+explicitly blocked until the reviewed Task 5 service is merged and connected.
+
+Intermediate Task 6 validation: 482 affected native library tests passed with
+one intentional ignore; two protocol wire/projection tests, workspace/all-target
+compilation including eval, and nine worker tests passed; Python packaging/typechecking
+and the complete CI script passed 3,091 tests with five skips. An earlier broad
+library attempt was stopped before the unrelated Unicode-spill test finished;
+it is incomplete, not a passing full-suite result. Race, store, protocol, fork and restarted-child UUID checks pass; final
+metadata/provider integration checks are pending. No live login,
+credential inspection, live provider request or production acceptance was run.

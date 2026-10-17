@@ -618,3 +618,93 @@ fn remote_executor_rejects_unsupported_grandchild_tools_up_front() {
         .to_string()
         .contains("descendants do not support remote execution"));
 }
+
+#[tokio::test]
+async fn restarted_task_ids_get_distinct_native_request_sessions_and_inherit_binding() {
+    let response = format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type":"response.completed", "response": {"status":"completed", "output":[
+                {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+            ]}
+        })
+    );
+    let mut server = TestServer::start(vec![
+        TestResponse::text(200, response.clone()),
+        TestResponse::text(200, response),
+    ])
+    .await;
+    let workspace = tempfile::tempdir().unwrap();
+    let binding = crate::providers::claude::ClaudeSessionBinding::new(
+        crate::providers::claude::ClaudeIdentityBinding {
+            account_id: uuid::Uuid::from_u128(1),
+            organization_id: uuid::Uuid::from_u128(2),
+        },
+    );
+    let provider = ModelProviderConfig {
+        api: ModelApi::Responses,
+        model: "fixture".into(),
+        context_window: Some(200_000),
+        api_key: Some("synthetic".into()),
+        base_url: Some(server.base_url.clone()),
+        auth_path: None,
+        claude_session: None,
+        prompt_cache_key: "parent".into(),
+        request_timeout: Some(Duration::from_secs(5)),
+    };
+    let tool = SubagentTool::new(
+        workspace.path(),
+        "parent",
+        provider,
+        ReactAgentConfig::default(),
+        None,
+        vec![],
+    )
+    .unwrap();
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let (manager, tasks, mut events, runner) = TaskManager::new();
+        let manager = tokio::spawn(manager.run());
+        let runner = tokio::spawn(runner);
+        let context =
+            ExecutionContext::new(AgentApprovalMode::Auto, None, tasks.clone(), None, None)
+                .with_claude(
+                    crate::providers::claude::ClaudeSession::new(Some(binding.clone())),
+                    None,
+                );
+        // A nonsecret binding expectation survives even while the API provider
+        // is selected; child configuration must use the current native binding.
+        context.input().set_inference_config(Some(InferenceConfig {
+            model: "fixture".into(),
+            api: Some("openai-responses".into()),
+            claude_session: Some((&binding).into()),
+            ..Default::default()
+        }));
+        let id = tool.spawn("finish".into(), vec![], &context).await.unwrap();
+        assert_eq!(id, "1000");
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let TaskEvent::Finished(_, result) = events.recv().await.unwrap() {
+                    break result;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(result.success, "{result:?}");
+        let request = server.request().await;
+        let session = request.body["prompt_cache_key"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        uuid::Uuid::parse_str(&session).unwrap();
+        assert_ne!(session, "parent");
+        sessions.push(session);
+        tasks.close().await.unwrap();
+        manager.await.unwrap();
+        drop(context);
+        drop(tasks);
+        runner.await.unwrap();
+    }
+    assert_ne!(sessions[0], sessions[1]);
+}

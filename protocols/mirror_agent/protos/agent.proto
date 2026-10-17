@@ -52,7 +52,21 @@ message ClientMessage {
     AgentMessage message = 11;
     // Compact an idle conversation without adding a user message or model turn.
     google.protobuf.Empty compact = 12;
+    ReconnectClaude reconnect_claude = 13;
   }
+}
+
+// Explicit idle compare-and-set. An absent expected binding means unbound.
+message ReconnectClaude {
+  ClaudeSessionBinding expected_binding = 1;
+  ClaudeIdentityBinding target_identity = 2;
+}
+
+// Native durable state; an absent binding explicitly means unbound.
+message ClaudeSessionState {
+  string conversation_id = 1;
+  ClaudeSessionBinding binding = 2;
+  optional string message_id = 3;
 }
 
 message InferenceConfig {
@@ -153,6 +167,7 @@ message SessionMessage {
     InputNack input_nack = 9;
     ReplayDone replay_done = 10;
     ToolCall host_tool_call = 11;
+    ClaudeSessionState claude_session_state = 12;
   }
 
   // Set only when `agent_message` is the authoritative end of a live stream.
@@ -176,12 +191,14 @@ enum InputNackReason {
   INPUT_NACK_REASON_MESSAGE_ID_CONFLICT = 2;
   INPUT_NACK_REASON_INVALID_REQUEST = 3;
   INPUT_NACK_REASON_TARGET_NOT_FOUND = 4;
+  INPUT_NACK_REASON_CONVERSATION_BUSY = 5;
 }
 
 message InputNack {
   string message_id = 1;
   InputNackReason reason = 2;
   string error = 3;
+  ClaudeErrorDetails claude_error = 4;
 }
 
 message HITLRequest {

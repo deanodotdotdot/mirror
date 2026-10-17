@@ -160,7 +160,8 @@ async fn malformed_input_is_rejected_in_band() {
             match &response.payload {
                 Some(
                     session_message::Payload::AgentMessage(_)
-                    | session_message::Payload::RuntimeDelta(_),
+                    | session_message::Payload::RuntimeDelta(_)
+                    | session_message::Payload::ClaudeSessionState(_),
                 ) => {}
                 _ => return response,
             }

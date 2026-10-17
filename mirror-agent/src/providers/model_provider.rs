@@ -9,12 +9,15 @@ use crate::providers::CompletionRequest;
 use async_stream::try_stream;
 use futures_core::Stream;
 use futures_util::pin_mut;
+use futures_util::FutureExt;
 use futures_util::StreamExt;
 use mirror_protocol::InferenceConfig;
 use reqwest::Client;
 use thiserror::Error;
 
-use super::claude::{ClaudeConfigurationError, ClaudeError, ClaudeSessionBinding};
+use super::claude::{
+    ClaudeAuthorization, ClaudeConfigurationError, ClaudeError, ClaudeSession, ClaudeSessionBinding,
+};
 use super::AnthropicMessages;
 use super::AnthropicMessagesConfig;
 use super::ChatCompletions;
@@ -34,7 +37,10 @@ use super::StreamEvent;
 pub struct ModelProvider {
     default_config: ModelProviderConfig,
     client: Client,
-    request_guard: Option<Arc<dyn ModelRequestGuard>>,
+    pub(super) request_guard: Option<Arc<dyn ModelRequestGuard>>,
+    pub(super) claude_authority: Option<Arc<dyn ClaudeAuthorization>>,
+    claude_session: ClaudeSession,
+    compaction_inherits_provider: bool,
 }
 
 /// Configuration shared by root agents and subagents.
@@ -89,7 +95,34 @@ impl ModelProvider {
         config: ModelProviderConfig,
         request_guard: Option<Arc<dyn ModelRequestGuard>>,
     ) -> Result<Self, LlmError> {
-        config.ensure_subscription_available()?;
+        Self::new_with_authority(config, request_guard, None).await
+    }
+
+    /// Native local worker opt-in. Excluded HTTP/eval surfaces use `new`.
+    pub async fn new_native(
+        config: ModelProviderConfig,
+        request_guard: Option<Arc<dyn ModelRequestGuard>>,
+    ) -> Result<Self, LlmError> {
+        config.validate_subscription_configuration()?;
+        Self::new_with_authority(
+            config,
+            request_guard,
+            Some(Arc::new(super::claude::session::NativeAuthority::default())),
+        )
+        .await
+    }
+
+    pub(crate) async fn new_with_authority(
+        config: ModelProviderConfig,
+        request_guard: Option<Arc<dyn ModelRequestGuard>>,
+        authority: Option<Arc<dyn ClaudeAuthorization>>,
+    ) -> Result<Self, LlmError> {
+        config.validate_subscription_configuration()?;
+        if config.api == ModelApi::AnthropicOAuth && authority.is_none() {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface).into(),
+            );
+        }
         if config
             .context_window
             .is_some_and(|window| window == 0 || window > usize::MAX / 100)
@@ -103,8 +136,11 @@ impl ModelProvider {
         }
         Ok(Self {
             client: super::http_client(config.request_timeout)?,
+            claude_session: ClaudeSession::new(config.claude_session.clone()),
             default_config: config,
             request_guard,
+            claude_authority: authority,
+            compaction_inherits_provider: false,
         })
     }
 }
@@ -145,21 +181,9 @@ impl ModelProviderConfig {
         Ok(())
     }
 
-    /// Temporary fail-closed gate until the real authority and transport are wired.
-    /// Keep this before API-key resolution, metadata fallback and HTTP creation.
-    pub(crate) fn ensure_subscription_available(&self) -> Result<(), LlmError> {
-        self.validate_subscription_configuration()?;
-        if self.api == ModelApi::AnthropicOAuth {
-            return Err(
-                ClaudeError::configuration(ClaudeConfigurationError::NotImplemented).into(),
-            );
-        }
-        Ok(())
-    }
-
     /// Resolve the same endpoint and credentials for inference and metadata.
     pub(super) async fn connection(&self) -> Result<(String, String), LlmError> {
-        self.ensure_subscription_available()?;
+        self.validate_subscription_configuration()?;
         let (base_env, base_default, key_env) = match self.api {
             ModelApi::CodexResponses => (
                 "MIRROR_CODEX_BASE_URL",
@@ -182,9 +206,10 @@ impl ModelProviderConfig {
                 Some("ANTHROPIC_API_KEY"),
             ),
             ModelApi::AnthropicOAuth => {
-                return Err(
-                    ClaudeError::configuration(ClaudeConfigurationError::NotImplemented).into(),
-                );
+                return Err(ClaudeError::configuration(
+                    ClaudeConfigurationError::UnsupportedSurface,
+                )
+                .into());
             }
             ModelApi::Reflection => {
                 return Ok((
@@ -251,20 +276,13 @@ impl ModelProviderConfig {
         }
         if let Some(binding) = &inference.claude_session {
             let binding = ClaudeSessionBinding::try_from(binding)?;
-            if config
-                .claude_session
-                .as_ref()
-                .is_some_and(|current| current.identity != binding.identity)
-            {
-                let mut error = ClaudeError::new(super::claude::ClaudeErrorKind::AccountChanged);
-                error.details.expected_identity = config
-                    .claude_session
-                    .as_ref()
-                    .map(|current| current.identity.clone());
-                error.details.current_identity = Some(binding.identity);
-                return Err(error.into());
+            if config.claude_session.as_ref() != Some(&binding) {
+                return Err(super::claude::session::binding_changed(
+                    Some(&binding),
+                    config.claude_session.as_ref(),
+                )
+                .into());
             }
-            config.claude_session = Some(binding);
         }
         config.validate_subscription_configuration()?;
         Ok(config)
@@ -284,14 +302,68 @@ impl ModelProvider {
         &self,
         inference: Option<&InferenceConfig>,
     ) -> Result<ModelProviderConfig, LlmError> {
-        match inference {
-            Some(inference) => self.default_config.for_inference(inference),
-            None => Ok(self.default_config.clone()),
+        let mut defaults = self.default_config.clone();
+        defaults.claude_session = self.claude_session.binding();
+        let config = match inference {
+            Some(inference) => defaults.for_inference(inference)?,
+            None => defaults,
+        };
+        if config.api == ModelApi::AnthropicOAuth && self.claude_authority.is_none() {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface).into(),
+            );
         }
+        if config.api == ModelApi::AnthropicOAuth && config.claude_session.is_none() {
+            return Err(
+                ClaudeError::configuration(ClaudeConfigurationError::MissingBinding).into(),
+            );
+        }
+        Ok(config)
+    }
+}
+
+impl ModelProvider {
+    /// Preserve the selected compaction model while following the active API.
+    pub fn with_inherited_compaction_provider(mut self) -> Self {
+        self.compaction_inherits_provider = true;
+        self
+    }
+    pub(crate) fn session(&self) -> ClaudeSession {
+        self.claude_session.clone()
+    }
+    pub(crate) fn authority(&self) -> Option<Arc<dyn ClaudeAuthorization>> {
+        self.claude_authority.clone()
+    }
+    pub(crate) fn uses_subscription(&self) -> bool {
+        self.default_config.api == ModelApi::AnthropicOAuth
     }
 }
 
 impl Llm for ModelProvider {
+    fn set_claude_session(&mut self, session: ClaudeSession) {
+        self.claude_session = session;
+    }
+    fn inference_defaults(&self) -> Option<InferenceConfig> {
+        Some(InferenceConfig {
+            model: self.default_config.model.clone(),
+            api: Some(self.default_config.api.to_string()),
+            base_url: self.default_config.base_url.clone(),
+            claude_session: self.claude_session.binding().as_ref().map(Into::into),
+            ..Default::default()
+        })
+    }
+
+    fn compaction_inference(&self, parent: Option<&InferenceConfig>) -> Option<InferenceConfig> {
+        let mut inference = self.inference_defaults()?;
+        if self.compaction_inherits_provider {
+            if let Some(parent) = parent {
+                inference.api = parent.api.clone();
+                inference.base_url = parent.base_url.clone();
+            }
+        }
+        Some(inference)
+    }
+
     fn model(&self) -> &str {
         &self.default_config.model
     }
@@ -303,9 +375,11 @@ impl Llm for ModelProvider {
         let config = self.config_for(request.inference.as_ref());
         let client = self.client.clone();
         let request_guard = self.request_guard.clone();
+        let authority = self.claude_authority.clone();
         try_stream! {
             let config = config?;
-            let (base_url, api_key) = config.connection().await?;
+            // OAuth never enters the API-key resolver, even on failure.
+            let (base_url, api_key) = if config.api == ModelApi::AnthropicOAuth { (String::new(), String::new()) } else { config.connection().await? };
             match config.api {
                 ModelApi::CodexResponses => {
                     let provider = CodexResponses::new(
@@ -382,10 +456,31 @@ impl Llm for ModelProvider {
                     }
                 }
                 ModelApi::AnthropicOAuth => {
-                    Err(ClaudeError::configuration(ClaudeConfigurationError::NotImplemented))?;
+                    let binding = config.claude_session.ok_or_else(|| ClaudeError::configuration(ClaudeConfigurationError::MissingBinding))?;
+                    let authority = authority.ok_or_else(|| ClaudeError::configuration(ClaudeConfigurationError::UnsupportedSurface))?;
+                    let provider = super::claude::ClaudeMessages::new(super::claude::ClaudeMessagesConfig {
+                        model: config.model, session_id: config.prompt_cache_key, binding, request_timeout: config.request_timeout,
+                    }, authority)?;
+                    let stream = provider.stream_guarded(request, request_guard.as_deref(), std::future::pending().boxed());
+                    pin_mut!(stream);
+                    while let Some(event) = stream.next().await { yield event?; }
                 }
             }
         }
+    }
+}
+
+impl std::fmt::Display for ModelApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::CodexResponses => "openai-codex-responses",
+            Self::Responses => "openai-responses",
+            Self::ChatCompletions => "openai-chat-completions",
+            Self::ChatCompletionsNonStreaming => "openai-chat-completions-non-streaming",
+            Self::Reflection => "reflection",
+            Self::AnthropicMessages => "anthropic-messages",
+            Self::AnthropicOAuth => "anthropic-oauth",
+        })
     }
 }
 
