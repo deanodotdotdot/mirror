@@ -191,6 +191,7 @@ class Client:
     on_error: ErrorHandler,
     host_tools_registry: _host_tools.HostToolRegistry | None = None,
     inference_config: agent_pb2.InferenceConfig | None = None,
+    claude_compaction: bool = False,
   ) -> None:
     self._transport = transport
     self._conversation_id = conversation_id
@@ -208,6 +209,9 @@ class Client:
     self._attachment_id: str | None = None
     self._attached = asyncio.Event()
     self._attachment_error: str | None = None
+    self._claude_sensitive = claude_compaction or (
+      inference_config is not None and inference_config.api == 'anthropic-oauth'
+    )
     self._replay_buffer: list[agent_pb2.SessionMessage] | None = None
     self._claude_snapshot: claude_session.Snapshot | None = None
     self._claude_controls: dict[str, _ClaudeControl] = {}
@@ -294,6 +298,10 @@ class Client:
     if self._closing:
       raise RuntimeError('AgentRPC client is closed')
     if request.HasField('set_inference_config'):
+      # A worker that has handled OAuth may still report an earlier failure
+      # after a switch. Keep its transport diagnostics private for its lifetime.
+      if request.set_inference_config.api == 'anthropic-oauth':
+        self._claude_sensitive = True
       request = agent_pb2.ClientMessage.FromString(request.SerializeToString())
       if (
         not request.set_inference_config.HasField('claude_session')
@@ -314,6 +322,11 @@ class Client:
   @property
   def claude_snapshot(self) -> claude_session.Snapshot | None:
     return self._claude_snapshot
+
+  @property
+  def claude_sensitive(self) -> bool:
+    """Late diagnostics can belong to any OAuth work handled by this worker."""
+    return self._claude_sensitive
 
   async def _claude_control(
     self,
@@ -447,7 +460,7 @@ class Client:
         else None
       )
       if state.HasField('message_id') and (
-        pending is None or not pending.reconnect
+        pending is None or not pending.reconnect or pending.future.done()
       ):
         return True  # An unrelated/late receipt cannot replace current state.
       snapshot = claude_session.Snapshot.parse(state, self._conversation_id)
@@ -646,7 +659,12 @@ class Client:
             self._attached.set()
           else:
             raise RuntimeError(
-              f'TUI attachment rejected: {response.input_nack.error}'
+              'TUI attachment rejected: '
+              + (
+                claude_session.nack_text(response.input_nack)
+                if self._claude_sensitive
+                else response.input_nack.error
+              )
             )
         if response.WhichOneof('payload') == 'host_tool_call':
           task = asyncio.create_task(
@@ -664,24 +682,24 @@ class Client:
     except grpc.aio.AioRpcError as error:
       self._clear_claude_state()
       self._attachment_error = (
-        f'agent worker RPC failed: {error.code().name}: {error.details()}'
+        'The Claude worker connection failed. Check the selected account and configuration, then reopen this conversation.'
+        if self._claude_sensitive
+        else f'agent worker RPC failed: {error.code().name}: {error.details()}'
       )
       self._attached.set()
       if not self._closing:
-        await self._on_error(
-          f'agent worker RPC failed: {error.code().name}: {error.details()}'
-        )
+        await self._on_error(self._attachment_error)
       return
     except Exception as error:  # noqa: BLE001 - transport isolation boundary.
       self._clear_claude_state()
       self._attachment_error = (
-        f'agent worker protocol failed: {type(error).__name__}: {error}'
+        'The Claude worker returned an invalid session response. Reopen this conversation; upgrade Mirror if the failure persists.'
+        if self._claude_sensitive
+        else f'agent worker protocol failed: {type(error).__name__}: {error}'
       )
       self._attached.set()
       if not self._closing:
-        await self._on_error(
-          f'agent worker protocol failed: {type(error).__name__}: {error}'
-        )
+        await self._on_error(self._attachment_error)
       return
     if not self._closing:
       self._clear_claude_state()

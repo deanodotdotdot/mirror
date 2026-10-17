@@ -28,6 +28,7 @@ class CommandContext:
   )
   remote: bool = False
   session_id: str = ''
+  model_api: str = ''
 
 
 type CommandHandler = Callable[[CommandContext, str], actions.Action | None]

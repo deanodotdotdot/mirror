@@ -204,6 +204,13 @@ account access. Missing usage fields stay unavailable. `mirror usage claude
 --json` preserves UTC times and the reported units. Usage commands do not change
 extra-usage settings.
 
+Implicit reasoning defaults follow the reviewed native presets: `low` for Opus
+4.8 and Sonnet 4.6, and `none` for Sonnet 5. `/effort` lists the supported presets
+for the selected subscription model. Explicit or saved effort choices are kept;
+if a provider switch rejects an incompatible choice, use `/effort low` (or
+`/effort none` for Sonnet 5), then select the model again. For exec, pass
+`--reasoning-effort` when overriding the default.
+
 Login changes the saved grant only. It does not select a provider, change the
 active model, or move a conversation to another account. An existing unbound
 conversation or an intentional account switch requires `/reconnect claude` while

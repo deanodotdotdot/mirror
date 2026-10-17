@@ -67,6 +67,7 @@ def _nack(
 
 class _Server(agent_pb2_grpc.AgentRPCServicer):
   def __init__(self) -> None:
+    self.failure: str | None = None
     self.requests: asyncio.Queue[agent_pb2.ClientMessage] = asyncio.Queue()
     self.responses: asyncio.Queue[agent_pb2.SessionMessage] = asyncio.Queue()
     self.records = [
@@ -86,7 +87,10 @@ class _Server(agent_pb2_grpc.AgentRPCServicer):
     task = asyncio.create_task(read())
     try:
       while True:
-        yield await self.responses.get()
+        response = await self.responses.get()
+        if self.failure is not None:
+          await context.abort(grpc.StatusCode.INTERNAL, self.failure)
+        yield response
     finally:
       task.cancel()
       await asyncio.gather(task, return_exceptions=True)
@@ -183,6 +187,122 @@ async def test_attachment_nack_retains_native_snapshot_history_and_explicit_reco
     await asyncio.sleep(0.02)
     assert client.claude_snapshot.binding == _OTHER_BINDING
   assert client.claude_snapshot is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('api', ['anthropic-oauth', 'anthropic-messages'])
+@pytest.mark.parametrize('claude_compaction', [False, True])
+@pytest.mark.parametrize('failure', ['nack', 'rpc', 'protocol'])
+async def test_untyped_claude_attachment_rejection_does_not_echo_native_payload(
+  api: str,
+  claude_compaction: bool,
+  failure: str,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  service = _Server()
+  server = grpc.aio.server()
+  agent_pb2_grpc.add_AgentRPCServicer_to_server(service, server)
+  port = server.add_insecure_port('127.0.0.1:0')
+  await server.start()
+  errors = mock.AsyncMock()
+  client = rpc_client.Client(
+    _Transport(port),
+    'conversation',
+    on_message=lambda _: None,
+    on_error=errors,
+    inference_config=agent_pb2.InferenceConfig(api=api, model='selected'),
+    claude_compaction=claude_compaction,
+  )
+  if failure == 'protocol':
+    monkeypatch.setattr(
+      client,
+      '_observe_claude',
+      mock.Mock(side_effect=ValueError('SYNTHETIC_PRIVATE_NATIVE_PAYLOAD')),
+    )
+  elif failure == 'rpc':
+    service.failure = 'SYNTHETIC_PRIVATE_NATIVE_PAYLOAD'
+  startup = asyncio.create_task(
+    client.start(replay=True, wait_for_attachment=True)
+  )
+  try:
+    request = await asyncio.wait_for(service.requests.get(), 3)
+    service.responses.put_nowait(
+      agent_pb2.SessionMessage(
+        input_nack=agent_pb2.InputNack(
+          message_id=request.message_id,
+          error='SYNTHETIC_PRIVATE_NATIVE_PAYLOAD',
+        )
+      )
+    )
+    with pytest.raises(RuntimeError) as raised:
+      await asyncio.wait_for(startup, 3)
+    visible = str(raised.value) + str(errors.call_args_list)
+    assert ('SYNTHETIC_PRIVATE_NATIVE_PAYLOAD' in visible) == (
+      api != 'anthropic-oauth' and not claude_compaction
+    )
+  finally:
+    await client.close()
+    await server.stop(None)
+    await asyncio.gather(startup, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_claude_sensitive_worker_keeps_late_transport_errors_private_after_switch() -> (
+  None
+):
+  async with _running() as (client, service, received, errors):
+    client.send(
+      agent_pb2.ClientMessage(
+        message_id='ordinary-switch',
+        set_inference_config=agent_pb2.InferenceConfig(
+          api='anthropic-messages', model='ordinary'
+        ),
+      )
+    )
+    request = await asyncio.wait_for(service.requests.get(), 3)
+    assert request.set_inference_config.api == 'anthropic-messages'
+    service.responses.put_nowait(_ack(request.message_id))
+    async with asyncio.timeout(3):
+      while not any(
+        r.input_ack.message_id == request.message_id for r in received
+      ):
+        await asyncio.sleep(0)
+    assert client.claude_sensitive
+    service.failure = 'SYNTHETIC_PRIVATE_LATE_ERROR'
+    service.responses.put_nowait(agent_pb2.SessionMessage())
+    async with asyncio.timeout(3):
+      while not errors.called:
+        await asyncio.sleep(0)
+    assert 'SYNTHETIC_PRIVATE_LATE_ERROR' not in str(errors.call_args_list)
+    assert 'Claude worker connection failed' in str(errors.call_args_list)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('accepted', [False, True])
+async def test_completed_reconnect_ignores_receipts_before_waiter_cleanup(
+  accepted: bool,
+) -> None:
+  async with _running() as (client, service, _, _):
+    operation = asyncio.create_task(client.reconnect_claude(_OTHER))
+    request = await asyncio.wait_for(service.requests.get(), 3)
+    # Buffered responses can be processed without yielding to the waiter that
+    # removes the pending request. A completed control is no longer authority.
+    if accepted:
+      client._observe_claude(_state(_OTHER_BINDING, request.message_id))
+    client._observe_claude(
+      _ack(request.message_id) if accepted else _nack(request.message_id)
+    )
+    client._observe_claude(
+      _state(_BINDING if accepted else _OTHER_BINDING, request.message_id)
+    )
+    assert client.claude_snapshot == claude_session.Snapshot(
+      'conversation', _OTHER_BINDING if accepted else _BINDING
+    )
+    if accepted:
+      assert (await operation).binding == _OTHER_BINDING
+    else:
+      with pytest.raises(claude_session.ControlError):
+        await operation
 
 
 @pytest.mark.asyncio

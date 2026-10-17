@@ -54,6 +54,38 @@ def default_model(api: str) -> str:
   return 'openai/gpt-6-astra'
 
 
+def claude_reasoning_efforts(model: str) -> tuple[str, ...] | None:
+  """UI projection of the frozen native claude/wire.rs capability map."""
+  return {
+    'claude-opus-4-8': ('none', 'low'),
+    'claude-sonnet-4-6': ('none', 'low'),
+    'claude-sonnet-5': ('none',),
+  }.get(model)
+
+
+def default_reasoning_effort(api: str, model: str) -> str:
+  if api == 'anthropic-oauth':
+    efforts = claude_reasoning_efforts(model)
+    # Unknown candidates still require native capability validation. Do not
+    # infer signed reasoning from their names.
+    return efforts[-1] if efforts else 'none'
+  return 'max'
+
+
+def validate_claude_reasoning(model: str, effort: str) -> None:
+  efforts = claude_reasoning_efforts(model)
+  if efforts is not None and effort not in efforts:
+    raise ValueError(
+      'This Claude subscription model does not support the selected reasoning '
+      'effort. Use /effort ' + efforts[-1] + ' before selecting it, or launch '
+      'with --reasoning-effort '
+      + efforts[-1]
+      + '. Supported presets: '
+      + ', '.join(efforts)
+      + '.'
+    )
+
+
 def key_env(api: str) -> str:
   """The environment variable holding the API key for a wire protocol."""
   if api == 'reflection':

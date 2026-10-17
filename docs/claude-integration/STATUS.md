@@ -480,3 +480,36 @@ calls or real credentials were used. Native Rust/protocol files are unchanged
 from reviewed Task 6. Actual bundled native-wheel macOS/Linux and production
 A1–A11/live-account acceptance remain Task 8. The implementer stops after the
 single Task 7 PR for a separate NEW Astra review; only the manager merges.
+
+Task 7 independent Astra review inspected the entire submitted `abace8b` delta
+against reviewed Task 6 merge `ec54e513ddc09388cd0014aeb07450bddd99b646` and
+reproduced four P2 findings:
+
+- Browser-launch failure replaced the dedicated TUI sign-in URL with a short
+  failure notice. Manual completion now retains the URL and hidden-input/Enter
+  instructions in that transient UI, including after a rejected callback.
+- The CLI's generic implicit `max` effort was incompatible with the frozen
+  subscription presets. Fresh startup/exec and choices with known implicit
+  provenance now use native defaults (`low` for Opus 4.8/Sonnet 4.6, `none` for
+  Sonnet 5). Model and effort commit together after native acknowledgment;
+  cancellation preserves the prior model, effort and draft. Explicit, saved or
+  unknown-provenance choices are preserved and incompatible switches give
+  concrete `/effort`/CLI guidance. The subscription effort picker only advertises
+  reviewed presets; unknown model capabilities remain unknown. Native child
+  requests inherit the selected inference settings, while native compaction
+  already leaves effort unset to use its own reviewed provider default.
+- A duplicate reconnect state arriving just after Ack/Nack could overwrite local
+  authority before the waiting task removed the completed control. Completed
+  controls now reject subsequent state receipts, with both outcomes covered.
+- Untyped attachment rejection bypassed the TUI error sanitizer. Attachment,
+  gRPC and protocol exception paths now keep raw native diagnostics private for
+  a worker that handles OAuth, including an OAuth compactor with another main
+  provider. Ordinary workers without OAuth keep their prior diagnostics.
+
+All four were reproduced before their fixes. Regressions cover both layouts,
+browser failure, startup/model-entry/saved defaults, explicit effort rejection,
+workspace preference precedence, login/Ack/Escape model-and-effort commits,
+closed reconnect controls, and untyped attachment/transport/runtime failures.
+The reviewer rebuilt the unchanged native development worker and passed 195
+focused cases. No Rust or protocol source changed, and no live credentials or
+provider calls were used. Actual native-wheel and live acceptance remain Task 8.

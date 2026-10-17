@@ -398,6 +398,16 @@ def _set_reasoning(
   context: commands.CommandContext, arguments: str
 ) -> actions.Action:
   effort = arguments.lower()
+  efforts = _REASONING_EFFORTS
+  if context.model_api == 'anthropic-oauth':
+    supported = models.claude_reasoning_efforts(context.model)
+    if supported is None:
+      return actions.ShowText(
+        'Reasoning capabilities are unavailable for this Claude model. '
+        'Choose a model with a reviewed compatibility preset.',
+        style='ui.warning',
+      )
+    efforts = supported
   if not effort:
     return actions.OpenSelector(
       selection.Selector(
@@ -406,9 +416,11 @@ def _set_reasoning(
         tuple(
           selection.Choice(
             value,
-            'provider default' if value == 'none' else value,
+            'no reasoning'
+            if value == 'none' and context.model_api == 'anthropic-oauth'
+            else ('provider default' if value == 'none' else value),
           )
-          for value in _REASONING_EFFORTS
+          for value in efforts
         ),
         actions.SetReasoning,
         current=context.reasoning_effort,
@@ -416,10 +428,9 @@ def _set_reasoning(
         selected=context.reasoning_effort,
       )
     )
-  if effort not in _REASONING_EFFORTS:
+  if effort not in efforts:
     return actions.ShowText(
-      f'Unknown reasoning effort: {arguments}. Choices: '
-      f'{", ".join(_REASONING_EFFORTS)}',
+      f'Unknown reasoning effort: {arguments}. Choices: {", ".join(efforts)}',
       style='ui.warning',
     )
   return actions.SetReasoning(effort)

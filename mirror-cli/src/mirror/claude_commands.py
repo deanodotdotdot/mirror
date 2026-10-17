@@ -125,6 +125,10 @@ def error_text(
     parts.append(
       'Claude subscription support is unavailable in this build; upgrade Mirror.'
     )
+  elif configuration == 'invalid_request_options':
+    parts.append(
+      'Use /effort to choose a supported reasoning preset and check the selected model and request options.'
+    )
   for key, label in (
     ('retry_at', 'Retry after'),
     ('resets_at', 'Reported reset'),
@@ -189,6 +193,7 @@ async def login(
 ) -> claude_auth.Completed | claude_auth.Failed:
   reader = asyncio.create_task(command.read_event())
   callback: asyncio.Task[str] | None = None
+  instructions = ''
   try:
     while True:
       pending = [reader] if callback is None else [reader, callback]
@@ -199,7 +204,7 @@ async def login(
         if isinstance(event, (claude_auth.Completed, claude_auth.Failed)):
           return event
         if isinstance(event, claude_auth.AuthorizationUrl):
-          terminal.notice(
+          instructions = (
             'Sign into your existing Claude subscription.\n'
             'Leave this command running while you open the URL:\n'
             f'{event.authorization_url}\n'
@@ -208,13 +213,14 @@ async def login(
             'then press Enter. Input is hidden; no characters will appear. '
             'Ctrl-C cancels.\n'
           )
+          terminal.notice(instructions)
           if callback is None:
             callback = asyncio.create_task(terminal.read_callback())
           if not no_browser and not await claude_auth.open_browser(
             event.authorization_url
           ):
             terminal.notice(
-              'Browser launch failed; open the displayed URL manually.\n'
+              'Browser launch failed; open the URL manually.\n' + instructions
             )
         elif (
           isinstance(event, claude_auth.Progress)
@@ -222,6 +228,7 @@ async def login(
         ):
           terminal.notice(
             'Callback rejected; paste the final callback URL again and press Enter (input hidden).\n'
+            + instructions
           )
         reader = asyncio.create_task(command.read_event())
       if callback is not None and callback in done:

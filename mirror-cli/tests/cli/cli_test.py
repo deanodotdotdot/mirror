@@ -15055,9 +15055,11 @@ async def test_claude_typed_error_preserves_partial_output_and_safe_recovery() -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('browser_available', [False, True])
 async def test_claude_private_login_displays_link_and_headless_instructions(
   monkeypatch: pytest.MonkeyPatch,
   fullscreen: bool,
+  browser_available: bool,
 ) -> None:
   from mirror.cli import claude_auth
 
@@ -15079,7 +15081,7 @@ async def test_claude_private_login_displays_link_and_headless_instructions(
 
   async def browser(_: str) -> bool:
     ready.set()
-    return True
+    return browser_available
 
   native = mock.MagicMock()
   native.__aenter__.return_value = native
@@ -15100,6 +15102,8 @@ async def test_claude_private_login_displays_link_and_headless_instructions(
       assert 'SYNTHETIC_URL_END' in ''.join(frame.split())
       assert 'localhostbrowsererror' in ''.join(frame.split())
       assert 'Inputishidden' in ''.join(frame.split())
+      if not browser_available:
+        assert 'Browserlaunchfailed' in ''.join(frame.split())
       assert 'Esc to cancel' in frame
       assert 'SYNTHETIC_PRIVATE_CALLBACK' not in frame
       assert not repl.transcript_entries()
@@ -15588,6 +15592,144 @@ async def test_claude_selection_persists_only_after_native_confirmation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('attached', [False, True])
+@pytest.mark.parametrize('cancel', [False, True])
+async def test_claude_implicit_reasoning_commits_with_model_after_login_or_ack(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  fullscreen: bool,
+  attached: bool,
+  cancel: bool,
+) -> None:
+  from mirror.cli import claude_auth, claude_session
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  repl = _repl(
+    model='Beam-1.0-501B-A23B', fullscreen=fullscreen, create_session=True
+  )
+  repl.dispatch(_actions.SetReasoning('max'))
+  repl._worker_configuration = repl._worker_configuration.updated({
+    'api': 'reflection',
+    'reasoning_effort_override': False,
+  })
+  previous = repl.model_selection
+  repl._input.text = 'unfinished draft'
+  started, finish = asyncio.Event(), asyncio.Event()
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+
+  async def command(action, **kwargs):
+    if action == 'status':
+      return claude_auth.Completed(
+        claude_auth.AuthStatus('logged_out', None, None, None, 'login', None),
+        'fixture-v1',
+      )
+    assert action == 'login' and kwargs['offer']
+    if not attached:
+      started.set()
+      await finish.wait()
+    return claude_auth.Completed(
+      claude_auth.AuthStatus(
+        'usable', identity, None, '2026-10-17T19:00:00Z', 'none', None
+      ),
+      'fixture-v1',
+    )
+
+  monkeypatch.setattr(repl, '_claude_command', command)
+  native = mock.Mock(spec=_rpc_client.Client)
+  native.close = mock.AsyncMock()
+  native.claude_snapshot = claude_session.Snapshot(
+    'conv-1',
+    claude_session.Binding(**identity, compatibility_profile='fixture-v1'),
+  )
+
+  async def select(inference, old, *, accept):
+    assert inference.reasoning_effort == 'low'
+    assert old.reasoning_effort == 'max'
+    started.set()
+    await finish.wait()
+    return accept()
+
+  native.select_claude_model = mock.AsyncMock(side_effect=select)
+  if attached:
+    repl._client = native
+  operation = asyncio.create_task(
+    repl._select_claude_model('claude-opus-4-8', identity)
+  )
+  try:
+    await asyncio.wait_for(started.wait(), 3)
+    assert repl.reasoning_effort == 'max'
+    assert repl.model_selection == previous
+    if cancel:
+      for action in repl._selector_cancel():
+        await _dispatch_and_wait(repl, action)
+    finish.set()
+    await asyncio.wait_for(operation, 3)
+    assert repl.reasoning_effort == ('max' if cancel else 'low')
+    assert repl.model_selection == (
+      previous
+      if cancel
+      else _models.ModelOption(
+        'claude-opus-4-8', 'claude-opus-4-8', api='anthropic-oauth'
+      )
+    )
+    assert repl._input.text == 'unfinished draft'
+    if not cancel:
+      assert _models.load_last_selection() == repl.model_selection
+      assert repl._command_context().model_api == 'anthropic-oauth'
+  finally:
+    finish.set()
+    await operation
+    await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('provenance', ['explicit', 'saved', 'unknown'])
+async def test_claude_switch_preserves_intentional_unsupported_reasoning(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  fullscreen: bool,
+  provenance: str,
+) -> None:
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  repl = _repl(fullscreen=fullscreen, create_session=True)
+  values = {'api': 'reflection'}
+  if provenance != 'unknown':
+    values |= {
+      'reasoning_effort_override': provenance == 'explicit',
+      'reasoning_effort_saved': provenance == 'saved',
+    }
+  repl._worker_configuration = repl._worker_configuration.updated(values)
+  previous = repl.model_selection
+  repl._input.text = 'unfinished draft'
+  native = mock.AsyncMock()
+  monkeypatch.setattr(repl, '_claude_command', native)
+  dispatched = mock.Mock(wraps=repl.dispatch)
+  monkeypatch.setattr(repl, 'dispatch', dispatched)
+  try:
+    await repl._switch_model(
+      _models.ModelOption('claude-opus-4-8', 'Opus', api='anthropic-oauth')
+    )
+    assert repl.model_selection == previous
+    assert repl.reasoning_effort == 'medium'
+    assert repl._input.text == 'unfinished draft'
+    native.assert_not_called()
+    assert any(
+      isinstance(action, _actions.ShowText) and '/effort low' in action.text
+      for call in dispatched.call_args_list
+      for action in call.args
+    )
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
 async def test_claude_resume_defers_login_to_keep_history_accessible(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -15650,13 +15792,29 @@ async def test_claude_usage_uses_native_bound_identity(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('payload', ['nack', 'turn_error'])
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize(
+  'consumer', ['main', 'compactor', 'after_switch', 'ordinary']
+)
 async def test_claude_untyped_runtime_errors_do_not_echo_provider_payload(
   payload: str,
+  fullscreen: bool,
+  consumer: str,
 ) -> None:
-  async with _visual_repl(fullscreen=True, rows=30) as (repl, terminal):
+  async with _visual_repl(fullscreen=fullscreen, rows=30) as (repl, terminal):
     repl._worker_configuration = repl._worker_configuration.updated({
-      'api': 'anthropic-oauth'
+      'api': 'anthropic-oauth' if consumer == 'main' else 'anthropic-messages',
+      'compaction_model_api': 'anthropic-oauth'
+      if consumer == 'compactor'
+      else None,
+      'compaction_model': 'claude-opus-4-8'
+      if consumer == 'compactor'
+      else None,
     })
+    native = mock.Mock(spec=_rpc_client.Client)
+    native.close = mock.AsyncMock()
+    native.claude_sensitive = consumer == 'after_switch'
+    repl._client = native
     repl.dispatch(_actions.SetReplaying(False))
     if payload == 'nack':
       event = agent_pb2.SessionMessage(
@@ -15673,6 +15831,14 @@ async def test_claude_untyped_runtime_errors_do_not_echo_provider_payload(
         )
       )
     repl._handle_message(event)
-    frame = _frame_text(repl, terminal)
-    assert 'SYNTHETIC_PRIVATE_ERROR_CANARY' not in frame
-    assert 'Claude' in frame
+    # Inline conversations render in scrollback, outside the prompt frame.
+    frame = (
+      _frame_text(repl, terminal)
+      if fullscreen
+      else _rendering.strip_ansi(repl._render_history())
+    )
+    assert ('SYNTHETIC_PRIVATE_ERROR_CANARY' in frame) == (
+      consumer == 'ordinary'
+    )
+    if consumer != 'ordinary':
+      assert 'Claude' in frame

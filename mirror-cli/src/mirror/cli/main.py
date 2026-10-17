@@ -441,6 +441,10 @@ def _parse_args() -> argparse.Namespace:
     )
   if args.model is None:
     args.model = _models.default_model(args.api)
+  if not args.reasoning_effort_override:
+    args.reasoning_effort = _models.default_reasoning_effort(
+      args.model_api or args.api, args.model
+    )
   return args
 
 
@@ -562,6 +566,8 @@ def main(logs: _logging.Logs | None = None) -> None:
   # Interactive validation belongs inside the UI so /model can repair it.
   if args.command in ('exec', 'acp'):
     try:
+      if api == 'anthropic-oauth':
+        _models.validate_claude_reasoning(args.model, args.reasoning_effort)
       _models.validate_connection(
         api, args.base_url or args.model_base_url or ''
       )

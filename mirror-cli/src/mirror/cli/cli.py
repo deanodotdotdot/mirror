@@ -495,6 +495,12 @@ class _Repl:
     self, *actions: _actions.Action
   ) -> tuple[asyncio.Task[None], ...]:
     """Reduce actions, repaint once, and return the started effect tasks."""
+    if any(isinstance(action, _actions.SetReasoning) for action in actions):
+      # A user or extension choice wins future provider defaults. Missing
+      # provenance is also treated as explicit by _model_reasoning.
+      self._worker_configuration = self._worker_configuration.updated({
+        'reasoning_effort_override': True,
+      })
     if (
       not actions
       and self._state.extension_themes == self._extension_host.themes
@@ -1012,6 +1018,10 @@ class _Repl:
       str(configuration.values['conversation_id']),
       on_message=on_message,
       on_error=on_error,
+      claude_compaction=self._worker_configuration.values.get(
+        'compaction_model_api'
+      )
+      == 'anthropic-oauth',
       host_tools_registry=self._host_tools_registry,
       inference_config=configuration.inference_config(
         self._state.status_bar.model,
@@ -1275,6 +1285,7 @@ class _Repl:
       cwd=self._session_directory(),
       remote=self._remote_endpoint is not None,
       session_id=self._session_id,
+      model_api=self.model_selection.api,
     )
 
   def _focus(self) -> bool:
@@ -1347,7 +1358,9 @@ class _Repl:
     )
 
   def _uses_claude(self) -> bool:
-    return 'anthropic-oauth' in (
+    return (
+      self._client is not None and self._client.claude_sensitive is True
+    ) or 'anthropic-oauth' in (
       self.model_selection.api,
       self._worker_configuration.values.get('compaction_model_api'),
     )
@@ -1626,13 +1639,12 @@ class _Repl:
       return
     client = self._client
     confirmed = False
+    reasoning_effort = self._model_reasoning(selected)
     if client is not None:
       candidate = self._model_configuration(selected)
       try:
         confirmed = await client.select_claude_model(
-          candidate.inference_config(
-            model, self.reasoning_effort, remote=False
-          ),
+          candidate.inference_config(model, reasoning_effort, remote=False),
           self._worker_configuration.inference_config(
             self.model, self.reasoning_effort, remote=False
           ),
@@ -1655,7 +1667,9 @@ class _Repl:
       self.dispatch(_actions.ClearSelector())
       return
     self.dispatch(_actions.ClearSelector())
-    self._apply_model(selected, confirmed=confirmed)
+    self._apply_model(
+      selected, confirmed=confirmed, reasoning_effort=reasoning_effort
+    )
     if self._state.lifecycle.failure is not None:
       await self._retry_worker()
 
@@ -1801,13 +1815,32 @@ class _Repl:
     return self._worker_configuration.updated(updates)
 
   def _apply_model(
-    self, option: _models.ModelOption, *, confirmed: bool = False
+    self,
+    option: _models.ModelOption,
+    *,
+    confirmed: bool = False,
+    reasoning_effort: str | None = None,
   ) -> None:
     """Persist the selected provider after native confirmation when attached."""
+    reasoning_effort = reasoning_effort or self._model_reasoning(option)
     self._worker_configuration = self._model_configuration(option)
     self.dispatch(
-      _actions.ModelSwitchFinished(option.model_id, confirmed=confirmed)
+      _actions.ModelSwitchFinished(
+        option.model_id,
+        confirmed=confirmed,
+        reasoning_effort=reasoning_effort,
+      )
     )
+
+  def _model_reasoning(self, option: _models.ModelOption) -> str:
+    values = self._worker_configuration.values
+    if values.get('reasoning_effort_override') is False and not values.get(
+      'reasoning_effort_saved'
+    ):
+      return _models.default_reasoning_effort(
+        option.api or self.model_selection.api, option.model_id
+      )
+    return self.reasoning_effort
 
   async def _load_prompt_history(self) -> None:
     request = self._state.selector.selector
@@ -3408,6 +3441,8 @@ class _Repl:
       conversation_id,
       on_message=on_message,
       on_error=on_error,
+      claude_compaction=launch_configuration.values.get('compaction_model_api')
+      == 'anthropic-oauth',
       host_tools_registry=self._host_tools_registry
       if self._remote_endpoint is None
       else None,
@@ -3597,6 +3632,13 @@ class _Repl:
           'create_session', False
         ):
           return option
+        try:
+          _models.validate_claude_reasoning(
+            option.model_id, self._model_reasoning(option)
+          )
+        except ValueError as error:
+          self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
+          return None
         expected_identity = expected_identity or self._claude_identity()
         status = await self._claude_command('status')
         if not active() or not isinstance(status, _claude_auth.Completed):

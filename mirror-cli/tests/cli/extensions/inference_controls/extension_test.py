@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import pathlib
 from unittest import mock
@@ -61,6 +62,38 @@ def _commands(
 def _command_context() -> commands.CommandContext:
   return commands.CommandContext(
     'model', 'medium', 'conversation', False, '/workspace'
+  )
+
+
+@pytest.mark.parametrize(
+  ('model', 'efforts'),
+  [
+    ('claude-opus-4-8', ('none', 'low')),
+    ('claude-sonnet-4-6', ('none', 'low')),
+    ('claude-sonnet-5', ('none',)),
+    ('unknown-candidate', None),
+  ],
+)
+def test_claude_effort_picker_only_advertises_reviewed_capabilities(
+  model: str, efforts: tuple[str, ...] | None
+) -> None:
+  context = dataclasses.replace(
+    _command_context(), model=model, model_api='anthropic-oauth'
+  )
+  available = _commands(_state())
+  result = commands.dispatch('/effort', context, available)
+  if efforts is None:
+    assert isinstance(result, actions.ShowText)
+    assert 'capabilities are unavailable' in result.text
+  else:
+    assert isinstance(result, actions.OpenSelector)
+    assert tuple(choice.value for choice in result.selector.choices) == efforts
+    for effort in efforts:
+      assert commands.dispatch(
+        '/effort ' + effort, context, available
+      ) == actions.SetReasoning(effort)
+  assert isinstance(
+    commands.dispatch('/effort max', context, available), actions.ShowText
   )
 
 

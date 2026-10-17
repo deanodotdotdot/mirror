@@ -787,11 +787,25 @@ def _reduce(
           state.status_bar.reasoning_effort, mode
         ),
       )
-    case _actions.ModelSwitchFinished(model_id, confirmed):
-      status_bar = dataclasses.replace(state.status_bar, model=model_id)
+    case _actions.ModelSwitchFinished(model_id, confirmed, reasoning_effort):
+      status_bar = dataclasses.replace(
+        state.status_bar,
+        model=model_id,
+        reasoning_effort=reasoning_effort or state.status_bar.reasoning_effort,
+      )
       return _with_status_bar(state, status_bar), (
         *((effects.SendInferenceConfiguration(),) if not confirmed else ()),
         effects.SaveLastModel(model_id),
+        *(
+          (
+            effects.SaveWorktreePreferences(
+              reasoning_effort, status_bar.approval_mode
+            ),
+          )
+          if reasoning_effort is not None
+          and reasoning_effort != state.status_bar.reasoning_effort
+          else ()
+        ),
       )
     case _actions.SetToolGroup(summary):
       return dataclasses.replace(state, tool_group=summary), ()
