@@ -3,7 +3,9 @@
 pub mod auth;
 mod contracts;
 mod history;
+pub mod metadata;
 mod oauth;
+mod private_files;
 pub mod profile;
 mod stream;
 mod wire;

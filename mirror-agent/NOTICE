@@ -38,6 +38,11 @@ Claude subscription wire compatibility is adapted from oh-my-pi
 and packages/catalog/src/compat/rules/auth/anthropic.kdl), commit
 df4f996e66a200ab7e0496114d43bdf85f32194d.
 
+Claude subscription metadata usage schema and parsing conventions are informed by
+the same pinned oh-my-pi revision (packages/ai/src/usage/claude.ts and
+claude-api.ts). Mirror does not adopt OMP's billing mutations, quota gating,
+account rotation or custom endpoint behavior.
+
 MIT License
 
 Copyright (c) 2025 Mario Zechner
