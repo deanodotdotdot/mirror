@@ -14818,3 +14818,248 @@ async def test_history_load_does_not_publish_a_previous_conversation(
     ]
   finally:
     await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('select_provider', [False, True])
+@pytest.mark.parametrize('outcome', ['success', 'escape', 'escape_committed'])
+async def test_claude_login_preserves_draft_and_commits_only_requested_selection(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  capfd: pytest.CaptureFixture[str],
+  select_provider: bool,
+  outcome: str,
+) -> None:
+  from mirror.cli import claude_auth
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  browser = mock.AsyncMock(return_value=True)
+  monkeypatch.setattr(claude_auth, 'open_browser', browser)
+  native = tmp_path / 'synthetic-native.py'
+  native.write_text(
+    """
+import json, sys
+assert sys.argv[1:] == ['auth', '--stdio']
+request = json.loads(sys.stdin.readline())
+base = {key: request[key] for key in ('schema_version', 'request_id', 'provider', 'action')}
+base['compatibility_profile'] = 'synthetic-fixture-v1'
+def emit(kind, **fields):
+  print(json.dumps(base | {'type': kind} | fields), flush=True)
+status = {'schema_version': 1, 'provider': 'anthropic-oauth', 'source': 'Mirror login', 'state': 'logged_out', 'identity': None, 'display': None, 'expires_at': None, 'recovery': 'login', 'error': None}
+if request['action'] == 'status':
+  emit('completed', result={'status': status})
+else:
+  assert request['action'] == 'login'
+  emit('authorization_url', authorization_url='https://claude.ai/oauth/authorize?state=SYNTHETIC_PRIVATE_STATE', expires_at='2026-10-17T19:00:00Z')
+  control = json.loads(sys.stdin.readline())
+  if control['type'] == 'cancel' and CANCEL_BEFORE_COMMIT:
+    emit('error', error={'schema_version': 1, 'kind': 'login_cancelled', 'retry': 'terminal', 'recovery': 'none', 'details': {}}, phase='awaiting_callback', commit_outcome='not_committed')
+  else:
+    assert control['type'] in ('callback', 'cancel')
+    if control['type'] == 'callback':
+      assert control['value'] == 'SYNTHETIC_PRIVATE_CALLBACK'
+    status.update(state='usable', identity={'account_id': '11111111-1111-4111-8111-111111111111', 'organization_id': '22222222-2222-4222-8222-222222222222'}, expires_at='2026-10-17T19:00:00Z', recovery='none')
+    emit('completed', result={'status': status})
+""".replace('CANCEL_BEFORE_COMMIT', repr(outcome != 'escape_committed'))
+  )
+  with (
+    _input_defaults.create_pipe_input() as pipe,
+    _current.create_app_session(input=pipe, output=_output_base.DummyOutput()),
+  ):
+    repl = _repl(model='previous-model', create_session=True)
+    repl._worker_command = (sys.executable, str(native))
+    repl._worker_configuration = repl._worker_configuration.updated({
+      'api': 'openai-responses',
+    })
+    repl._input.text = 'unfinished draft'
+    previous = repl.model_selection
+    _models.save_last_selection(previous)
+    ready = asyncio.Event()
+    running = asyncio.create_task(repl._app.run_async(pre_run=ready.set))
+    await ready.wait()
+    with _current.set_app(repl._app):
+      operation = asyncio.create_task(
+        _dispatch_and_wait(
+          repl,
+          _actions.ModelResolved(
+            _models.ModelOption(
+              'claude-selected', 'Claude subscription', api='anthropic-oauth'
+            )
+          )
+          if select_provider
+          else _actions.ClaudeCommand('login'),
+        )
+      )
+    try:
+
+      async def wait_for_prompt() -> None:
+        while repl._secret_input is None:
+          await asyncio.sleep(0)
+
+      await asyncio.wait_for(wait_for_prompt(), 3)
+      assert repl.model_selection == previous
+      if select_provider:
+        assert browser.call_count == 0
+        pipe.send_text('\r')
+
+      async def wait_for_browser() -> None:
+        while browser.call_count == 0:
+          await asyncio.sleep(0)
+
+      await asyncio.wait_for(wait_for_browser(), 3)
+      private_buffer = repl._secret_input
+      assert private_buffer is not None
+      pipe.send_text('SYNTHETIC_PRIVATE_CALLBACK')
+
+      async def wait_for_callback() -> None:
+        while private_buffer.text != 'SYNTHETIC_PRIVATE_CALLBACK':
+          await asyncio.sleep(0)
+
+      await asyncio.wait_for(wait_for_callback(), 3)
+      assert 'SYNTHETIC_PRIVATE' not in repr(repl._state)
+      assert not repl.transcript_entries()
+      pipe.send_text('\r' if outcome == 'success' else '\x1b')
+      await asyncio.wait_for(operation, 5)
+      assert private_buffer.text == ''
+      assert repl._secret_input is None
+      assert repl._input.text == 'unfinished draft'
+      public = capfd.readouterr().out + _render_welcome_notices(repl)
+      assert 'SYNTHETIC_PRIVATE' not in public
+      if outcome == 'escape_committed':
+        assert 'signed in' in public
+        if select_provider:
+          assert 'model selection was cancelled' in public
+      if select_provider and outcome == 'success':
+        assert repl.model_selection.api == 'anthropic-oauth'
+        assert repl.model_selection.model_id == 'claude-selected'
+        assert _models.load_last_selection() == repl.model_selection
+      else:
+        assert repl.model_selection == previous
+        assert _models.load_last_selection() == previous
+      assert not running.done()
+    finally:
+      repl._app.exit()
+      operation.cancel()
+      await asyncio.gather(operation, running, return_exceptions=True)
+      await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_selection_rejects_custom_endpoint_before_auth(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  repl = _repl(model='previous-model')
+  previous = repl.model_selection
+  native = mock.AsyncMock(side_effect=AssertionError('native auth started'))
+  monkeypatch.setattr(repl, '_claude_command', native)
+  await _dispatch_and_wait(
+    repl,
+    _actions.ModelResolved(
+      _models.ModelOption(
+        'claude-selected',
+        'Claude',
+        api='anthropic-oauth',
+        base_url='https://invalid.example',
+      )
+    ),
+  )
+  assert repl.model_selection == previous
+  native.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_claude_typed_error_preserves_partial_output_and_safe_recovery() -> (
+  None
+):
+  async with _visual_repl(fullscreen=True, rows=40) as (repl, terminal):
+    repl.dispatch(_actions.SetReplaying(False))
+    repl._handle_message(
+      _delta({'role': 'user', 'content': 'Explain the result.'})
+    )
+    repl.dispatch(_actions.TurnStarted())
+    repl._handle_message(_stream_content('Partial answer already displayed.'))
+    repl._handle_message(
+      agent_pb2.SessionMessage(
+        runtime_delta=agent_pb2.RuntimeDelta(
+          turn_error=agent_pb2.TurnError(
+            message='SYNTHETIC_PRIVATE_ERROR_CANARY',
+            claude_error=agent_pb2.ClaudeErrorDetails(
+              schema_version=1,
+              kind='partial_stream_error',
+              recovery='none',
+              retry_disposition='terminal',
+              compatibility_profile='synthetic-fixture-v1',
+            ),
+          )
+        )
+      )
+    )
+    frame = _frame_text(repl, terminal)
+    assert 'Partial answer already displayed.' in frame
+    assert 'output is incomplete' in frame
+    assert 'SYNTHETIC_PRIVATE_ERROR_CANARY' not in frame
+    repl._handle_message(
+      agent_pb2.SessionMessage(
+        runtime_delta=agent_pb2.RuntimeDelta(turn_completed=empty_pb2.Empty())
+      )
+    )
+    frame = _frame_text(repl, terminal)
+    assert 'Partial answer already displayed.' in frame
+    assert 'output is incomplete' in frame
+    assert not repl._state.activity.busy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+async def test_claude_private_login_displays_link_and_headless_instructions(
+  monkeypatch: pytest.MonkeyPatch,
+  fullscreen: bool,
+) -> None:
+  from mirror.cli import claude_auth
+
+  ready = asyncio.Event()
+  sent = False
+
+  async def event() -> claude_auth.Event:
+    nonlocal sent
+    if not sent:
+      sent = True
+      return claude_auth.AuthorizationUrl(
+        'https://claude.ai/oauth/authorize?state='
+        + 'a' * 380
+        + 'SYNTHETIC_URL_END',
+        '2026-10-17T19:00:00Z',
+      )
+    await asyncio.Event().wait()
+    raise AssertionError('unreachable')
+
+  async def browser(_: str) -> bool:
+    ready.set()
+    return True
+
+  native = mock.MagicMock()
+  native.__aenter__.return_value = native
+  native.read_event = mock.AsyncMock(side_effect=event)
+  native.cancel_result = mock.AsyncMock(
+    side_effect=claude_auth.CommandInterrupted()
+  )
+  monkeypatch.setattr(claude_auth, 'NativeCommand', lambda *_: native)
+  monkeypatch.setattr(claude_auth, 'open_browser', browser)
+  async with _visual_repl(fullscreen=fullscreen, rows=24) as (repl, terminal):
+    operation = asyncio.create_task(repl._claude_command('login'))
+    try:
+      await asyncio.wait_for(ready.wait(), 3)
+      assert repl._secret_input is not None
+      repl._secret_input.text = 'SYNTHETIC_PRIVATE_CALLBACK'
+      frame = _frame_text(repl, terminal)
+      assert 'https://claude.ai/oauth/authorize' in frame
+      assert 'SYNTHETIC_URL_END' in ''.join(frame.split())
+      assert 'localhostbrowsererror' in ''.join(frame.split())
+      assert 'Inputishidden' in ''.join(frame.split())
+      assert 'Esc to cancel' in frame
+      assert 'SYNTHETIC_PRIVATE_CALLBACK' not in frame
+      assert not repl.transcript_entries()
+    finally:
+      operation.cancel()
+      await asyncio.gather(operation, return_exceptions=True)

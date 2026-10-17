@@ -70,6 +70,8 @@ _PROTOCOL_KEY_ENV = {
 
 def _credential_hint(api: str) -> str:
   """A short readiness note for a protocol, shown beside its picker row."""
+  if api == 'anthropic-oauth':
+    return 'Mirror login · select to connect'
   if api == 'anthropic-messages':
     return 'key set' if api_keys.has_anthropic_key() else 'select to sign in'
   if api == 'reflection':
@@ -352,7 +354,10 @@ def model_selector(current_model: str) -> selection.Selector[actions.Action]:
 
 
 def _login(_: commands.CommandContext, arguments: str) -> actions.Action:
-  del arguments
+  if arguments == 'claude':
+    return actions.ClaudeCommand('login')
+  if arguments:
+    return actions.ShowText('Usage: /login [claude]', style='ui.warning')
   if reflection.has_key():
     source = (
       'REFLECTION_API_KEY'
@@ -367,7 +372,10 @@ def _login(_: commands.CommandContext, arguments: str) -> actions.Action:
 
 
 def _logout(_: commands.CommandContext, arguments: str) -> actions.Action:
-  del arguments
+  if arguments == 'claude':
+    return actions.ClaudeCommand('logout')
+  if arguments:
+    return actions.ShowText('Usage: /logout [claude]', style='ui.warning')
   return actions.ForgetReflectionKey()
 
 
@@ -422,13 +430,15 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
     return (
       commands.CommandDef(
         'login',
-        'Check Reflection credentials or sign in',
+        'Sign in to Reflection or use /login claude',
         _login,
+        arguments=commands.OptionalArguments('[claude]'),
       ),
       commands.CommandDef(
         'logout',
-        'Remove the saved Reflection API key',
+        'Remove Reflection credentials or use /logout claude',
         _logout,
+        arguments=commands.OptionalArguments('[claude]'),
       ),
       commands.CommandDef(
         'model',

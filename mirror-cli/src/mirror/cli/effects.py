@@ -355,6 +355,13 @@ class CancelModelSelection:
 
 
 @dataclasses.dataclass(frozen=True)
+class ClaudeCommand:
+  """Run a private native operation without changing the selected provider."""
+
+  action: str
+
+
+@dataclasses.dataclass(frozen=True)
 class ForgetReflectionKey:
   """Remove the local saved Reflection credential."""
 
@@ -518,6 +525,7 @@ type CoreEffect = (
   | ResolveResumeReference
   | ResumeConversation
   | CancelModelSelection
+  | ClaudeCommand
   | ForgetReflectionKey
   | SwitchModel
   | SwitchRemoteModel

@@ -160,8 +160,13 @@ def test_extension_commands_open_selectors(
           'openai-chat-completions · set $OPENROUTER_API_KEY',
         ),
         selection.Choice(
+          'anthropic-oauth',
+          'Claude subscription',
+          'anthropic-oauth · Mirror login · select to connect',
+        ),
+        selection.Choice(
           'anthropic-messages',
-          'Anthropic Messages API',
+          'Anthropic API',
           'anthropic-messages · select to sign in',
         ),
         selection.Choice('next', 'Next', 'next'),
@@ -213,6 +218,7 @@ def test_model_command_offers_protocols_without_a_config(
     'openai-codex-responses',
     'openai-responses',
     'openai-chat-completions',
+    'anthropic-oauth',
     'anthropic-messages',
   )
 
@@ -469,3 +475,20 @@ def test_saved_anthropic_key_enables_catalog(
   action = selector.on_select('anthropic-messages')
   assert isinstance(action, actions.OpenSelector)
   assert action.selector.id == 'anthropic-models'
+
+
+@pytest.mark.parametrize('action', ['login', 'logout'])
+def test_claude_auth_commands_are_explicit_and_reject_extra_arguments(
+  action: str,
+) -> None:
+  available = _commands(_state())
+  assert commands.dispatch(
+    f'/{action} claude', _command_context(), available
+  ) == actions.ClaudeCommand(action)
+  for arguments in ('other', 'claude extra', 'SYNTHETIC_PRIVATE_CANARY'):
+    result = commands.dispatch(
+      f'/{action} {arguments}', _command_context(), available
+    )
+    assert result == actions.ShowText(
+      f'Usage: /{action} [claude]', style='ui.warning'
+    )

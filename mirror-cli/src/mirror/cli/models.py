@@ -32,7 +32,8 @@ WIRE_PROTOCOLS: tuple[tuple[str, str], ...] = (
   ('openai-codex-responses', 'ChatGPT plan billing (Codex login)'),
   ('openai-responses', 'OpenAI Responses API'),
   ('openai-chat-completions', 'OpenRouter'),
-  ('anthropic-messages', 'Anthropic Messages API'),
+  ('anthropic-oauth', 'Claude subscription'),
+  ('anthropic-messages', 'Anthropic API'),
 )
 
 
@@ -76,6 +77,14 @@ def base_env(api: str) -> str | None:
 
 def validate_connection(api: str, base_url: str) -> None:
   """Check local provider prerequisites without probing model availability."""
+  if api == 'anthropic-oauth':
+    endpoint = base_url or os.environ.get('ANTHROPIC_BASE_URL', '')
+    if endpoint and endpoint.rstrip('/') != 'https://api.anthropic.com':
+      raise ValueError(
+        'Claude subscription requires the default Anthropic endpoint. '
+        'Unset ANTHROPIC_BASE_URL or select Anthropic API.'
+      )
+    return
   if api == 'reflection':
     if base_url and base_url.rstrip('/') != reflection.BASE_URL:
       raise ValueError(

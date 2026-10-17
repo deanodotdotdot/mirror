@@ -391,6 +391,8 @@ def _reduce(
       return state, (effects.LoadRewindTurns(state.session.conversation_id),)
     case _actions.CancelModelSelection():
       return state, (effects.CancelModelSelection(),)
+    case _actions.ClaudeCommand(operation):
+      return state, (effects.ClaudeCommand(operation),)
     case _actions.ForgetReflectionKey():
       return state, (effects.ForgetReflectionKey(),)
     case _actions.SetModel(model_id):

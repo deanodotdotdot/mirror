@@ -498,6 +498,11 @@ emit('authorization_url', authorization_url='https://claude.ai/oauth/authorize?s
     native_body += (
       "time.sleep(0.2); emit('completed', result={'status': STATUS})\n"
     )
+  elif mode == 'cancel_committed':
+    native_body += (
+      "assert json.loads(sys.stdin.readline())['type'] == 'cancel'\n"
+      "emit('completed', result={'status': STATUS})\n"
+    )
   elif mode == 'cancel':
     native_body += (
       'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
@@ -560,7 +565,9 @@ os.write({result_write}, json.dumps(result).encode())
     os.close(result_read)
 
 
-@pytest.mark.parametrize('mode', ['manual', 'automatic', 'cancel'])
+@pytest.mark.parametrize(
+  'mode', ['manual', 'automatic', 'cancel', 'cancel_committed']
+)
 def test_actual_controlling_tty_input_completion_and_cancellation(
   tmp_path: pathlib.Path,
   mode: str,
@@ -586,12 +593,15 @@ def test_actual_controlling_tty_input_completion_and_cancellation(
       if b'Ctrl-C cancels.' in private and not sent:
         if mode != 'automatic':
           os.write(
-            master, b'\x03' if mode == 'cancel' else _CANARY.encode() + b'\n'
+            master,
+            b'\x03'
+            if mode in ('cancel', 'cancel_committed')
+            else _CANARY.encode() + b'\n',
           )
-          if mode == 'cancel':
+          if mode in ('cancel', 'cancel_committed'):
             cancelled_at = time.monotonic()
         sent = True
-      if mode == 'cancel' and sent:
+      if mode in ('cancel', 'cancel_committed') and sent:
         if (
           termios.tcgetattr(master)[3] & termios.ECHO and restored_after is None
         ):
@@ -616,3 +626,69 @@ def test_actual_controlling_tty_input_completion_and_cancellation(
       assert b'Browser launch failed' in private
     if mode == 'cancel':
       assert restored_after is not None and restored_after < 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('committed', [False, True])
+async def test_native_terminal_during_cancel_is_authoritative(
+  tmp_path: pathlib.Path, committed: bool
+) -> None:
+  body = """
+emit('progress', phase='committing', notice=None)
+control = json.loads(sys.stdin.readline())
+assert control['type'] == 'cancel'
+"""
+  body += (
+    "emit('completed', result={'status': STATUS})\n"
+    if committed
+    else "emit('error', error=ERROR | {'kind': 'login_cancelled', 'recovery': 'none'}, phase='committing', commit_outcome='not_committed')\n"
+  )
+  executable = _worker(tmp_path, body)
+  async with claude_auth.NativeCommand([str(executable)], 'login') as command:
+    assert isinstance(await command.read_event(), claude_auth.Progress)
+    result = await command.cancel_result()
+  if committed:
+    assert isinstance(result, claude_auth.Completed)
+  else:
+    assert isinstance(result, claude_auth.Failed)
+    assert result.commit_outcome == 'not_committed'
+
+
+@pytest.mark.asyncio
+async def test_installed_native_status_logout_protocol(
+  tmp_path: pathlib.Path,
+) -> None:
+  executable = os.environ.get('MIRROR_TEST_NATIVE_WORKER')
+  if not executable:
+    pytest.skip(
+      'Set MIRROR_TEST_NATIVE_WORKER to verify the built native command'
+    )
+  for action in ('status', 'logout', 'status'):
+    async with claude_auth.NativeCommand([executable], action) as command:
+      result = await command.read_event()
+      assert isinstance(result, claude_auth.Completed)
+      assert result.status.state == 'logged_out'
+      assert result.status.identity is None
+      assert result.compatibility_profile.startswith('mirror-phase0-')
+    if action == 'status' and not (tmp_path / '.mirror').exists():
+      assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_operation_timeout_allows_native_terminal_during_cleanup(
+  tmp_path: pathlib.Path,
+) -> None:
+  executable = _worker(
+    tmp_path,
+    """
+emit('progress', phase='committing', notice=None)
+assert json.loads(sys.stdin.readline())['type'] == 'cancel'
+emit('completed', result={'status': STATUS})
+""",
+  )
+  async with claude_auth.NativeCommand([str(executable)], 'login') as command:
+    assert isinstance(await command.read_event(), claude_auth.Progress)
+    command._deadline = time.monotonic() - 1
+    with pytest.raises(claude_auth.CommandInterrupted):
+      await command.read_event()
+    assert isinstance(await command.cancel_result(), claude_auth.Completed)

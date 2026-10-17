@@ -243,6 +243,10 @@ def _wheel(path: pathlib.Path, version: str) -> pathlib.Path:
       'mirror/updater.py', pathlib.Path(updater.__file__).read_text()
     )
     archive.writestr(
+      'mirror/command_line.py',
+      pathlib.Path(launcher.command_line.__file__).read_text(),
+    )
+    archive.writestr(
       'mirror/cli/main.py',
       'import json, pathlib, sys\n'
       f'print(json.dumps({{"version": "{version}", "argv": sys.argv[1:], "cwd": str(pathlib.Path.cwd())}}))\n',

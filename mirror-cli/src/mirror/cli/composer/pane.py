@@ -78,6 +78,7 @@ class Pane:
     *,
     fullscreen: bool,
     secret_active: Callable[[], bool] = lambda: False,
+    secret_select_model: Callable[[], bool] = lambda: True,
     show_activity: Callable[[], bool] = lambda: True,
     queued_input_pending: Callable[[], bool] | None = None,
     get_size: Callable[[], data_structures.Size] = lambda: (
@@ -105,14 +106,21 @@ class Pane:
     )
     setup_footer = containers.ConditionalContainer(
       containers.Window(
-        controls.FormattedTextControl([
-          ('class:ui.accent bold', ' Enter'),
-          ('class:ui.muted', ' to connect  ·  '),
-          ('bold', 'Esc'),
-          ('class:ui.muted', ' to choose another model  ·  '),
-          ('bold', 'Ctrl+C'),
-          ('class:ui.muted', ' to cancel'),
-        ]),
+        controls.FormattedTextControl(
+          lambda: [
+            ('class:ui.accent bold', ' Enter'),
+            ('class:ui.muted', ' to connect  ·  '),
+            ('bold', 'Esc'),
+            (
+              'class:ui.muted',
+              ' to choose another model  ·  '
+              if secret_select_model()
+              else ' to cancel  ·  ',
+            ),
+            ('bold', 'Ctrl+C'),
+            ('class:ui.muted', ' to cancel'),
+          ]
+        ),
         height=1,
       ),
       filter=filters.Condition(secret_active),

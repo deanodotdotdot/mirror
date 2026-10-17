@@ -12,10 +12,10 @@ verification and merge into the integration branch.
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
 | 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after Astra review and final Linux verification. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdb after independent Astra review and manager verification. Three P2 findings fixed; final Linux verification passed 622 tests plus binding and launcher checks. See [native protocol](AUTH-PROTOCOL.md). |
-| 4. OAuth Messages transport | 2 | Implemented and independently Astra reviewed; three P2 findings fixed, awaiting manager verification/merge. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
+| 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4 after independent Astra review and manager verification; three P2 findings fixed. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
 | 5. Model discovery + usage | 3 | Astra implementation underway from merged Task 3. |
-| 6. Agent execution integration | 3 + 4 | Not started. |
-| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Initial private-command/terminal slice checkpointed; remaining Astra integration waits for Tasks 5–6. |
+| 6. Agent execution integration | 3 + 4 | Astra implementation underway from merged Tasks 3–4. |
+| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Independent Astra continuation checkpointed in the existing worktree, preserving the Sol initial private-command checkpoint. Native auth interoperability, private TUI login/logout and safe error rendering pass focused checks; final metadata/binding integration waits for Tasks 5–6. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Not started. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
@@ -25,7 +25,7 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Tasks 1–3 are merged; five production tasks (4–8)
+manual/random callback fields. Tasks 1–4 are merged; four production tasks (5–8)
 remain pending review, merge or implementation. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
@@ -167,3 +167,31 @@ workspace/all-target compilation including the Python/eval binding passed.
 No remaining P2-or-higher findings. Final reviewed/integrated Linux verification
 remains with the manager, and Task 8 must exercise the approved ordering boundary
 with both live acceptance models. No live calls or credential reads were used.
+
+
+Task 7's remaining implementation uses Astra xhigh per the user's updated model
+policy; its initial Sol checkpoint is preserved. The private auth client now
+honors a native terminal result received during bounded cancellation, including
+a completion after the UI requests cancellation. TUI Claude login uses an
+isolated hidden buffer and transient display, clears both on Escape/completion,
+and restores the prior draft. Explicit login changes the grant only; selecting
+the subscription commits a model only after local configuration validation and
+usable/refreshable native auth status or successful login. Reflection's bare
+login/logout behavior remains separate. Metadata catalog/usage and authoritative
+conversation binding/reconnect still await the merged Task 5/6 interfaces.
+
+Task 7 checkpoint validation: the merged Task 1–4 native binary builds in its
+own target directory. Final installed-package checks passed 90 focused
+Claude/auth/error/model/Reflection/TUI tests, including real native status/logout
+with synthetic temporary HOME, actual controlling-PTY manual/loopback completion,
+immediate echo restoration, late native completion after Ctrl-C, timeout cleanup,
+private link/instruction rendering in both TUI layouts, typed incomplete output,
+and late committed login plus Escape preserving the prior model and draft.
+A separate launcher/model/updater suite passed 99 tests with one existing
+installed-worker skip; its synthetic wheel fixture now includes the lightweight
+command-routing module imported by the launcher. Pyright reports zero errors or
+warnings, and diff/format checks pass. All checks use synthetic fixtures and no
+live provider calls or real credential reads. This is an implementation
+checkpoint, not independent review or production acceptance. Full packaged CI
+and final native metadata/execution interoperability remain for the integrated
+Task 5/6 source before Task 7's single PR is opened.

@@ -54,6 +54,7 @@ from rich import console as _console
 from rich import rule as _rule
 from rich import text as _text
 
+from mirror import claude_commands as _claude_commands
 from mirror import config as _config
 from mirror import skills as _skills
 from mirror import workspace as _workspace
@@ -61,6 +62,9 @@ from mirror.cli import actions as _actions
 from mirror.cli import agents as _agents
 from mirror.cli import api_keys as _api_keys
 from mirror.cli import bash_approvals
+from mirror.cli import claude_auth as _claude_auth
+from mirror.cli import claude_errors as _claude_errors
+from mirror.cli import claude_login as _claude_login
 from mirror.cli import cli_store as _cli_store
 from mirror.cli import commands as _commands
 from mirror.cli import conversation_metrics as _conversation_metrics
@@ -215,6 +219,7 @@ class _Repl:
     self._extensions_loaded = extensions_loaded
     self._workspace_controller = workspace_controller
     self._secret_input: _buffer.Buffer | None = None
+    self._claude_operation = False
     self._onboarding_model: (
       asyncio.Future[_models.ModelOption | None] | None
     ) = None
@@ -761,6 +766,10 @@ class _Repl:
           and not self._onboarding_model.done()
         ):
           self._onboarding_model.set_result(None)
+      case _effects.ClaudeCommand(action):
+        return self._app.create_background_task(
+          self._run_claude_command(action)
+        )
       case _effects.ForgetReflectionKey():
         return self._app.create_background_task(self._forget_reflection_key())
       case _effects.SwitchModel(option):
@@ -1305,6 +1314,164 @@ class _Repl:
     option = _models.find_model(model_id)
     await asyncio.gather(*self.dispatch(_actions.ModelResolved(option)))
 
+  async def _run_claude_command(self, action: str) -> None:
+    await self._claude_command(action)
+
+  async def _claude_command(
+    self, action: str, *, offer: bool = False
+  ) -> _claude_auth.Completed | None:
+    """Use a dedicated private native process, never the worker log transport."""
+    if self._remote_endpoint is not None:
+      self.dispatch(
+        _actions.ShowText(
+          'Claude subscription commands require a local Mirror session.',
+          style='ui.warning',
+        )
+      )
+      return None
+    if self._claude_operation or self._secret_input is not None:
+      return None
+    if action == 'login' and self._state.activity.busy:
+      self.dispatch(
+        _actions.ShowText(
+          'Finish or interrupt the current turn before signing in to Claude.',
+          style='ui.warning',
+        )
+      )
+      return None
+    self._claude_operation = True
+    cancelled_choice = False
+    try:
+      if action == 'login':
+        outcome = await self._prompt_claude_login(offer=offer)
+        result = outcome.result
+        cancelled_choice = offer and outcome.dismissed
+      else:
+        async with _claude_auth.NativeCommand(
+          self._worker_command, action
+        ) as command:
+          try:
+            result = await command.read_event()
+          except (asyncio.CancelledError, _claude_auth.CommandInterrupted):
+            result = await command.cancel_result()
+      if isinstance(result, _claude_auth.Failed):
+        message = _claude_commands.error_text(
+          result.error, result.compatibility_profile
+        )
+        if result.commit_outcome == 'unknown':
+          message += ' Run mirror auth status claude before retrying.'
+        self.dispatch(_actions.ShowText(message, style='ui.warning'))
+        return None
+      if not isinstance(result, _claude_auth.Completed):
+        raise _claude_auth.ProtocolError()
+      if action != 'status':
+        self.dispatch(
+          _actions.ShowText(
+            _claude_commands.status_text(
+              result.status, result.compatibility_profile
+            )
+          )
+        )
+      if cancelled_choice:
+        self.dispatch(
+          _actions.ShowText(
+            'Sign-in completed; the model selection was cancelled.'
+          )
+        )
+        return None
+      return result
+    except (_claude_auth.CommandCancelled, asyncio.CancelledError):
+      self.dispatch(
+        _actions.ShowText(
+          'Claude login cancelled. Run mirror auth status claude to check the saved login.',
+          style='ui.warning',
+        )
+      )
+      return None
+    except (OSError, RuntimeError) as error:
+      message = (
+        str(error)
+        if isinstance(
+          error,
+          (
+            _claude_auth.ProtocolError,
+            _claude_auth.CommandInterrupted,
+            _claude_auth.TerminalError,
+          ),
+        )
+        else (
+          'Could not complete the private Claude command. '
+          'Run mirror auth status claude before retrying.'
+        )
+      )
+      self.dispatch(_actions.ShowText(message, style='ui.warning'))
+      return None
+    finally:
+      self._claude_operation = False
+
+  async def _prompt_claude_login(
+    self, *, offer: bool
+  ) -> _claude_login.LoginOutcome:
+    prompt = _claude_login.LoginPrompt(self._app.invalidate, offer=offer)
+    previous = self._input_window.content
+    previous_height = self._input_window.height
+    self._input_window.height = lambda: _dimension.Dimension.exact(
+      max(1, self._app.output.get_size().rows - 5)
+    )
+    self._secret_input = prompt.buffer
+    self._input_window.content = prompt.control
+    self._app.layout.focus(self._input_window)
+    self._app.invalidate()
+    restored = False
+
+    def restore() -> None:
+      nonlocal restored
+      if restored:
+        return
+      restored = True
+      prompt.clear()
+      self._secret_input = None
+      self._input_window.content = previous
+      self._input_window.height = previous_height
+      self._app.invalidate()
+
+    try:
+      await prompt.confirm()
+      async with _claude_auth.NativeCommand(
+        self._worker_command, 'login'
+      ) as command:
+        login = asyncio.create_task(
+          _claude_commands.login(command, prompt, no_browser=False)
+        )
+        cancelled = asyncio.create_task(prompt.cancelled())
+        try:
+          await asyncio.wait(
+            (login, cancelled), return_when=asyncio.FIRST_COMPLETED
+          )
+          # A delivered native terminal result wins simultaneous Escape.
+          if login.done():
+            try:
+              return _claude_login.LoginOutcome(
+                login.result(), prompt.dismissed
+              )
+            except _claude_auth.CommandCancelled:
+              pass
+          login.cancel()
+          await asyncio.gather(login, return_exceptions=True)
+          restore()
+          return _claude_login.LoginOutcome(await command.cancel_result(), True)
+        except (asyncio.CancelledError, _claude_auth.CommandInterrupted):
+          login.cancel()
+          await asyncio.gather(login, return_exceptions=True)
+          restore()
+          return _claude_login.LoginOutcome(await command.cancel_result(), True)
+        finally:
+          login.cancel()
+          cancelled.cancel()
+          await asyncio.gather(login, cancelled, return_exceptions=True)
+    finally:
+      restore()
+
   async def _forget_reflection_key(self) -> None:
     """Remove saved credentials and reconnect if the active model needs them."""
     try:
@@ -1740,6 +1907,7 @@ class _Repl:
       fullscreen=self._fullscreen,
       get_size=lambda: self._app.output.get_size(),
       secret_active=lambda: self._secret_input is not None,
+      secret_select_model=lambda: not self._claude_operation,
       queued_input_pending=self._queued_input_pending,
       show_activity=lambda: (
         not (
@@ -2484,7 +2652,12 @@ class _Repl:
     if kind == 'turn_error':
       self.dispatch(_actions.CompactionFinished())
       self._stream_pane.clear_pending()
-      self._record_decoration(_rendering.error_text(delta.turn_error.message))
+      message = (
+        _claude_errors.text(delta.turn_error.claude_error)
+        if delta.turn_error.HasField('claude_error')
+        else delta.turn_error.message
+      )
+      self._record_decoration(_rendering.error_text(message))
     elif kind == 'turn_interrupted':
       if self._stream_pane.preview is not None:
         self._abort_stream()
@@ -3074,6 +3247,39 @@ class _Repl:
       return None
     while True:
       api = option.api or self.model_selection.api
+      if api == 'anthropic-oauth':
+        if self._remote_endpoint is not None:
+          self.dispatch(
+            _actions.ShowText(
+              'Claude subscription requires a local Mirror session.',
+              style='ui.warning',
+            )
+          )
+          return None
+        try:
+          _models.validate_connection(
+            api,
+            option.base_url
+            or (
+              str(self._worker_configuration.values.get('base_url') or '')
+              if initial
+              else ''
+            ),
+          )
+          if self._worker_configuration.values.get('api_key') is not None:
+            raise ValueError(
+              'Remove --api-key when selecting Claude subscription.'
+            )
+        except ValueError as error:
+          self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
+          return None
+        status = await self._claude_command('status')
+        if status is None:
+          return None
+        if status.status.state in ('usable', 'refreshable'):
+          return option
+        connected = await self._claude_command('login', offer=True)
+        return option if connected is not None else None
       if api == 'reflection':
         needs_key = not _reflection.has_key()
       elif api == 'anthropic-messages':

@@ -14,7 +14,7 @@ import time
 import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import Protocol, cast
 
 PROVIDER = 'anthropic-oauth'
 SCHEMA_VERSION = 1
@@ -155,6 +155,19 @@ def _timestamp(value: object) -> str | None:
     return parsed.isoformat().replace('+00:00', 'Z')
   except ValueError:
     raise ProtocolError() from None
+
+
+def compatibility_profile(value: object) -> str:
+  """Validate a native-owned public compatibility revision without copying it."""
+  if (
+    not isinstance(value, str)
+    or not 1 <= len(value) <= 128
+    or not all(
+      char.isascii() and (char.isalnum() or char in '-_.:/') for char in value
+    )
+  ):
+    raise ProtocolError()
+  return value
 
 
 def _identity(value: object) -> dict[str, str] | None:
@@ -355,6 +368,14 @@ class Failed:
 type Event = Progress | AuthorizationUrl | Completed | Failed
 
 
+class LoginTerminal(Protocol):
+  """Private transient UI; never a chat, action or logging destination."""
+
+  def notice(self, message: str) -> None: ...
+
+  async def read_callback(self) -> str: ...
+
+
 class NativeCommand:
   """One operation over dedicated pipes; EOF cancels native pending work."""
 
@@ -364,6 +385,9 @@ class NativeCommand:
     self.request_id = str(uuid.uuid4())
     self._process: asyncio.subprocess.Process | None = None
     self._terminal = False
+    self._result: Completed | Failed | None = None
+    self._cleanup_deadline: float | None = None
+    self._cancel_requested = False
     self._deadline = 0.0
     self._events = 0
     self._compatibility_profile: str | None = None
@@ -450,6 +474,8 @@ class NativeCommand:
       raise ProtocolError() from None
     event = self._parse_event(value)
     self._terminal = isinstance(event, (Completed, Failed))
+    if isinstance(event, (Completed, Failed)):
+      self._result = event
     return event
 
   def _parse_event(self, value: object) -> Event:
@@ -482,18 +508,10 @@ class NativeCommand:
       or record.get('action') != self.action
     ):
       raise ProtocolError()
-    profile = record.get('compatibility_profile')
+    profile = compatibility_profile(record.get('compatibility_profile'))
     if (
-      not isinstance(profile, str)
-      or not 1 <= len(profile) <= 128
-      or not all(
-        char.isascii() and (char.isalnum() or char in '-_.:/')
-        for char in profile
-      )
-      or (
-        self._compatibility_profile is not None
-        and self._compatibility_profile != profile
-      )
+      self._compatibility_profile is not None
+      and self._compatibility_profile != profile
     ):
       raise ProtocolError()
     self._compatibility_profile = profile
@@ -555,6 +573,26 @@ class NativeCommand:
       )
     raise ProtocolError()
 
+  async def cancel_result(self) -> Completed | Failed:
+    """Ask native to stop, retaining any already committed terminal result."""
+    if self._result is not None:
+      return self._result
+    self._cleanup_deadline = time.monotonic() + 2
+    # The operation deadline may have expired; the separate cleanup budget
+    # still allows a buffered or concurrently committed terminal to arrive.
+    self._deadline = self._cleanup_deadline
+    self._cancel_requested = True
+    try:
+      await self._send('cancel', {})
+    except CommandInterrupted:
+      # A completed native process may have closed stdin while its terminal
+      # event is still buffered on stdout. Always inspect that pipe first.
+      pass
+    while True:
+      event = await self.read_event()
+      if isinstance(event, (Completed, Failed)):
+        return event
+
   async def _close(self) -> None:
     process = self._process
     if process is None:
@@ -568,9 +606,13 @@ class NativeCommand:
     # Drain discarded output during shutdown so a full pipe cannot prevent
     # Process.wait from finishing, including after a framing-limit violation.
     draining = asyncio.create_task(discard_output())
-    grace_deadline = time.monotonic() + 2
+    grace_deadline = self._cleanup_deadline or time.monotonic() + 2
     try:
-      if not self._terminal and process.returncode is None:
+      if (
+        not self._terminal
+        and not self._cancel_requested
+        and process.returncode is None
+      ):
         try:
           await self._send('cancel', {})
         except (OSError, CommandInterrupted):

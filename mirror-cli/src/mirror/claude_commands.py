@@ -175,9 +175,9 @@ def status_text(
   return '\n'.join(lines)
 
 
-async def _login(
+async def login(
   command: claude_auth.NativeCommand,
-  terminal: claude_auth.PrivateTerminal,
+  terminal: claude_auth.LoginTerminal,
   *,
   no_browser: bool,
 ) -> claude_auth.Completed | claude_auth.Failed:
@@ -237,14 +237,26 @@ async def _execute(
   async with claude_auth.NativeCommand(
     worker.command(), args.action
   ) as command:
-    if args.action == 'login':
-      # Restoration runs before NativeCommand's asynchronous cancellation/reaping.
-      with claude_auth.PrivateTerminal() as terminal:
-        return await _login(command, terminal, no_browser=args.no_browser)
-    event = await command.read_event()
-    if not isinstance(event, (claude_auth.Completed, claude_auth.Failed)):
-      raise claude_auth.ProtocolError()
-    return event
+    try:
+      if args.action == 'login':
+        # Restore the terminal before bounded cancellation and native reaping.
+        with claude_auth.PrivateTerminal() as terminal:
+          return await login(command, terminal, no_browser=args.no_browser)
+      event = await command.read_event()
+      if not isinstance(event, (claude_auth.Completed, claude_auth.Failed)):
+        raise claude_auth.ProtocolError()
+      return event
+    except (
+      asyncio.CancelledError,
+      claude_auth.CommandCancelled,
+      claude_auth.CommandInterrupted,
+    ) as interrupted:
+      try:
+        return await command.cancel_result()
+      except claude_auth.CommandInterrupted:
+        if isinstance(interrupted, claude_auth.CommandInterrupted):
+          raise
+        raise claude_auth.CommandCancelled() from None
 
 
 def run(arguments: Sequence[str] | None = None) -> int:
