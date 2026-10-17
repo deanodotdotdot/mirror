@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 
-from mirror import updater
+from mirror import command_line, updater
 
 
 def run() -> None:
@@ -22,24 +22,32 @@ def run() -> None:
   parser.add_argument('--no-update', action='store_true')
   options, arguments = parser.parse_known_args()
   exec_mode = 'exec' in arguments
+  private_command = command_line.private_command(arguments)
   try:
     launch = updater.prepare(
       check=not options.no_update
       and not exec_mode
+      and not private_command
       and not any(
         arg in ('--help', '-h', '--version', '--showcase') for arg in arguments
       ),
-      interactive=not exec_mode and sys.stdin.isatty() and sys.stderr.isatty(),
+      interactive=not exec_mode
+      and not private_command
+      and sys.stdin.isatty()
+      and sys.stderr.isatty(),
       update_only=update_only,
     )
   except KeyboardInterrupt:
     raise SystemExit(130) from None
   # No TUI imports, database access, model auth, or workers precede this handoff.
   forwarded = sys.argv[1:] if launch.module == 'mirror.main' else arguments
+  module = launch.module
+  if private_command and module == 'mirror.cli.main':
+    module = 'mirror.claude_commands'
   # Children exec fresh programs; gRPC's at-fork thread shutdown can deadlock.
   os.execve(
     str(launch.python),
-    [str(launch.python), '-m', launch.module, *forwarded],
+    [str(launch.python), '-m', module, *forwarded],
     os.environ | {'GRPC_ENABLE_FORK_SUPPORT': '0'},
   )
 
