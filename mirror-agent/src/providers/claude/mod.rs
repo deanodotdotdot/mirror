@@ -1,5 +1,6 @@
-//! Shared Claude subscription contracts. No credential store or network client.
+//! Claude subscription contracts and Mirror-owned credential authority.
 
+pub mod auth;
 mod contracts;
 mod history;
 mod oauth;
