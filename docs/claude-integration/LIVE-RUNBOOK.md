@@ -148,16 +148,41 @@ commands (`$database` is an absolute task-local SQLite path):
   --model "$model" --reasoning-effort low --approval-mode auto
 ```
 
-Only use automatic approval in this disposable workspace. Send this task in the
-installed TUI and wait for a completed idle turn:
+Only use automatic approval in this disposable workspace. A simple read/edit
+prompt may complete without adaptive thinking. For the signed-history gate, use
+this bounded assignment problem at the same supported `low` effort. Put each job
+A–F in one slot 1–6, minimizing the sum of its row/slot cost:
 
-> Use the read tool to inspect fixture.txt, the edit tool to replace phase=before
-> with phase=after, and bash to run `printf 'command-one\n' > command-one.txt`.
-> Verify the results. Use no other files or network tools. Reply MIRROR_TOOLS_ONE_OK.
+| Job | 1 | 2 | 3 | 4 | 5 | 6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | 9 | 2 | 7 | 8 | 6 | 4 |
+| B | 6 | 4 | 3 | 7 | 5 | 8 |
+| C | 5 | 8 | 1 | 8 | 3 | 7 |
+| D | 7 | 6 | 9 | 4 | 2 | 5 |
+| E | 8 | 5 | 2 | 9 | 7 | 3 |
+| F | 4 | 7 | 6 | 3 | 8 | 2 |
 
-Verify the file bytes independently (`phase=after\n`, `command-one\n`) and exit
-the TUI normally. Start the observer below with the wheel's adjacent Python.
-It retains the pre-resume record bytes only in memory and emits a safe UUID.
+Require A before D, B/C nonadjacent, E in an even slot and F not first; break
+cost ties by lexicographic order. Ask for private planning before tools, without
+printing reasoning. Include the table and constraints in the prompt, then ask:
+
+> Use read to inspect fixture.txt, edit phase=before to phase=after, and bash to
+> independently enumerate all 720 orders in Python 3 and verify your candidate
+> against the optimum. Write solution-one.txt as order=ORDER;cost=COST followed
+> by a newline. Only after verification succeeds, write command-one.txt as
+> command-one followed by a newline. Verify the files. Use only these known
+> synthetic files, with no network. Reply exactly MIRROR_TOOLS_ONE_OK.
+
+The unique optimum is `BACFDE`, cost 17, among 100 feasible orders. Independently
+check exact bytes `phase=after\n`, `command-one\n` and
+`order=BACFDE;cost=17\n`; then exit normally. The first turn must include signed
+thinking associated with a tool request, valid provenance and successful tool
+results. A puzzle solution alone is not signed-reasoning evidence.
+
+Start the observer below with the wheel's adjacent Python. It retains the prior
+record bytes only in memory and emits the stored session UUID. Native sessions
+use simple 32-digit hex; validate UUID syntax while preserving that exact
+spelling for restart and self-lineage checks.
 Restart the **installed TUI** with that ID:
 
 ```bash
@@ -173,17 +198,34 @@ use a finite turn timeout (for example 300 seconds), discard buffers on every
 failure, and reap the CLI and child workers. It sends only these synthetic task
 strings; it must not replay login callbacks or inspect terminal data for tokens.
 
-Send a second task after restart:
+Send a second task after restart, repeating the cost table/base constraints and
+adding **F before C**. Ask for private planning, followed by:
 
-> Continue this conversation. Use read on fixture.txt, edit phase=after to
-> phase=resumed, and bash to run `printf 'command-two\n' > command-two.txt`.
-> Verify the results. Use no other files or network tools. Reply MIRROR_TOOLS_TWO_OK.
+> Use read on fixture.txt and solution-one.txt, edit phase=after to phase=resumed,
+> and bash to independently enumerate the orders and verify the revised optimum.
+> Write solution-two.txt as order=ORDER;cost=COST followed by a newline. Only
+> after verification succeeds, write command-two.txt as command-two followed by
+> a newline. Preserve the first solution and command files. Verify the files;
+> use no unrelated files or network. Reply exactly MIRROR_TOOLS_TWO_OK.
 
-Wait for idle completion, check exact file bytes (`phase=resumed\n`, both command
-files unchanged/as expected), and exit normally. Only then create the empty
-`$resume_done` marker to release the observer's second read. Tool results, a new
-successful final response, newly signed reasoning, and unchanged prior records
-are required. A restored screen or a second success marker alone is insufficient.
+The unique revised optimum is `BAFDCE`, cost 24, among 38 feasible orders. Check
+exact bytes `phase=resumed\n`, both command files and
+`order=BAFDCE;cost=24\n`, with the first solution unchanged. Exit normally, then
+create the empty `$resume_done` marker to release the observer's second read.
+Successful new tool results/final response and exact preservation of the signed
+prior history are required. A restored screen or marker alone is insufficient.
+Adaptive thinking may be absent in the new turn; signatures/provenance are still
+validated if it appears. Do not expand the frozen effort presets for this test.
+
+If a completed two-turn puzzle was stopped only by an observer overconstraint,
+preserve that failed run. A separate verification may validate its signed
+history, two user turns, exact second marker and all effects, retain that entire
+prefix in memory, and restart the raw stored session ID for a third task:
+read the fixture/second solution, edit `phase=resumed` to `phase=verified`, use
+bash to write `replay-check.txt` as `replay-verified\n`, preserve the earlier
+files and return `MIRROR_TOOLS_THREE_OK`. Check exact prefix preservation plus new
+successful read/edit/bash results. This new observation proves replay directly;
+it does not retroactively turn the earlier failed controller into a pass.
 
 ### Read-only, closed-output observer
 
@@ -213,7 +255,9 @@ def snapshot(path):
         sessions = db.execute('SELECT id, lineage FROM react_session').fetchall()
         require(len(sessions) == 1)
         sid, lineage = sessions[0]
-        require(str(uuid.UUID(sid)) == sid and json.loads(lineage) == [sid])
+        require(isinstance(sid, str) and len(sid) in (32, 36))
+        uuid.UUID(sid)  # Native sessions use simple hex; retain the exact stored spelling.
+        require(json.loads(lineage) == [sid])
         size, count = db.execute(
             'SELECT COALESCE(SUM(LENGTH(payload)),0), COUNT(*) FROM react_entry WHERE session_id=?',
             (sid,),
@@ -225,7 +269,7 @@ def snapshot(path):
         ).fetchall()
     return sid, rows
 
-def inspect(rows, model):
+def inspect(rows, model, *, require_signed=True):
     calls, results = {}, set()
     counts = dict(users=0, finals=0, signed_blocks=0, signed_tool_messages=0,
                   read=0, edit=0, bash=0)
@@ -273,7 +317,10 @@ def inspect(rows, model):
             if name in ('read', 'edit', 'bash'):
                 counts[name] += 1
     require(set(calls) == results)
-    require(all(counts[key] > 0 for key in counts))
+    required = ('users', 'finals', 'read', 'edit', 'bash')
+    if require_signed:
+        required += ('signed_blocks', 'signed_tool_messages')
+    require(all(counts[key] > 0 for key in required))
     require(last_chat is not None and last_chat.WhichOneof('message') == 'assistant')
     require(bool(last_chat.assistant.content.strip()) and not last_chat.assistant.tool_calls)
     return counts
@@ -291,7 +338,7 @@ try:
     require(done.is_file() and done.stat().st_size == 0)
     resumed_sid, after = snapshot(database)
     require(resumed_sid == sid and len(after) > len(before) and after[:len(before)] == before)
-    new = inspect(after[len(before):], model)
+    new = inspect(after[len(before):], model, require_signed=False)
     print(json.dumps(dict(stage='restart_replay_passed', model=model, profile=PROFILE,
                          prior_records_unchanged=True, new_counts=new)), flush=True)
 except BaseException:
@@ -304,8 +351,12 @@ Run this observer against synthetic protobuf/SQLite fixtures first to check
 schema compatibility and closed failures; this does not establish live success.
 The exact prefix comparison checks preservation without writing a second copy
 or hashing signatures. It does not expose their contents or sizes. The counters
-require signed reasoning associated with a tool request and actual successful
-read/edit/bash results in both the initial and resumed turn.
+require signed reasoning associated with a tool request in the initial history,
+then actual successful read/edit/bash results in both the initial and resumed
+turn. Adaptive low effort may omit new thinking on a later turn. The observer
+still validates every present new thinking block and its provenance; it permits
+zero new blocks only after strict signed-history validation, actual restart and
+exact preservation of the prior records.
 
 Successful inference through the installed production strict stream parser is
 evidence that these observed responses obeyed its reasoning → text → tools

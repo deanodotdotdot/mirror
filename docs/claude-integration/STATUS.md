@@ -18,19 +18,25 @@ checks run locally.
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Merged as [PR 7](https://github.com/deanodotdotdot/mirror/pull/7) at 072be411ad25b25aa7a82ba9b486db9cecbdd315 after independent NEW Astra review fixed four P2 findings. Full Mac source CI passed 3,398 tests with five native-packaging skips; manager exact-candidate Linux coverage passed 265 tests. Final reviewed head c8db986 changes only the ledger from validated 246eb6; manager verified the merged tree matches exactly. Production acceptance remains Task 8. |
-| 8. Acceptance + packaging + docs | All preceding tasks | Packaging/harness/A5 preparation is integrated with reviewed Task 7. Final builds, public command verification, live evidence and documentation are underway. [Acceptance runbook/matrix](ACCEPTANCE.md); production A1–A11 remain unproven. |
+| 8. Acceptance + packaging + docs | All preceding tasks | A1–A11 validation complete on the frozen installed `7371897` artifacts, with documented fixture/live limits. Actual Mac/Linux native wheels, both model signed-history replay, genuine refresh and Claude Code coexistence passed. [Acceptance matrix](ACCEPTANCE.md) and [safe evidence index](PRODUCTION-EVIDENCE.json). Separate NEW Astra review and manager merge pending. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
 into hidden terminal input followed by Enter. Paste shows no characters;
 Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
-Fixtures prove local behavior only. The independent macOS and Linux/SSH live
-sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Tasks 1–7 are merged; final production acceptance Task 8
-remains in progress. These checks do not establish production
-A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
-gate was met by Opus 4.8 and Sonnet 4.6.
+Tasks 1–7 are merged. Task 8 now records passing production A1–A11 validation
+with the exact-source and platform limits in [ACCEPTANCE.md](ACCEPTANCE.md),
+separate from historical Phase 0 evidence. Both Opus 4.8 and Sonnet 4.6 passed
+installed signed-history/tool replay on Mac and Linux. Sonnet 5 reasoning remains
+unverified. The implementation is ready for the required independent review;
+no Task 8 merge is implied.
+
+## Historical implementation checkpoints
+
+The following Task 2–7 entries describe their state at each recorded checkpoint;
+statements that production acceptance was pending are historical. The final
+Task 8 evidence follows them.
 
 Task 2 deliberately contains no credential storage, login, renewal, OAuth HTTP
 transport, model discovery, usage request or UI implementation. `anthropic-oauth`
@@ -553,126 +559,99 @@ tests are unchanged. The reviewer pushes the same PR and releases the review
 checkout/Cargo target without merging. Manager owns final verification/merge;
 Task 8 still owns actual macOS/Linux native wheels and live production A1–A11.
 
-Task 8 preparatory checkpoint adds a real installed-native-wheel Claude smoke
-suite to the actual `build.sh` invocation, preserving the existing OpenAI PTY
-and bundled-tool checks. The new suite requires real executable bytes and checks
-status/logout/missing-login usage, strict private JSONL and redaction, permissions,
-no chat/trust/log files, packaged OMP notices, and worker paths with spaces.
-Its public command assertions await reviewed Task 7 and are not marked passing
-or xfailed against this Task 6 baseline. Actual Mac/Linux `build.sh` runs remain
-pending; the source CI's dummy packaging-hook worker is not native acceptance.
+## Task 8 final acceptance, 2026-10-17
 
-The opt-in ignored Rust acceptance harness uses the real `ClaudeAuthManager`
-and `ClaudeAuthorization` interfaces, a real 61-second dedup wait, the current
-rejected version, a durable revision check and a new installed CLI process.
-It neither duplicates OAuth nor edits a grant; its output is restricted to
-closed diagnostics and nonsecret evidence. The normal request checks a no-tool
-marker only. Source/artifact provenance, live tool/reasoning/replay checks and
-all A1–A11 evidence remain separate required work in the acceptance runbook.
+The same Astra implementer prepared real installed-native-wheel auth checks,
+the opt-in production refresh harness and the synthetic A5 foreign-account
+regression. Before Task 7 integration, nine native auth-command tests and three
+harness safety/process tests passed; focused source CI passed 65 with 12
+installed-wheel skips, Pyright zero errors/warnings. These preparatory checks
+were not installed-wheel or live evidence. Reviewed Task 7 merged at
+`072be411ad25b25aa7a82ba9b486db9cecbdd315` into the clean Task 8 checkpoint;
+only ledger conflicts were resolved.
 
-Preparatory macOS validation passed eight native private-command tests and three
-harness safety/process tests; the production refresh test was ignored. Focused
-source `ci.sh` completed archive/packaging-hook/protobuf/type checks with zero
-pyright errors or warnings and 65 tests passed, 12 native-wheel cases skipped
-(including all seven new Claude packaging cases). Rust/Python formatting,
-Python lint, shell syntax and diff checks passed. No installed-native-wheel
-pass, full final suite pass, real credential inspection, live login, provider
-request or refresh is claimed by this checkpoint. Final work resumes only after
-the manager integrates reviewed Task 7 into this clean checkpoint.
+Final source gates ran at `591e0898df2f37260557c66ed86567cc5c545aab`:
+Linux full Rust workspace 839 passed, zero failed and five intentional ignores
+with the actual built sandboxd; both Mac and Linux source Python CI 3,392 passed,
+22 skipped, Pyright zero errors/warnings; diagnostic fixtures 43 passed per
+platform, binding/launcher checks passed. Mac Rust agent/protocol had 728 passes
+and four ignores across its runs, with the unchanged Linux `/dev/full` fixture
+failing on Mac. This is not a passing full-Mac-workspace claim. Linux passed the
+full workspace, including that fixture.
 
-Additional Task 8 A5 preparation adds a fresh-native-process regression under a
-disposable HOME with cleared environment. Synthetic external credential files
-cannot supply missing Mirror auth. After a test-owned Mirror grant is seeded,
-two foreign account rewrites leave native status/identity, identity-bound local
-context and the exact Mirror record (including generation/revision) unchanged.
-Native logout advances only Mirror's generation, preserves all foreign fixture
-bytes and still refuses to import them afterward. Explicit context keeps the
-entire regression local, including potential mistaken foreign-login handling.
+The first native builds exposed only new packaging-fixture defects: cancelled
+login legitimately retains a private stable lock, and Mac PTY teardown needed
+continuous draining and a live controlling session for terminal comparison.
+Both failed builds are retained. The fixture correction preserved actual
+Ctrl-C, full terminal restoration, native/CLI process reaping, IPv4/IPv6 listener
+closure, private modes and no grant/chat/log files. No shipping behavior changed.
 
-Fixture scope is documented in [ACCEPTANCE.md](ACCEPTANCE.md): Claude Code's
-documented file path contains a synthetic credential/account sentinel; OMP's
-path contains a partial database using its pinned credential-row representation.
-Neither fixture proves external-app loading, macOS Keychain behavior or live
-second-account switching. No real external credentials were accessed. The
-complete native command suite now passes nine tests, and all three refresh
-harness safety/process tests pass with the live test ignored. Touched Rust
-formatting and diff checks pass. Public packaging, final builds and live A1–A11
-acceptance still await reviewed Task 7; no shipping implementation was changed.
+Actual fresh `build.sh` runs at
+`7371897f9128488a7610f60286a6339241f7273d` then passed: Mac 16 with one
+Linux-only guest-load skip; Linux 17. Both retain existing OpenAI installed
+PTY/tool checks and run all new native Claude cases, including helper paths with
+spaces, private JSONL, seeded secret/output/new-file canaries and OMP notices.
+Six source-native opt-ins passed separately against each retained wheel worker.
+All runtime/build files and non-packaged source tests are identical to the
+original source-gate candidate; exact Git comparisons and log hashes record that
+reuse. Final documentation changes do not relabel either candidate. Artifact
+hashes, source tree, commands and installed paths are in [ACCEPTANCE.md](ACCEPTANCE.md).
 
-Manager merged PR 7 at `072be411ad25b25aa7a82ba9b486db9cecbdd315` after
-independently confirming final reviewed head `c8db986`, clean review source,
-local Mac and Linux results, and disabled GitHub Actions. The integration tree
-exactly matches that reviewed head. This merge into Task 8 checkpoint `2d0403a`
-resolves only ledger conflicts and preserves both tasks’ complete evidence.
-Runtime/test/build files merge unchanged from their respective clean checkpoints.
-The same Astra Task 8 implementer now resumes final acceptance and packaging; a
-separate new Astra reviewer follows before the manager’s final merge.
+Fresh production Mac and independent Linux/SSH logins passed with the installed
+artifacts, no API keys and no grant transfer. Both displayed the required remote
+models, current low effort and on-demand usage, then completed normal default
+TUI and exec text requests without model/effort overrides. Remote catalog count
+was 14; both exact selected-model contexts were 1,000,000, from model metadata.
+Usage had seven windows and reported disabled extra usage from `spend`, used
+amount present and limit absent. Those metadata observations do not establish
+long-context entitlement or mutate billing settings.
 
-Task 8 froze runtime/test/build source at
-`591e0898df2f37260557c66ed86567cc5c545aab` for simultaneous Mac/Linux acceptance.
-It corrects help for the supported implicit Claude effort and adds real
-installed-wheel controlling-PTY cancellation and seeded secret-boundary checks.
-The latter require hidden callback input, restored terminal state, native child
-reaping, closed IPv4/IPv6 listeners, no chat-side files and credential canaries
-confined to the deliberately seeded private test record. Wrong synthetic state
-is rejected before exchange; no real login/provider calls occur in these tests.
+Both required models completed actual read/edit/bash effects and signed-history
+replay on both hosts. Opus puzzle history had two signed tool messages/blocks on
+Mac and one on Linux. A separate actual restart preserved every prior record and
+completed new read 2 / edit 1 / bash 1, exact file effects and unchanged identity.
+Sonnet had one signed tool message/block initially and one after actual restart,
+with new read 2 / edit 1 / bash 2, exact prefix preservation and verified puzzle
+optima on each host. Canonical reasoning → text → tools order is inferred from
+strict production parser acceptance, not reconstructed raw SSE chronology.
 
-On the exact archive, Mac full Python source CI passed 3,392 tests with 22 skips
-(six development-native opt-ins plus 16 native-wheel cases), zero Pyright errors
-or warnings, and four existing forkpty deprecation warnings. The six native
-opt-ins passed separately. Mac agent/protocol testing passed 728 cases with four
-intentional ignores across the original and remaining runs; the unchanged
-Linux `/dev/full` fixture failed on Mac, so this is not a full-Mac-workspace pass.
-The long Unicode spill test completed. Binding, source launcher help and all 43
-diagnostic fixtures passed. Manager exact-source Linux full workspace passed
-839 tests with five intentional ignores and no failures, including the `/dev/full`
-case, with a real built sandbox guest. Linux diagnostic43/binding/launcher and
-full Python CI3392/22/Pyright0 also passed. Both actual fresh native builds
-compiled worker, guest and wheel, then failed the new terminal fixture: Mac
-14 passed/one Linux-only skip/two failed; Linux 15 passed/two failed. No accepted
-wheel or artifact provenance is claimed from those failed runs.
+Observer failures are preserved separately: clipped picker/usage panels,
+assuming hyphenated rather than native simple UUIDs, simple adaptive turns with
+zero thinking, and overrequiring new thinking in every resumed turn. Corrected
+closed observers were synthetically validated. Initial signed tool history stays
+mandatory; later thinking may be absent, but all present signatures/provenance,
+new successful tools and exact prior-record preservation remain checked. The
+successful new observations, not the failed controllers, establish acceptance.
 
-The correction changes only the packaging fixture and documentation. Login
-preparation deliberately creates a 0700 private directory and 0600 stable lock,
-which cancellation must allow while forbidding any credential or chat-side file.
-The fixture also drains bounded private PTY output throughout exit and keeps a
-controlling-terminal supervisor alive to measure restoration before macOS
-invalidates the parent's terminal handle. A separate pipe reports closed results;
-the actual CLI receives terminal Ctrl-C and both CLI/native processes and both
-listeners must be gone. Real native prevalidation passed ordinary and
-space-containing helper paths against installed Python. The corrected clean
-candidate `7371897f9128488a7610f60286a6339241f7273d` then passed actual fresh
-Mac `build.sh` (16 passed, one Linux-only guest-load skip) and Linux `build.sh`
-(17 passed), retaining wheel/native artifacts and their provenance. Existing
-OpenAI installed PTY/tool tests and all Claude native cases ran. All six native opt-ins
-also passed against each platform's retained wheel worker. All shipping runtime/build
-source remains unchanged from `591e089`; original source gates keep their actual
-revision with explicit file-equality proof. See the [artifact hashes](ACCEPTANCE.md#passing-native-artifacts).
-Mac and isolated Linux/SSH installed-package byte verification passed without
-an auth/provider call. Each host has its own fresh private HOME; no grants have
-been transferred.
+Genuine production refresh passed separately on each grant: real 61-second
+dedup wait, `authorize(rejectedVersion)`, unchanged generation/identity, durable
+revision 1 → 2, reopened authority and a fresh installed Opus no-tool request.
+Mac completed at 23:05:03.991 UTC and Linux at 23:05:04.722 UTC. No expiry edit,
+actual-server-401 claim or tool/reasoning claim is made for this marker. Near-
+expiry timing, renewal races, crash/error/revocation and identity switching
+remain explicitly deterministic fixture evidence.
 
-Documentation now describes the shipped local/SSH command contract, independent
-grant storage, automatic renewal, billing isolation/extra usage, explicit
-reconnect, metadata/reasoning limits and build gates. The
-[live runbook](LIVE-RUNBOOK.md) supplies installed TUI restart commands and a
-closed-output read-only protobuf/SQLite observer. Four synthetic observer checks
-passed, including unsigned/mutated/missing-tool failures and signature-canary
-redaction. They do not establish live behavior. All production login, two-model
-signed-thinking/tool replay, canonical-order acceptance, genuine refresh and
-Claude Code coexistence observations remain pending manager coordination.
+Nine normal Mac Claude Code requests passed: baseline, after each host's Mirror
+login/refresh/logout, and overlap with each host. Successful CLI process intervals
+overlapped Mac Mirror by 1.330902 seconds and Linux Mirror by 0.797271 seconds;
+this is neither exact wire concurrency nor a Linux-local Claude Code test.
+Both installed Mirror logouts reported logged_out. The Mac after-logout check
+passed at 23:11:40–41 UTC; the verified Linux-after-logout pairing passed at
+23:11:55–57 UTC after confirmed logout completion. Both task grants are locally
+logged out and all live processes are closed. No real Claude Code/OMP credential
+store was read, copied or modified.
 
-The external manager-facing controller now has syntax and synthetic validation
-for both model IDs, default TUI/exec, model/effort/usage screens, new signed tool
-records after restart, unchanged prior bytes, exact synthetic file effects and
-closed error/size/timeout failures. Separate tests verify descendant cleanup
-after a leader exits and terminal failure before startup. These are observation
-tooling checks only; the controller requires explicit opt-in for live phases.
+The A5 fixture separately verifies that synthetic foreign credentials cannot
+supply missing Mirror login, two foreign-account rewrites preserve seeded Mirror
+identity/generation/revision, and Mirror logout leaves foreign fixture bytes
+unchanged. Its documented Claude Code file path uses a synthetic sentinel;
+OMP uses the pinned partial credential-row schema. It does not prove Keychain
+behavior, external application loading or live second-account switching.
 
-The manager's existing Mac Claude Code baseline request passed on
-`claude-sonnet-4-6` at 2026-10-17 22:44:40–42 UTC, before production Mirror login.
-A prior minimal-environment attempt is retained as controller setup failure:
-public CLI auth status recognized the existing OAuth subscription after restoring
-standard macOS user/session fields, with provider credentials/endpoints removed.
-No external credential store was inspected. A private user login request is now
-pending; subsequent Mirror and coexistence observations have not run.
+The [A1–A11 matrix](ACCEPTANCE.md), [installed procedure](LIVE-RUNBOOK.md) and
+[safe evidence index](PRODUCTION-EVIDENCE.json) distinguish deterministic,
+artifact and live observations. README/configuration/architecture/build/help
+now document Mirror-owned host-local login, SSH hidden callback, explicit
+identity reconnect, on-demand usage/unchanged extra usage, failure behavior and
+unsupported launch surfaces. The single Task 8 PR is ready for a separate NEW
+Astra review. The manager alone merges; GitHub Actions remains disabled.

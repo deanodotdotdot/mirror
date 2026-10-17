@@ -2,8 +2,9 @@
 
 Task 6 connects the native local worker to the reviewed Claude authority,
 Messages transport, and metadata service. CLI/TUI rendering belongs to Task 7;
-production acceptance A1–A11 belongs to Task 8. All Task 6 tests use synthetic
-authorities or loopback fixtures. They make no live-provider claim.
+production A1–A11 evidence is recorded in [ACCEPTANCE.md](ACCEPTANCE.md).
+The Task 6 tests use synthetic authorities or loopback fixtures and remain
+separate from those subsequent installed-artifact/live observations.
 
 ## Binding ownership and persistence
 

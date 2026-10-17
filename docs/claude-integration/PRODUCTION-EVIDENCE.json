@@ -1,0 +1,86 @@
+{
+  "source_revision": "7371897f9128488a7610f60286a6339241f7273d",
+  "profile": "mirror-phase0-omp-df4f996-v1",
+  "platforms": {
+    "mac": {
+      "default_tui_exec_and_metadata_ui": "passed",
+      "catalog_context_usage": "passed",
+      "opus_signed_history_restart_tools": "passed",
+      "sonnet_signed_history_restart_tools": "passed",
+      "real_refresh_persisted_new_process": "passed",
+      "local_logout": "passed",
+      "source_revision": "7371897f9128488a7610f60286a6339241f7273d"
+    },
+    "linux": {
+      "default_tui_exec_and_metadata_ui": "passed",
+      "catalog_context_usage": "passed",
+      "opus_signed_history_restart_tools": "passed",
+      "sonnet_signed_history_restart_tools": "passed",
+      "real_refresh_persisted_new_process": "passed",
+      "local_logout": "passed",
+      "source_revision": "7371897f9128488a7610f60286a6339241f7273d"
+    }
+  },
+  "evidence_sha256": {
+    "live-mac-7371897/default-retry-2.jsonl": "c68c961616bf8a69fa612914e064c2a72a56c6101f5f3262b5aed464808cfd32",
+    "live-mac-7371897/metadata.jsonl": "d034e5ef64d91e9579ba49eee4e8e9a1cddb22cc8f0906bc61f4276dac4521de",
+    "live-mac-7371897/model-opus-replay-verification.jsonl": "99da1e90cc465b2f466d55658801e5591349cd044bf3ab37423d1c878fe9f4e1",
+    "live-mac-7371897/model-sonnet-reasoning.jsonl": "ae5df2c661183844462499a58a282f12dce19a20a0f55f5fa809e82fb99fca93",
+    "live-mac-7371897/refresh.log": "143c18542ade92fbac2dbd7dbf8d0dea38367b5a778345ff6c09a6065fc1a502",
+    "live-mac-7371897/logout.jsonl": "45c070aaefc8675bb04d9068f6a6a202f3073afc6b25fa9a2f136a1d1f115a15",
+    "live-linux-7371897/default-retry-1.jsonl": "c68c961616bf8a69fa612914e064c2a72a56c6101f5f3262b5aed464808cfd32",
+    "live-linux-7371897/metadata.jsonl": "d034e5ef64d91e9579ba49eee4e8e9a1cddb22cc8f0906bc61f4276dac4521de",
+    "live-linux-7371897/model-opus-replay-verification.jsonl": "30398fef1bfeac6d3aa6a058af945c47fc315b60ed18d63abf7463b2a71aab7a",
+    "live-linux-7371897/model-sonnet-reasoning.jsonl": "ae5df2c661183844462499a58a282f12dce19a20a0f55f5fa809e82fb99fca93",
+    "live-linux-7371897/refresh.log": "032fbc2cac7a1c63fee8c35df2cf13fee00bad89d8a48e2a3675ac3a9163e1a1",
+    "live-linux-7371897/logout.jsonl": "45c070aaefc8675bb04d9068f6a6a202f3073afc6b25fa9a2f136a1d1f115a15",
+    "claude-code-baseline-platform-context.json": "0faf91a8ea70b8cbb25accb6300ee8dfe851ae9fdfa9d8c38de3c45506d175e0",
+    "claude-code-after-mac-login.json": "929e99aac31b24a7686d6369072cd7aec755bb6703a9ab5e5ea7bf85ad4f7c28",
+    "claude-code-after-linux-login.json": "a63ca1e4198f70629145ae952cb5a3aad3c9ace6eca4baeac86843fc69b6ab76",
+    "claude-code-after-mac-refresh.json": "b8f2dbea31c015eb5c70e65579acd9815c33ed9efd41dfc9baf3ac2459f06403",
+    "claude-code-after-linux-refresh.json": "ecd3e0da34e041f7b2e19805bb6d399a16908fb203a9dc4d774bb7e2632fb26b",
+    "claude-code-after-mac-logout.json": "5ad2778d962ae9f124c27d83379587278b77b6db9aaa6d7afbad398ecf8f74bd",
+    "claude-code-after-linux-logout-verified.json": "9be440b1ffb444d3ca9c50e605093c62d6db00c7f2a9eb2292a07b51726fd216",
+    "claude-code-mac-overlap.json": "48b39c2c11d964023f9fee2e1eba76cf41eb4ea9f989973eb7851f20f6c5c466",
+    "claude-code-linux-overlap.json": "d5e6cdc6bab9d7887fc668f3f5a4a69cbb8c68927c988270a90784fd1500c1fb"
+  },
+  "scope": "production installed artifacts; closed observations only",
+  "normal_mac_claude_code_before_after_and_overlap": "passed",
+  "overlap": [
+    {
+      "mirror_platform": "mac",
+      "claude_code_platform": "macos",
+      "both_normal_cli_requests_passed": true,
+      "overlapping_process_seconds": 1.330902,
+      "wire_concurrency_claim": false
+    },
+    {
+      "mirror_platform": "linux",
+      "claude_code_platform": "macos",
+      "both_normal_cli_requests_passed": true,
+      "overlapping_process_seconds": 0.797271,
+      "wire_concurrency_claim": false
+    }
+  ],
+  "limits": [
+    "No exact wire-concurrency claim",
+    "No Linux-local Claude Code claim",
+    "No actual server401 or time-expired-grant claim; genuine production-authority refresh exercised",
+    "Canonical signed-block order inferred from strict parser acceptance",
+    "Original observer failures retained separately; new successful observations establish acceptance"
+  ],
+  "artifacts": {
+    "mac": {
+      "wheel": "mirror-0.1.0-py3-none-macosx_15_0_arm64.whl",
+      "wheel_sha256": "166d4552081bade0f87a9f781bb03159fe68d07fc48514194e3dc16501dc566a",
+      "embedded_worker_sha256": "bdb16c1f1f418b509d4fa875510f4c39a025767e079ae6f755ab304fad70f77c"
+    },
+    "linux": {
+      "wheel": "mirror-0.1.0-py3-none-linux_aarch64.whl",
+      "wheel_sha256": "4fe0b34ee40a843a6660dde20c6b9dbed26070d8134ffbbe172777cc12e761c1",
+      "embedded_worker_sha256": "5c7e64f3c0beacdcdc4301ba5d98733ebbbb8d49815acfc6ccfbd423e91a2549"
+    }
+  },
+  "completed_date_utc": "2026-10-17",
+  "task_grants_after_acceptance": "both_locally_logged_out"
+}

@@ -1,13 +1,14 @@
 # Production acceptance record and runbook
 
-Status: **final validation in progress**. Reviewed Task 7 is merged at
+Status: **A1–A11 validation complete; independent Task 8 review pending**. Reviewed Task 7 is merged at
 `072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's first runtime/test/build
 candidate was `591e0898df2f37260557c66ed86567cc5c545aab`. Its full source gates
 are recorded below; both actual native builds exposed defects in the new
 terminal fixture. Corrected candidate
 `7371897f9128488a7610f60286a6339241f7273d` now passes actual fresh native-wheel
 builds on Mac and Linux. Later changes do not relabel earlier artifacts.
-Production A1–A11 observations remain open. Historical
+The matrix below records passing deterministic, installed-artifact and live
+evidence with explicit limits. Review and manager merge remain separate. Historical
 [Phase 0 evidence](../../diagnostics/claude_oauth/EVIDENCE.md) does not establish
 production behavior.
 
@@ -41,7 +42,7 @@ All results in this table refer to source
 | Mac diagnostic / binding / launcher | 43 diagnostic fixtures passed; Python binding check and source launcher help passed. |
 | Mac actual native wheel, first attempt | Actual fresh `build.sh` compiled worker, Linux guest and wheel, then failed installed checks: 14 passed, one Linux-only guest-load skip, two terminal-fixture failures. No accepted artifact retained. |
 | Linux actual native wheel, first attempt | Actual fresh `build.sh` compiled worker, guest and wheel, then failed installed checks: 15 passed, two terminal-fixture failures. No accepted artifact retained. |
-| Production login / models / tools / restart / refresh / coexistence | Pending manager-coordinated installed-artifact observations. No live result is inferred from the rows above. |
+| Production login / models / tools / restart / refresh / coexistence | Mac and Linux login/status/catalog/context/usage and initial Claude Code coexistence observations now pass as recorded below. Genuine refresh, both model tool/restart checks, logout and coexistence also pass on both hosts. No live result is inferred from deterministic checks. |
 
 The failed native builds preserve useful findings without counting as acceptance.
 Linux passed actual Ctrl-C exit 130, full terminal restoration, process reaping
@@ -166,7 +167,7 @@ bash mirror-cli/build.sh /absolute/acceptance-wheel-output
 ```
 
 The exact source/workspace and native-build outcomes above are recorded separately
-from the still-pending production observations.
+from the production observations recorded below.
 
 ## Live production sequence
 
@@ -177,14 +178,14 @@ grant separately, and use the same installed artifacts identified above.
 | Step | Required observation | Current result |
 | --- | --- | --- |
 | Mac baseline | Normal Claude Code request using its existing independent grant | Passed 2026-10-17 22:44:40–42 UTC, macOS, `claude-sonnet-4-6`; no external store inspection. Before any production Mirror login. |
-| Mac login | Fresh Mirror login without an Anthropic API key; local status and identity/source/profile | Pending |
-| Mac tools | Text, read, edit and command turns in a known synthetic workspace; verify file/command effects | Pending |
-| Mac restart | Exit/restart installed Mirror, resume the same bound conversation and complete another request | Pending |
-| Mac metadata | Native catalog and exact selected-model context, on-demand usage including reported extra-usage setting | Pending |
-| Two models | `claude-opus-4-8` and available `claude-sonnet-4-6`: signed thinking, tools and replay; successful canonical thinking → text → tools order | Pending |
-| Linux/SSH | Separate Linux Mirror login with Mac browser and private manual callback, then exec/text/read/edit/command/restart/metadata/usage | Pending |
-| Renewal | Production authority refresh, durable revision advance and a fresh installed CLI process completing a normal request | Pending |
-| Coexistence | Normal Mac Claude Code requests before/after Mirror login, refresh and logout, plus overlapping use | Pending |
+| Mac login | Fresh Mirror login without an Anthropic API key; local status and identity/source/profile | Passed on the installed `7371897` Mac wheel: user completed private login; native status is usable, source `Mirror login`, profile `mirror-phase0-omp-df4f996-v1`. |
+| Mac tools | Text, read, edit and command turns in a known synthetic workspace; verify file/command effects | Passed: default TUI/exec text with no model/effort override; both models completed real read/edit/bash and verified synthetic file/command effects. The first simple Opus turn lacked thinking; later signed-puzzle/replay evidence is separate. |
+| Mac restart | Exit/restart installed Mirror, resume the same bound conversation and complete another request | Opus signed-history replay passed: actual raw-session-ID TUI restart, exact prior record prefix preserved, new read 2 / edit 1 / bash 1, exact effects and unchanged identity. |
+| Mac metadata | Native catalog and exact selected-model context, on-demand usage including reported extra-usage setting | Passed: fresh remote catalog with 14 candidates including both required models; exact `model_metadata` context 1,000,000 for each; seven usage windows, extra usage disabled from `spend`, used amount present and limit missing. Identity unchanged. Context is metadata, not a long-request entitlement claim. |
+| Two models | `claude-opus-4-8` and available `claude-sonnet-4-6`: signed thinking, tools and replay; successful canonical thinking → text → tools order | Opus passed on both hosts: Mac history contains two signed tool messages/blocks; Linux one. Actual restart preserves every prior record and completes new tools. Sonnet passed on both hosts with one signed tool message/block initially and one after actual restart, plus new read 2 / edit 1 / bash 2. Canonical ordering is inferred from strict production parser acceptance. |
+| Linux/SSH | Separate Linux Mirror login with Mac browser and private manual callback, then exec/text/read/edit/command/restart/metadata/usage | Fresh host-local private login passed. Installed metadata passed: fresh remote catalog 14, both exact model contexts 1,000,000, seven usage windows, disabled `spend` extra usage, used amount present/limit missing; identity unchanged. Default TUI and prompt-free exec passed with no model/effort override. Initial simple Opus tools had no signed reasoning. Subsequent puzzle history has one signed tool message/block; a new actual restart preserved its exact prefix and completed read/edit/bash. Sonnet also passed signed-tool/restart checks with exact prefix and effects. |
+| Renewal | Production authority refresh, durable revision advance and a fresh installed CLI process completing a normal request | Passed on both hosts: real 61-second dedup wait, production authority refresh, same generation/identity, durable revision 1 → 2, reopened authority and new installed Opus 4.8 no-tool request. Completed 23:05:03.991 UTC Mac / 23:05:04.722 UTC Linux on October 17. |
+| Coexistence | Normal Mac Claude Code requests before/after Mirror login, refresh and logout, plus overlapping use | Normal Mac `claude-sonnet-4-6` requests passed at baseline, after Mac Mirror login (22:55:46–48 UTC), and after separate Linux Mirror login (22:57:22–24 UTC on October 17). Normal Mac Claude Code also passed after both refreshes (23:05:14–17 / 23:05:24–26 UTC). Successful normal CLI process intervals overlapped Mac Mirror by 1.330902 seconds and Linux Mirror by 0.797271 seconds. Both Mirror logouts and subsequent normal Mac Claude Code requests passed (23:11:40–41 / 23:11:55–57 UTC). No Linux-local Claude Code or wire-concurrency claim. |
 
 The first minimal-environment Claude Code baseline attempt exited nonzero before
 any Mirror login. Public CLI auth status showed that removing normal macOS
@@ -192,9 +193,89 @@ user/session variables hid its existing login; restoring only those fields
 reported the existing OAuth subscription. The normal CLI marker request then
 passed with provider keys, bearer variables and endpoint overrides absent.
 This was controller environment setup, not evidence of credential interference.
-The successful baseline alone does not complete the later coexistence/overlap
-checks. Sanitized evidence is retained in the manager's
-`claude-code-baseline-platform-context.json`.
+The successful baseline and after-login requests are separate from the later
+refresh/overlap/logout checks. Sanitized evidence is retained in the manager's
+`claude-code-baseline-platform-context.json` and
+`claude-code-after-mac-login.json`, with the separate-host result in
+`claude-code-after-linux-login.json`. Completed production Mac status and metadata
+records are `live-mac-7371897/status.jsonl` and `metadata.jsonl`; these contain
+only closed outcomes/counts and no credential or provider payload. The matching
+Linux record is `live-linux-7371897/metadata.jsonl`.
+
+The first Mac default-TUI controller attempt stopped at its model-picker screen
+predicate before issuing its inference task. Its log and database are preserved;
+this is not a passing default inference result. The controller incorrectly
+required the complete metadata header to be visible simultaneously, although
+the selector supports a paged/clipped header. The revised observer checks the
+actual visible candidate rows for model ID, fresh/cached state and remote source,
+searches each required model without selecting, and emits only fixed booleans
+and counts on failure. Synthetic terminal validation passes with the source
+header absent. Retries use new UUID-named databases, preserving old evidence. Both Mac and
+Linux retries passed the actual model and effort pickers, then stopped at the
+usage visibility predicate: the welcome notice is capped at one-third of the
+terminal height, so its heading and final limit label were not visible together
+at 65 rows. The renderer includes the missing limit as `unavailable`. The
+controller now resizes both the real PTY and emulator to 240 rows before usage;
+synthetic validation requires that real terminal size. The subsequent live retries passed on both hosts: actual remote model picker,
+current-low effort picker and on-demand usage were observed, then the default
+TUI and exec completed exact text markers without any model/effort override.
+Identity remained unchanged. Closed records are
+`live-mac-7371897/default-retry-2.jsonl` and
+`live-linux-7371897/default-retry-1.jsonl`.
+
+Both first Opus tool turns then completed, but their controllers could not
+recognize completion because the observer required hyphenated UUID spelling.
+Native sessions use 32-digit simple UUID hex. The manager stopped those exact
+controllers cleanly and preserved their records and failure logs. The corrected
+observer validates UUID syntax and exact self-lineage while keeping the original
+stored ID for restart. An explicit recovery phase validates the exact first
+success marker, API/model/low, signed tool records and synthetic file effects
+before resuming the same conversation; it does not repeat the first request.
+Synthetic checks cover both UUID spellings and invalid-state rejections before
+TUI launch. Both recovery attempts then correctly rejected the original turns:
+all tool/file/final checks passed, but there were zero signed thinking blocks
+and therefore no signed tool messages. Low adaptive effort does not guarantee
+thinking on a simple task. Those records remain tools-only observations.
+The next stimulus uses a bounded six-job assignment puzzle, private planning,
+independent bash/Python verification, exact solution-file checks and unchanged
+strict signature/tool/replay assertions at the same supported low effort. Its
+Opus initial turns produced signed blocks, but an additional observer demand for
+new signed blocks on every resumed turn was too strict: both resumed turns
+completed successfully without adaptive thinking. Those failed runs remain
+preserved. A separate third-turn verification now passes on each host after
+strict validation of the existing signed history, actual raw-ID TUI restart,
+exact prior-prefix comparison and new successful read/edit/bash effects. The
+Mac history contains two signed tool messages/blocks and Linux one; both new
+verification turns have read 2 / edit 1 / bash 1 and zero new thinking. The check
+still rejects unsigned present thinking or invalid provenance. Logs are
+`model-opus-replay-verification.jsonl` under each host's live evidence directory.
+This proves signed-history replay without requiring the adaptive model to emit
+fresh thinking in every later response. No shipping code changed for any
+controller correction or acceptance stimulus.
+
+The completed Sonnet runs each recorded one signed tool message/block in the
+first turn and one in the resumed turn, with new read 2 / edit 1 / bash 2,
+verified assignment optima, exact prior-prefix preservation and unchanged
+identity. Their closed records are `model-sonnet-reasoning.jsonl` under each
+host's live evidence directory. Every observed reasoning block was signed and
+had matching model/provider/subscription/profile provenance; no raw signatures
+or provider output were retained by this evidence record.
+
+Both actual installed logouts returned `logged_out`. The nine normal Mac
+Claude Code observations cover baseline, after each host's login, refresh and
+logout, and overlap against each host. The final Linux logout gate uses
+`claude-code-after-linux-logout-verified.json` (23:11:55–57 UTC), launched after
+confirmed logout completion; an earlier probe is retained but does not establish
+that ordering. The Mac logout probe is `claude-code-after-mac-logout.json`
+(23:11:40–41 UTC). Both task-owned grants are now locally logged out and all
+live processes are closed.
+
+The sanitized [production evidence index](PRODUCTION-EVIDENCE.json) records
+artifact identities, safe evidence hashes, both platforms' outcomes, the nine
+Claude Code observations and scope limits. These hashes identify closed evidence
+files and artifacts, never credentials or signatures. The underlying closed
+records are retained under `/tmp/mirror-claude-manager/`; no external credential
+store or private terminal transcript was read to produce this ledger.
 
 Use the existing Mac Claude Code installation for coexistence with the Mac and
 Linux Mirror processes. Record those exact platform/process pairings. There is
@@ -263,8 +344,15 @@ paths. Timeout/error cleanup terminates its private process group. Output is
 limited to fixed stage/reason fields, closed authority error kinds, revision
 numbers, supplied source label, profile, platform, model and time.
 
-This proves genuine refresh interoperability only after an actual successful
-live run. The rejected-version trigger exercises production recovery; it does
+Both actual live runs passed using the byte-verified `7371897` artifacts and
+matching production harness binaries. Mac completed at
+2026-10-17T23:05:03.991356Z (62.80 seconds), Linux at
+2026-10-17T23:05:04.721560254Z (63.43 seconds). Each waited the real 61-second
+interval, preserved generation/identity, persisted revision 1 → 2 and completed
+the fresh installed Opus 4.8 request. Closed logs are retained as
+`live-mac-7371897/refresh.log` and `live-linux-7371897/refresh.log` in the
+manager's evidence directory. This establishes genuine production refresh
+interoperability for these separate host-local grants. The rejected-version trigger exercises production recovery; it does
 not pretend a server actually returned 401. Near-expiry timing, races, ambiguous
 rotation/crash and actual 401 coordination retain their separate fixture evidence.
 The new-process marker is only a normal inference check, not A1 tool execution.
@@ -273,8 +361,7 @@ The new-process marker is only a normal inference check, not A1 tool execution.
 
 The assertions below were inspected in the reviewed native/CLI source. Their
 presence alone is not a rerun result; the exact-source source gates above cover
-these fixtures. Deterministic runs and live observations remain separate; no pending live row is replaced by a
-fixture pass. Follow [LIVE-RUNBOOK.md](LIVE-RUNBOOK.md) for the installed commands,
+these fixtures. Deterministic runs and live observations remain separate; no live observation is inferred from a fixture pass. Follow [LIVE-RUNBOOK.md](LIVE-RUNBOOK.md) for the installed commands,
 read-only protobuf/database observer and two-model TUI restart procedure.
 
 Task 7's inspected assertions include real controlling-terminal restoration,
@@ -293,7 +380,10 @@ The observer's four local synthetic checks pass with installed Python protobufs:
 successful prefix-preserving resume, changed prior record rejection, unsigned
 thinking rejection and missing new tool results rejection. Its signature
 canary stays out of stdout/stderr. This validates observation tooling only;
-there has been no live signed-thinking/tool/replay observation yet.
+live Opus and Sonnet signed-history/tool/replay observations now pass as recorded above.
+Additional synthetic checks validate optional absent new thinking only after
+strict signed-history checks, reject changed prior prefixes and invalid recovery
+states, and retain default signature requirements for initial history.
 
 The A5 regression `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant`
 uses fresh native `auth --stdio` processes with a cleared environment and a
@@ -314,20 +404,20 @@ its own grant and leave every foreign fixture byte unchanged; those foreign
 fixtures still cannot authenticate the logged-out Mirror. No provider call or
 external app is involved. This is a file-boundary isolation regression; it
 does not test macOS Keychain, prove either external app loads the fixtures or
-claim a live second-account switch. Normal live Claude Code coexistence remains
-a separate required observation.
+claim a live second-account switch. Normal live Claude Code coexistence is separately established by the recorded
+baseline, after-login/refresh/logout and overlap requests.
 
-| Gate | Deterministic evidence and its limit | Remaining artifact/live evidence |
+| Gate | Deterministic evidence and its limit | Passing artifact/live evidence and boundary |
 | --- | --- | --- |
-| A1 fresh login | `auth/tests.rs::login_bootstrap_callbacks_and_generation_fence` and native auth-command tests cover synthetic login/status/commit. Service execution uses synthetic authority/loopback fixtures. | Installed Mac and Linux fresh grants, text/read/edit/command effects, restart/resume; no API key. |
-| A2 headless | Native `login_wrong_callback_eof_and_signals_leave_no_grant_or_listener` checks wrong-state/cancel/signal cleanup; auth `pending_login_timeout_closes_listener_without_exchange_or_commit` checks timeout without exchange/commit. | Actual Linux/SSH browser-on-Mac flow followed by prompt-free exec. Task 7 controlling-PTY/browser-failure and native occupied-port/replayed-state/timeout fixtures are included in the passing source gates; actual native-wheel cancellation now passes on both platforms after the fixture correction. |
-| A3 billing | Provider configuration tests reject key fallback; execution tests cover inherited OAuth and explicitly selected API compaction with actual billing labels. Missing-login packaging cases supply conflicting synthetic keys and require failure. | Actual account extra-usage display with no settings mutation. Source gates include entry-point, child/retry/compaction and credential-conflict fixtures; no forced quota exhaustion or settings mutation is part of live acceptance. |
-| A4 renewal | `refresh_race_converges_and_logout_fences_old_lease` asserts revision 2 in both callers, exactly one synthetic refresh and logout fencing. `independent_process_refresh_race_and_death_after_synthetic_rotation` asserts two processes share one replacement, killed rotation preserves old bytes and later authority reports login-required. Atomic fault tests distinguish pre-rename not-committed from post-rename unknown. | Successful opt-in production harness, matching installed-artifact provenance and fresh-process request. Real server refresh is unproven until then; fixture timestamps are not live evidence. |
-| A5 coexistence | `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant` covers missing-login isolation, unchanged native identity/Mirror generation/revision after two foreign rewrites, and foreign byte preservation through logout, as scoped above. Only disposable fixtures are read. | Mac Claude Code requests before/after Mac/Linux Mirror operations and overlap. The file-boundary fixture does not establish Keychain behavior or a live second-account switch. |
-| A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Installed restart/restore observations. Source gates include authoritative snapshots, attachment Nack retaining history, explicit native reconnect, queued-turn fences, completed-reconnect receipts and exec nonzero/no-prompt failures; real account switching remains deliberately synthetic. |
-| A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Both live models' signed-reasoning/tool replay and canonical-order inference. Source gates include persistence/replay/nonzero checks. Synthetic interleaving rejection is not proof of upstream conformity. |
-| A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Real picker/catalog/exact context, default Opus 4.8 and available Sonnet 4.6 tool/reasoning checks. Source gates include picker/parser/identity/fallback and implicit-startup effort assertions. No Sonnet 5 reasoning claim. |
-| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Actual on-demand account usage, with no timers or billing mutation. Source gates include human/JSON local-time/UTC/age/unit/null/extra-usage rendering and response/request identity matching. |
+| A1 fresh login | `auth/tests.rs::login_bootstrap_callbacks_and_generation_fence` and native auth-command tests cover synthetic login/status/commit. Service execution uses synthetic authority/loopback fixtures. | Passed on installed Mac and Linux artifacts: fresh host-local grants, no API keys, default text/exec without effort override, both models' read/edit/command effects and restart/resume. |
+| A2 headless | Native `login_wrong_callback_eof_and_signals_leave_no_grant_or_listener` checks wrong-state/cancel/signal cleanup; auth `pending_login_timeout_closes_listener_without_exchange_or_commit` checks timeout without exchange/commit. | Passed actual Linux/SSH browser-on-Mac private manual login, followed by prompt-free exec. Task 7 controlling-PTY/browser-failure and native occupied-port/replayed-state/timeout fixtures are included in the passing source gates; actual native-wheel cancellation now passes on both platforms after the fixture correction. |
+| A3 billing | Provider configuration tests reject key fallback; execution tests cover inherited OAuth and explicitly selected API compaction with actual billing labels. Missing-login packaging cases supply conflicting synthetic keys and require failure. | Actual native metadata and TUI usage passed on both hosts: disabled extra usage from spend, used amount present/limit unavailable, with no settings mutation. Source gates include entry-point, child/retry/compaction and credential-conflict fixtures; no forced quota exhaustion or settings mutation is part of live acceptance. |
+| A4 renewal | `refresh_race_converges_and_logout_fences_old_lease` asserts revision 2 in both callers, exactly one synthetic refresh and logout fencing. `independent_process_refresh_race_and_death_after_synthetic_rotation` asserts two processes share one replacement, killed rotation preserves old bytes and later authority reports login-required. Atomic fault tests distinguish pre-rename not-committed from post-rename unknown. | Passed on Mac and Linux with matching installed-artifact provenance: real 61-second wait, same generation/identity, durable revision 1 → 2, reopened authority and fresh installed Opus request. No expiry edit or claim of an actual server 401; near-expiry/races/crash remain fixture evidence. |
+| A5 coexistence | `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant` covers missing-login isolation, unchanged native identity/Mirror generation/revision after two foreign rewrites, and foreign byte preservation through logout, as scoped above. Only disposable fixtures are read. | Mac Claude Code passed before login, after both host logins, after both genuine refreshes and with positive process-interval overlap against each host. Both local logouts and subsequent normal Mac Claude Code requests passed. The file-boundary fixture does not establish Keychain behavior or a live second-account switch. |
+| A6 identity | `reconnect_is_explicit_cas_and_duplicates_return_current_state_without_authority` asserts CAS and duplicate/conflicting-ID behavior. `only_a_native_insert_auto_binds_and_resuming_never_rebinds_even_if_empty` covers old/resumed sessions. Storage-failure/restart tests require durable receipt before publication and survive restart. | Both installed models restarted the same native session on both hosts, preserved prior records and identity, and completed new tools. Source gates include authoritative snapshots, attachment Nack retaining history, explicit native reconnect, queued-turn fences, completed-reconnect receipts and exec nonzero/no-prompt failures; real account switching remains deliberately synthetic. |
+| A7 wire | OAuth golden/Unicode fixtures pin exact wire bytes and untouched canonical data. `unrepresentable_upstream_interleavings_fail_without_final_or_retry` asserts one terminal error, one attempt, no successful final. Real loopback truncated-tool integration asserts exactly one failed/truncated final before one typed error, one dispatch and zero tool calls. | Passed on both hosts: Opus 4.8 and Sonnet 4.6 signed-history/tool replay with exact prior record preservation and actual new tools. Canonical order is inferred from successful strict-parser acceptance. Source gates include persistence/replay/nonzero checks. Synthetic interleaving rejection is not proof of upstream conformity. |
+| A8 models | Catalog fixture asserts two pages, three leases including one rejected revision, no new lease on cache hit. Context precedence validates explicit/exact data and conservative 200,000 for unknown `-1m` names. Detail-without-context cannot hide exact catalog context. | Real picker/catalog/exact context and no-override default Opus startup/exec pass on both hosts. Required Opus 4.8/Sonnet 4.6 signed-tool/replay checks also pass on each host. Source gates include picker/parser/identity/fallback and implicit-startup effort assertions. No Sonnet 5 reasoning claim. |
+| A9 usage | Usage fixtures retain nullable windows, percentages over 100, inactive/unknown scopes, disabled extra usage with EUR-scale-3 credits and null limit, independent JPY amount scale, and no inferred currency. Failure test leaves authority usable and models fresh. Cache/backoff tests separately cover reporting reuse. | Actual native metadata and on-demand TUI usage passed on both hosts, with no timers or billing mutation. Source gates include human/JSON local-time/UTC/age/unit/null/extra-usage rendering and response/request identity matching. |
 | A10 secrets/endpoints | Native public-clean assertions exclude synthetic secrets from normalized events; new packaging cases check stdout/stderr and all newly created files. Metadata redirect fixture asserts the redirect target receives no connection. Private storage/Debug/transport tests cover mode/link/schema, bounded payloads and fixed endpoints. | Installed seeded-output/new-file canary and real private-TTY cancellation checks pass both fresh wheel builds. Source gates cover private stdin versus argv, bounded/error redaction, all-entry-point custom hosts and provider-switch secrecy. |
 | A11 compatibility | Reviewed native protocol adds fields without changing old tags; default HTTP/eval paths fail closed. Existing API/Reflection/Codex tests and OpenAI packaged PTY/tools stay in place. New wheel checks preserve OMP license text. | Both actual native-wheel builds and all packaging checks now pass. Full Linux Rust workspace and both Python source gates passed as recorded above, including binding/launcher checks, main/compactor ACP/remote guards and older saved selections; Mac has the stated Linux-fixture limitation. |
 
@@ -339,5 +429,6 @@ They explain the separate subscription/API choices, Mirror-owned
 grant/private files, host-local SSH login and hidden callback, on-demand usage
 and existing extra usage, identity/reconnect, failure recovery, unsupported
 surfaces and explicit capability/order limits. Avoid claims beyond the recorded
-production observations. Complete [STATUS.md](STATUS.md) and this matrix with exact
-artifact/live results before opening the single Task 8 PR for a new independent Astra review.
+production observations. [STATUS.md](STATUS.md), this matrix and the sanitized
+[production evidence index](PRODUCTION-EVIDENCE.json) record the completed gates.
+The single Task 8 PR still requires a new independent Astra review and manager merge.
