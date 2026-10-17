@@ -1,6 +1,11 @@
 # Production acceptance record and runbook
 
-Status: **A1–A11 validation complete; independent Task 8 review pending**. Reviewed Task 7 is merged at
+Status: **independent review in progress; ordinary-size prechat usage UI gate reopened**.
+The review reproduced inaccessible usage lines before the first conversation in
+both layouts at 24 and 65 rows. The 240-row live observation below remains a
+valid observation at that size; it does not establish ordinary-size access.
+A paged usage view and new ordinary-size checks are being validated separately.
+Reviewed Task 7 is merged at
 `072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's first runtime/test/build
 candidate was `591e0898df2f37260557c66ed86567cc5c545aab`. Its full source gates
 are recorded below; both actual native builds exposed defects in the new

@@ -97,10 +97,82 @@ fn settings() -> Result<Settings, Failure> {
     })
 }
 
-// The installed CLI creates a worker. Kill the whole private process group on
-// timeout/error/drop, and suppress stderr even if it contains an unexpected
-// upstream diagnostic. Neither stdout nor stderr is ever printed by this test.
+// The installed CLI creates a worker in a separate session. On timeout/error,
+// stop observed descendants before their parent, then reap the CLI. The private
+// CLI process group is also a last-resort drop guard. Suppress stderr even if it
+// contains an unexpected diagnostic. Captured stdout/stderr are never printed.
 struct ChildGroup(tokio::process::Child);
+impl ChildGroup {
+    async fn terminate(&mut self) {
+        let Some(root) = self.0.id() else {
+            return;
+        };
+        // Read only PID/PPID, never process command lines or environments. Keep
+        // the parent alive until discovery so setsid() workers remain attributable.
+        let table = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut process = Command::new("/bin/ps")
+                .args(["-axo", "pid=,ppid="])
+                .env_clear()
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .ok()?;
+            let mut bytes = Vec::new();
+            process
+                .stdout
+                .take()?
+                .take(1_048_577)
+                .read_to_end(&mut bytes)
+                .await
+                .ok()?;
+            if bytes.len() > 1_048_576 {
+                return None;
+            }
+            process.wait().await.ok()?.success().then_some(bytes)
+        })
+        .await;
+        if let Ok(Some(table)) = table {
+            let pairs: Vec<(u32, u32)> = String::from_utf8_lossy(&table)
+                .lines()
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+                })
+                .collect();
+            let mut owned = vec![root];
+            let mut index = 0;
+            while index < owned.len() {
+                let parent = owned[index];
+                for &(pid, ppid) in &pairs {
+                    if ppid == parent && !owned.contains(&pid) {
+                        owned.push(pid);
+                    }
+                }
+                index += 1;
+            }
+            for pid in owned.into_iter().skip(1).rev() {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            // The CLI normally observes worker termination and reaps it.
+            if tokio::time::timeout(Duration::from_secs(2), self.0.wait())
+                .await
+                .is_ok()
+            {
+                return;
+            }
+        }
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(root as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.0.wait()).await;
+    }
+}
 impl Drop for ChildGroup {
     fn drop(&mut self) {
         if let Some(pid) = self.0.id() {
@@ -113,6 +185,13 @@ impl Drop for ChildGroup {
 }
 
 async fn normal_installed_request(settings: &Settings) -> Result<(), Failure> {
+    installed_request_with_timeout(settings, Duration::from_secs(180)).await
+}
+
+async fn installed_request_with_timeout(
+    settings: &Settings,
+    timeout: Duration,
+) -> Result<(), Failure> {
     let state = tempfile::Builder::new()
         .prefix("mirror-refresh-request-")
         .tempdir()
@@ -184,9 +263,13 @@ async fn normal_installed_request(settings: &Settings) -> Result<(), Failure> {
         }
         Ok(())
     };
-    tokio::time::timeout(Duration::from_secs(180), result)
+    let result = tokio::time::timeout(timeout, result)
         .await
-        .map_err(|_| Failure::Check("new_process_request_timeout"))?
+        .unwrap_or(Err(Failure::Check("new_process_request_timeout")));
+    if result.is_err() {
+        child.terminate().await;
+    }
+    result
 }
 
 async fn refresh_and_request(settings: &Settings) -> Result<(), Failure> {
@@ -365,4 +448,81 @@ async fn request_plumbing_handles_spaces_and_discards_untrusted_output() {
             _ => panic!("unexpected closed acceptance process outcome"),
         }
     }
+}
+
+#[test]
+#[ignore = "synthetic subprocess helper exercised by timeout cleanup test"]
+fn synthetic_detached_request_helper() {
+    let root = PathBuf::from(std::env::var_os("HOME").unwrap());
+    if std::env::var("MIRROR_SYNTHETIC_DETACHED_ROLE").as_deref() == Ok("worker") {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            root.join("synthetic-worker.json"),
+            json!({"pid":std::process::id(), "port":listener.local_addr().unwrap().port()})
+                .to_string(),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_secs(120));
+        drop(listener);
+    } else {
+        assert_eq!(
+            std::env::var("MIRROR_SYNTHETIC_DETACHED_ROLE").as_deref(),
+            Ok("cli"),
+            "synthetic helper must be started by its parent test"
+        );
+        let mut worker = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "synthetic_detached_request_helper"])
+            .env_clear()
+            .env("HOME", &root)
+            .env("MIRROR_SYNTHETIC_DETACHED_ROLE", "worker")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        worker.wait().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn timed_out_request_reaps_worker_outside_cli_process_group() {
+    let root = tempfile::tempdir().unwrap();
+    let cli = root.path().join("synthetic mirror");
+    let executable = std::env::current_exe().unwrap();
+    std::fs::write(
+        &cli,
+        format!(
+            "#!/bin/sh\nMIRROR_SYNTHETIC_DETACHED_ROLE=cli exec '{}' --ignored --exact synthetic_detached_request_helper\n",
+            executable.to_str().unwrap().replace('\'', "'\\''")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let settings = Settings {
+        cli,
+        home: root.path().into(),
+        workspace: root.path().into(),
+        revision: "0".repeat(40),
+        model: "claude-opus-4-8".into(),
+    };
+    let result = installed_request_with_timeout(&settings, Duration::from_secs(1)).await;
+    let worker: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.path().join("synthetic-worker.json")).unwrap())
+            .unwrap();
+    let pid = nix::unistd::Pid::from_raw(worker["pid"].as_u64().unwrap() as i32);
+    let gone = nix::sys::signal::kill(pid, None) == Err(nix::errno::Errno::ESRCH);
+    // Do not leak this synthetic child even if cleanup regresses again.
+    if !gone {
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+    }
+    assert!(matches!(
+        result,
+        Err(Failure::Check("new_process_request_timeout"))
+    ));
+    assert!(gone, "synthetic detached worker survived request cleanup");
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", worker["port"].as_u64().unwrap() as u16))
+            .is_err()
+    );
 }

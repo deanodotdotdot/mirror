@@ -15392,6 +15392,150 @@ async def test_claude_catalog_candidates_visible_in_both_layouts(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('rows', [24, 65])
+async def test_prechat_claude_usage_is_fully_readable_without_a_model_turn(
+  monkeypatch: pytest.MonkeyPatch, fullscreen: bool, rows: int
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  result = claude_auth.MetadataCompleted(
+    claude_metadata.Metadata.parse(
+      'usage',
+      {
+        'schema_version': 1,
+        'provider': 'anthropic-oauth',
+        'identity': {
+          'account_id': '11111111-1111-4111-8111-111111111111',
+          'organization_id': '22222222-2222-4222-8222-222222222222',
+        },
+        'state': 'fresh',
+        'fetched_at': '2026-10-17T18:00:00Z',
+        'age_seconds': 0,
+        'retry_at': None,
+        'error': None,
+        'windows': [
+          {
+            'id': f'fixture_window_{index}',
+            'scope': 'shared',
+            'model': None,
+            'window_seconds': 18000,
+            'used_percent': index * 10,
+            'resets_at': '2026-10-17T23:00:00Z',
+            'is_active': True,
+          }
+          for index in range(7)
+        ],
+        'extra_usage': {
+          'state': 'disabled',
+          'source': 'spend',
+          'used': None,
+          'limit': None,
+        },
+      },
+    ),
+    'fixture-v1',
+  )
+  native = mock.MagicMock()
+  native.__aenter__.return_value = native
+  native.read_event = mock.AsyncMock(return_value=result)
+  factory = mock.Mock(return_value=native)
+  monkeypatch.setattr(claude_auth, 'NativeCommand', factory)
+  async with _visual_repl(fullscreen=fullscreen, rows=rows) as (repl, stream):
+    repl._input.text = 'unfinished draft'
+    previous = repl._worker_configuration
+    await _dispatch_and_wait(repl, _actions.ClaudeCommand('usage'))
+    initial = _frame_text(repl, stream)
+    assert 'Claude subscription usage:' in initial
+
+    def key(value: str) -> str:
+      # Application._redraw updates these during real terminal input. The
+      # capture helper renders synchronously, so update nested global bindings.
+      repl._app.layout.update_parents_relations()
+      parser = _vt100_parser.Vt100Parser(repl._app.key_processor.feed)
+      parser.feed(value)
+      parser.flush()
+      repl._app.key_processor.process_keys()
+      repl._app.render_counter += 1
+      return _frame_text(repl, stream)
+
+    seen = initial
+    for _ in range(15):
+      seen += '\n' + key('\x1b[6~')  # PageDown in the actual rendered view.
+    for index in range(7):
+      assert f'fixture_window_{index}' in seen
+    assert 'Account extra usage: disabled' in seen
+    assert 'Reported extra usage limit: unavailable' in seen
+    for _ in range(15):
+      first = key('\x1b[5~')
+    assert 'Claude subscription usage:' in first
+    key('\x1b')
+    assert not repl._state.selector.active
+    assert repl._app.layout.current_window is repl._input_window
+    assert repl._input.text == 'unfinished draft'
+    assert repl._worker_configuration == previous
+    assert not repl.transcript_entries()
+    assert not repl._transcript.has_conversation
+    factory.assert_called_once_with(
+      repl._worker_command, 'usage', params={'expected_identity': None}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('disposition', ['escape', 'replacement', 'failure'])
+async def test_prechat_usage_completion_preserves_panel_ownership(
+  monkeypatch: pytest.MonkeyPatch, fullscreen: bool, disposition: str
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  started, release = asyncio.Event(), asyncio.Event()
+  result = claude_auth.MetadataCompleted(
+    mock.MagicMock(state='fresh'), 'fixture-v1'
+  )
+  monkeypatch.setattr(claude_metadata, 'text', lambda *_, **__: 'Usage report')
+
+  async def read_event():
+    started.set()
+    await release.wait()
+    if disposition == 'failure':
+      raise claude_auth.ProtocolError()
+    return result
+
+  native = mock.MagicMock()
+  native.__aenter__.return_value = native
+  native.read_event = read_event
+  monkeypatch.setattr(claude_auth, 'NativeCommand', lambda *_, **__: native)
+  async with _visual_repl(fullscreen=fullscreen) as (repl, _):
+    repl._input.text = 'unfinished draft'
+    previous = repl._worker_configuration
+    task = asyncio.create_task(repl._run_claude_command('usage'))
+    try:
+      await asyncio.wait_for(started.wait(), 2)
+      assert repl._state.selector.id == 'claude-usage'
+      replacement = _selection.Selector(
+        'replacement', 'Other selection', (), lambda _: _actions.ClearSelector()
+      )
+      if disposition == 'escape':
+        repl.dispatch(_actions.CloseSelector())
+      elif disposition == 'replacement':
+        repl.dispatch(_actions.OpenSelector(replacement))
+      release.set()
+      await asyncio.wait_for(task, 2)
+      if disposition == 'replacement':
+        assert repl._state.selector.selector is replacement
+      else:
+        assert not repl._state.selector.active
+      assert not repl._claude_operation
+      assert repl._input.text == 'unfinished draft'
+      assert repl._worker_configuration == previous
+      assert not repl.transcript_entries()
+    finally:
+      release.set()
+      await task
+
+
+@pytest.mark.asyncio
 async def test_claude_usage_unavailable_preserves_inference_and_draft(
   tmp_path: pathlib.Path,
   monkeypatch: pytest.MonkeyPatch,

@@ -278,6 +278,9 @@ class Selector(component.Component):
     has_header = bool(request.header)
     menu_state = state.selector.menu
     limit = self._get_max_height() if self._get_max_height is not None else None
+    if request.max_height is not None:
+      requested_limit = request.max_height()
+      limit = requested_limit if limit is None else min(limit, requested_limit)
     if limit is not None:
       menu_state = dataclasses.replace(
         menu_state,
