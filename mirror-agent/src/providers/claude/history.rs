@@ -1,10 +1,87 @@
-//! Nonsecret provenance only. Replay/normalization policy belongs to transport.
-use std::collections::BTreeMap;
+//! Nonsecret provenance and normalization of derived outgoing history.
+use std::collections::{BTreeMap, BTreeSet};
 
 use prost_types::{value::Kind, Struct, Value};
 use serde::{Deserialize, Serialize};
 
 pub const REASONING_PROVENANCE_KEY: &str = "mirror_reasoning_provenance";
+
+/// Normalize only the outgoing copy. Canonical history, readable text and tool
+/// results are never edited. Unknown provenance does not establish portability.
+pub fn normalize_anthropic_history(
+    messages: &[mirror_protocol::chat_record::Message],
+    target: &ReasoningProvenance,
+) -> (
+    Vec<mirror_protocol::chat_record::Message>,
+    Vec<HistoryNormalizationNotice>,
+) {
+    let mut messages = messages.to_vec();
+    let mut notices: Vec<HistoryNormalizationNotice> = Vec::new();
+    let mut omit = BTreeSet::new();
+    for (index, message) in messages.iter_mut().enumerate() {
+        let mirror_protocol::chat_record::Message::Assistant(message) = message else {
+            continue;
+        };
+        if message.reasoning_details.is_empty() {
+            continue;
+        }
+        let reason = match ReasoningProvenance::from_fields(message.provider_fields.as_ref()) {
+            None => Some(HistoryNormalizationReason::UnknownProvenance),
+            Some(source) if source.provider_family != target.provider_family => {
+                Some(HistoryNormalizationReason::ProviderChanged)
+            }
+            Some(source) if source.billing_mode != target.billing_mode => {
+                Some(HistoryNormalizationReason::BillingModeChanged)
+            }
+            Some(source) if source.model_id != target.model_id => {
+                Some(HistoryNormalizationReason::ModelChanged)
+            }
+            Some(source) if source.compatibility_profile != target.compatibility_profile => {
+                Some(HistoryNormalizationReason::CompatibilityProfileChanged)
+            }
+            Some(_) => None,
+        };
+        if let Some(reason) = reason {
+            message.reasoning_details.clear();
+            if message.content.as_deref().is_none_or(str::is_empty) && message.tool_calls.is_empty()
+            {
+                omit.insert(index);
+            }
+            if let Some(notice) = notices.iter_mut().find(|notice| notice.reason == reason) {
+                notice.affected_messages += 1;
+            } else {
+                notices.push(HistoryNormalizationNotice {
+                    schema_version: 1,
+                    reason,
+                    affected_messages: 1,
+                });
+            }
+        }
+    }
+    // A reasoning-only turn can become empty after normalization. Omit that
+    // empty outgoing entry instead of manufacturing unsigned reasoning or an
+    // empty text block. This never removes any visible answer or tool call.
+    let messages = messages
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, message)| (!omit.contains(&index)).then_some(message))
+        .collect();
+    (messages, notices)
+}
+
+pub fn anthropic_reasoning_provenance(
+    model: &str,
+    billing_mode: AnthropicBillingMode,
+) -> ReasoningProvenance {
+    ReasoningProvenance {
+        schema_version: 1,
+        provider_family: "anthropic".into(),
+        billing_mode,
+        model_id: model.into(),
+        compatibility_profile: (billing_mode == AnthropicBillingMode::Subscription)
+            .then(|| super::profile::PROFILE_ID.into()),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

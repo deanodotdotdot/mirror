@@ -130,9 +130,50 @@ macOS authority suite passed 21 tests (the standalone subprocess helper is
 ignored and exercised by the process tests), the native private protocol suite
 passed five, and the binary suite passed three. No remaining P2-or-higher Task 3
 review findings. Workspace/all-target compilation including the Python binding,
-touched Rust formatting and diff checks passed. The manager completed final
-reviewed-head Linux verification before the Task 3 merge.
+touched Rust formatting and diff checks passed. The manager verified reviewed
+head `c5e4159` on Linux: 622 tests passed, two intentional tests were ignored,
+and binding/launcher checks passed. PR 3 merged as `52f8fdb`; the merged tree
+exactly matches that reviewed head.
 
+
+Task 4 local macOS validation: 115 provider tests (36 new OAuth tests), exact
+Bun golden bytes and full-seed hash vectors, 43 diagnostic cases, two lease
+doctests, workspace/all-target compilation including the Python/eval binding,
+and Python packaging/typechecking CI (3,088 passed, five skipped; zero pyright
+errors/warnings). An earlier local agent/protocol test run passed 579 library
+cases, three binary, 36 headless and ten worker cases, plus the two doctests.
+After the Astra continuation tightened the pre-output/partial-output boundary,
+all 115 provider tests and workspace/all-target compilation passed again.
+The unchanged long Unicode spill case passed in the earlier broad run
+and was excluded from the final repeat; the Linux-only /dev/full headless
+fixture was excluded on macOS. The existing opt-in microVM fixture stayed ignored.
+
+Extra broad workspace checks need SANDBOXD_BIN set to a built guest binary.
+With that configured and TMPDIR=/private/tmp to avoid Darwin's /var alias,
+45 sandboxd cases passed. Its unchanged egress auto-refresh case still uses
+read -N4 through /bin/bash, which macOS bash 3.2 rejects; the required Linux
+acceptance remains with the manager/Task 8. No unrelated sandbox code was changed.
+Task 4 used no real credentials, login or live inference. It enables no global
+OAuth runtime path; that remains Task 6. Production A1–A11 remain unproven.
+The OAuth decoder rejects thinking after text/tools and text after tools because
+Mirror's current canonical message cannot preserve those upstream orderings.
+Independent review and Task 8's two-model live gate must check this profile
+limitation; rejected streams expose no successful final or executable tools.
+
+Task 4 independent Astra review reproduced and fixed three P2 findings:
+overlapping open blocks could reorder streamed text in the canonical completion;
+API-key `extra_body.model` overrides used the configured model for reasoning
+normalization/provenance; and cancellation after a buffered callback could still
+emit tool callbacks and a final completion. Regressions cover text/thinking block
+overlap, compatible/incompatible overridden-model history, and cancellation after
+text/tool/usage callbacks. All 118 provider tests (39 OAuth module cases) and
+workspace/all-target compilation including the Python/eval binding passed.
+No remaining P2-or-higher findings. The manager combined the reviewed transport
+with Task 3 at `1b9615a`; final Linux verification passed 661 tests with two
+intentional ignores, plus binding and launcher checks. PR 4 merged as `962fed4`,
+and its tree exactly matches the validated combined head. Task 8 must still
+exercise the approved ordering boundary with both live acceptance models.
+No live calls or credential reads were used.
 
 Task 5 adds a single `ClaudeMetadataService` backed by `ClaudeAuthorization`.
 Catalog and detail HTTP have fixed origins, bounded parsing/pagination and a
@@ -184,3 +225,7 @@ stalls, original stale age, and cancellation/guard/revocation/lock failure durin
 the reserved interval. Retry-After hints are bounded through UTC year 9999;
 invalid enormous hints retain the normal cooldown instead of causing timestamp
 serialization failure or immediate retries. Production A1–A11 remain unproven.
+
+Manager integrated Task 4 before Task 5 independent review, retaining both
+module exports, OMP attributions and validation evidence. Runtime wiring remains
+Task 6. The combined Task 5 head awaits independent review and Linux validation.

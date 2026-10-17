@@ -276,6 +276,7 @@ pub enum ClaudeErrorKind {
     CredentialStorageError,
     AccountChanged,
     SubscriptionLimited,
+    RateLimited,
     ModelUnavailable,
     AccessDenied,
     AuthTemporarilyUnavailable,
@@ -337,6 +338,7 @@ pub enum ClaudeConfigurationError {
     InvalidAccessToken,
     UnsupportedSurface,
     NotImplemented,
+    InvalidRequestOptions,
 }
 
 /// Safe allowlisted details only; never response text, URLs or arbitrary codes.
@@ -373,9 +375,9 @@ impl ClaudeError {
             ClaudeErrorKind::LoginRequired | ClaudeErrorKind::LoginExpired => ClaudeRecovery::Login,
             ClaudeErrorKind::AccountChanged => ClaudeRecovery::Reconnect,
             ClaudeErrorKind::CredentialStorageError => ClaudeRecovery::RepairStorage,
-            ClaudeErrorKind::AuthTemporarilyUnavailable | ClaudeErrorKind::SubscriptionLimited => {
-                ClaudeRecovery::RetryLater
-            }
+            ClaudeErrorKind::AuthTemporarilyUnavailable
+            | ClaudeErrorKind::SubscriptionLimited
+            | ClaudeErrorKind::RateLimited => ClaudeRecovery::RetryLater,
             ClaudeErrorKind::InvalidConfiguration
             | ClaudeErrorKind::ModelUnavailable
             | ClaudeErrorKind::AccessDenied => ClaudeRecovery::CheckConfiguration,
@@ -443,6 +445,9 @@ fn enum_name(value: impl Serialize) -> String {
 impl fmt::Display for ClaudeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Claude subscription {}", enum_name(self.kind))?;
+        if self.kind == ClaudeErrorKind::CompatibilityError {
+            write!(f, " [profile={}]", profile::PROFILE_ID)?;
+        }
         if let Some(reason) = self.details.configuration {
             f.write_str(match reason {
                 ClaudeConfigurationError::ApiKeyNotAllowed => ": --api-key is not allowed with anthropic-oauth",
@@ -454,6 +459,7 @@ impl fmt::Display for ClaudeError {
                 ClaudeConfigurationError::InvalidIdentity => ": invalid account/workspace identity",
                 ClaudeConfigurationError::InvalidAccessToken => ": invalid access token",
                 ClaudeConfigurationError::UnsupportedSurface => ": anthropic-oauth is not supported on this launch surface",
+                ClaudeConfigurationError::InvalidRequestOptions => ": invalid or unsupported subscription request options, tool names, or history",
                 ClaudeConfigurationError::NotImplemented => ": subscription auth/transport integration is not available in this build",
             })?;
         }

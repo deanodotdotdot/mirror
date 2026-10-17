@@ -148,9 +148,29 @@ impl AnthropicMessages {
         let endpoint = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let model = self.config.model.clone();
         let api_key = self.config.api_key.clone();
-        let body = self.request_body(request);
+        let prepared = (|| {
+            // API-key callers retain unrestricted extra_body options. Resolve
+            // their effective model before deciding which signatures can replay
+            // or recording the provenance of the eventual response.
+            let mut options = Map::new();
+            apply_extra_body(&mut options, request.inference.as_ref())?;
+            let effective_model = match options.get("model") {
+                Some(value) => value.as_str().unwrap_or_default(),
+                None => &model,
+            };
+            let provenance = super::claude::anthropic_reasoning_provenance(
+                effective_model,
+                super::claude::AnthropicBillingMode::ApiKey,
+            );
+            let mut request = request;
+            let (messages, notices) =
+                super::claude::normalize_anthropic_history(&request.messages, &provenance);
+            request.messages = messages;
+            Ok::<_, LlmError>((self.request_body(request)?, provenance, notices))
+        })();
         try_stream! {
-            let body = body?;
+            let (body, provenance, notices) = prepared?;
+            for notice in notices { yield StreamEvent::Notice(notice); }
             if let Some(guard) = guard {
                 guard.verify().await?;
             }
@@ -201,7 +221,9 @@ impl AnthropicMessages {
                     "model stream ended without a terminal event",
                 ))?;
             }
-            yield StreamEvent::Final(state.finish()?);
+            let mut completion = state.finish()?;
+            provenance.insert_into(&mut completion.message.provider_fields);
+            yield StreamEvent::Final(completion);
         }
     }
 }
@@ -275,6 +297,8 @@ enum ApiContentBlock {
     ToolUse {
         id: String,
         name: String,
+        #[serde(default)]
+        input: Value,
     },
     #[serde(other)]
     Unknown,
@@ -325,11 +349,12 @@ enum BlockState {
         id: String,
         name: String,
         arguments: String,
+        initial_input: Value,
     },
 }
 
 #[derive(Debug, Default)]
-struct CompletionState {
+pub(super) struct CompletionState {
     blocks: BTreeMap<u32, BlockState>,
     input_tokens: u64,
     output_tokens: u64,
@@ -339,6 +364,12 @@ struct CompletionState {
 }
 
 impl CompletionState {
+    /// Validated transports can reuse accumulation without exposing wire types.
+    pub(super) fn apply_value(&mut self, value: Value) -> Result<Vec<StreamEvent>, LlmError> {
+        let event = serde_json::from_value(value)
+            .map_err(|_| LlmError::Request("invalid Anthropic stream event".into()))?;
+        Ok(self.apply(event))
+    }
     fn apply(&mut self, event: ApiEvent) -> Vec<StreamEvent> {
         let mut events = Vec::new();
         match event {
@@ -384,7 +415,7 @@ impl CompletionState {
                     self.blocks
                         .insert(index, BlockState::RedactedThinking { data });
                 }
-                ApiContentBlock::ToolUse { id, name } => {
+                ApiContentBlock::ToolUse { id, name, input } => {
                     events.push(StreamEvent::ToolCall(StreamToolCall {
                         index,
                         name: name.clone(),
@@ -396,6 +427,7 @@ impl CompletionState {
                             id,
                             name,
                             arguments: String::new(),
+                            initial_input: if input.is_null() { json!({}) } else { input },
                         },
                     );
                 }
@@ -452,7 +484,7 @@ impl CompletionState {
         events
     }
 
-    fn finish(mut self) -> Result<Completion, LlmError> {
+    pub(super) fn finish(mut self) -> Result<Completion, LlmError> {
         let truncated = match self.stop_reason.as_deref() {
             Some("end_turn" | "tool_use" | "stop_sequence") => false,
             Some("max_tokens") => {
@@ -503,10 +535,18 @@ impl CompletionState {
                     id,
                     name,
                     arguments,
+                    initial_input,
                 } => tool_calls.push(ToolCall {
                     id,
                     r#type: "function".to_string(),
-                    function: Some(FunctionCall { name, arguments }),
+                    function: Some(FunctionCall {
+                        name,
+                        arguments: if arguments.is_empty() {
+                            initial_input.to_string()
+                        } else {
+                            arguments
+                        },
+                    }),
                     provider_fields: None,
                 }),
             }
@@ -554,7 +594,7 @@ impl CompletionState {
     }
 }
 
-fn serialize_message(message: &chat_record::Message) -> Result<Value, LlmError> {
+pub(super) fn serialize_message(message: &chat_record::Message) -> Result<Value, LlmError> {
     match message {
         // System messages are hoisted into the top-level `system` field.
         chat_record::Message::System(_) => Err(LlmError::Request(
