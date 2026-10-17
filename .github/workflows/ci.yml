@@ -16,6 +16,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.10.10'
+      - run: python3 -m unittest discover -s diagnostics/claude_oauth/tests -v
       - run: cargo install ripgrep --locked
       - run: bash ci.sh
   rust:
