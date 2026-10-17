@@ -668,3 +668,11 @@ records after restart, unchanged prior bytes, exact synthetic file effects and
 closed error/size/timeout failures. Separate tests verify descendant cleanup
 after a leader exits and terminal failure before startup. These are observation
 tooling checks only; the controller requires explicit opt-in for live phases.
+
+The manager's existing Mac Claude Code baseline request passed on
+`claude-sonnet-4-6` at 2026-10-17 22:44:40–42 UTC, before production Mirror login.
+A prior minimal-environment attempt is retained as controller setup failure:
+public CLI auth status recognized the existing OAuth subscription after restoring
+standard macOS user/session fields, with provider credentials/endpoints removed.
+No external credential store was inspected. A private user login request is now
+pending; subsequent Mirror and coexistence observations have not run.

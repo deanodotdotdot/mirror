@@ -176,7 +176,7 @@ grant separately, and use the same installed artifacts identified above.
 
 | Step | Required observation | Current result |
 | --- | --- | --- |
-| Mac baseline | Normal Claude Code request using its existing independent grant | Pending |
+| Mac baseline | Normal Claude Code request using its existing independent grant | Passed 2026-10-17 22:44:40–42 UTC, macOS, `claude-sonnet-4-6`; no external store inspection. Before any production Mirror login. |
 | Mac login | Fresh Mirror login without an Anthropic API key; local status and identity/source/profile | Pending |
 | Mac tools | Text, read, edit and command turns in a known synthetic workspace; verify file/command effects | Pending |
 | Mac restart | Exit/restart installed Mirror, resume the same bound conversation and complete another request | Pending |
@@ -185,6 +185,16 @@ grant separately, and use the same installed artifacts identified above.
 | Linux/SSH | Separate Linux Mirror login with Mac browser and private manual callback, then exec/text/read/edit/command/restart/metadata/usage | Pending |
 | Renewal | Production authority refresh, durable revision advance and a fresh installed CLI process completing a normal request | Pending |
 | Coexistence | Normal Mac Claude Code requests before/after Mirror login, refresh and logout, plus overlapping use | Pending |
+
+The first minimal-environment Claude Code baseline attempt exited nonzero before
+any Mirror login. Public CLI auth status showed that removing normal macOS
+user/session variables hid its existing login; restoring only those fields
+reported the existing OAuth subscription. The normal CLI marker request then
+passed with provider keys, bearer variables and endpoint overrides absent.
+This was controller environment setup, not evidence of credential interference.
+The successful baseline alone does not complete the later coexistence/overlap
+checks. Sanitized evidence is retained in the manager's
+`claude-code-baseline-platform-context.json`.
 
 Use the existing Mac Claude Code installation for coexistence with the Mac and
 Linux Mirror processes. Record those exact platform/process pairings. There is
