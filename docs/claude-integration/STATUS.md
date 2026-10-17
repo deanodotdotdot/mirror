@@ -58,8 +58,9 @@ resolution. Clearing provider-specific references correctly stopped carrying
 switching back to Codex or explicitly selecting a Codex compactor. Codex now
 resolves its own environment override when no explicit path is supplied. An
 isolated worker regression reproduced the failed compactor startup before the
-fix; a separate isolated subprocess verifies an API-to-Codex request uses only
-the synthetic Codex credential against a loopback server. Neither test touches
+fix; a separate isolated subprocess verifies both API-to-Codex and explicit
+Codex compactor requests use only the synthetic Codex credential against a
+loopback server. Neither test touches
 the developer's credentials or mutates the parent process environment.
 
 Reviewer validation: 79 provider tests, 77 agent-service tests, ten worker tests,

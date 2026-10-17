@@ -53,7 +53,7 @@ fn provider(auth_path: &Path) -> CodexResponses {
 }
 
 #[tokio::test]
-async fn api_to_codex_switch_resolves_its_own_credential_path_override() {
+async fn codex_switch_and_compactor_resolve_own_credential_path_override() {
     use super::super::{ModelApi, ModelProvider, ModelProviderConfig};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -67,7 +67,7 @@ async fn api_to_codex_switch_resolves_its_own_credential_path_override() {
         let result = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "providers::codex_responses::tests::api_to_codex_switch_resolves_its_own_credential_path_override",
+                "providers::codex_responses::tests::codex_switch_and_compactor_resolve_own_credential_path_override",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -85,56 +85,65 @@ async fn api_to_codex_switch_resolves_its_own_credential_path_override() {
         return;
     }
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut request = [0; 16384];
-        let received = socket.read(&mut request).await.unwrap();
-        let request = String::from_utf8_lossy(&request[..received]).to_ascii_lowercase();
-        assert!(request.contains("\r\nauthorization: bearer oauth-token\r\n"));
-        assert!(!request.contains("api-key-must-not-survive"));
-        let body = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
-        );
-        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-    });
-    let provider = ModelProvider::new(
-        ModelProviderConfig {
-            context_window: Some(crate::providers::DEFAULT_CONTEXT_WINDOW),
-            api: ModelApi::Responses,
-            model: "test".into(),
-            api_key: Some("api-key-must-not-survive".into()),
-            base_url: None,
-            auth_path: None,
-            claude_session: None,
-            prompt_cache_key: "test-session".into(),
-            request_timeout: None,
-        },
-        None,
-    )
-    .await
-    .unwrap();
-    let stream = provider.stream(CompletionRequest {
-        messages: vec![],
-        tools: vec![],
-        max_tokens: None,
-        inference: Some(InferenceConfig {
-            api: Some("openai-codex-responses".into()),
-            base_url: Some(format!("http://{address}")),
-            ..Default::default()
-        }),
-    });
-    pin_mut!(stream);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        assert_matches!(stream.next().await, Some(Ok(StreamEvent::Content(_))));
-        assert_matches!(stream.next().await, Some(Ok(StreamEvent::Final(_))));
-        assert!(stream.next().await.is_none());
-        server.await.unwrap();
-    })
-    .await
-    .unwrap();
+    // Cover both a per-request provider switch and the standalone provider
+    // created for an explicitly configured Codex compactor.
+    for explicit_compactor in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 16384];
+            let received = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..received]).to_ascii_lowercase();
+            assert!(request.contains("\r\nauthorization: bearer oauth-token\r\n"));
+            assert!(!request.contains("api-key-must-not-survive"));
+            let body = concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+            );
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let provider = ModelProvider::new(
+            ModelProviderConfig {
+                context_window: Some(crate::providers::DEFAULT_CONTEXT_WINDOW),
+                api: if explicit_compactor {
+                    ModelApi::CodexResponses
+                } else {
+                    ModelApi::Responses
+                },
+                model: "test".into(),
+                api_key: (!explicit_compactor).then(|| "api-key-must-not-survive".into()),
+                base_url: explicit_compactor.then(|| format!("http://{address}")),
+                auth_path: None,
+                claude_session: None,
+                prompt_cache_key: "test-session".into(),
+                request_timeout: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let stream = provider.stream(CompletionRequest {
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            inference: (!explicit_compactor).then(|| InferenceConfig {
+                api: Some("openai-codex-responses".into()),
+                base_url: Some(format!("http://{address}")),
+                ..Default::default()
+            }),
+        });
+        pin_mut!(stream);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert_matches!(stream.next().await, Some(Ok(StreamEvent::Content(_))));
+            assert_matches!(stream.next().await, Some(Ok(StreamEvent::Final(_))));
+            assert!(stream.next().await.is_none());
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
