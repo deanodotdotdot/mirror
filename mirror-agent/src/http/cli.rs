@@ -150,6 +150,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 
 impl AgentArgs {
     async fn start(&self, output: PathBuf) -> Result<PromptRunner, Box<dyn Error>> {
+        if self.api == ModelApi::AnthropicOAuth {
+            return Err(mirror_agent::providers::claude::ClaudeError::configuration(
+                mirror_agent::providers::claude::ClaudeConfigurationError::UnsupportedSurface,
+            )
+            .into());
+        }
         let limits = self.limits()?;
         let mut inference = InferenceConfig {
             model: self.model.clone(),
@@ -163,6 +169,7 @@ impl AgentArgs {
                     ModelApi::Responses => "openai-responses",
                     ModelApi::CodexResponses => "openai-codex-responses",
                     ModelApi::AnthropicMessages => "anthropic-messages",
+                    ModelApi::AnthropicOAuth => "anthropic-oauth",
                 }
                 .into(),
             ),
@@ -172,6 +179,7 @@ impl AgentArgs {
             top_p: self.top_p,
             seed: self.seed,
             extra_body: self.extra_body.clone(),
+            claude_session: None,
         };
         self.api.validate_sampling(&inference)?;
         let remote = self.remote.is_some();
@@ -300,6 +308,12 @@ impl AgentArgs {
     }
 
     async fn provider(&self, id: &str) -> Result<ModelProvider, Box<dyn Error>> {
+        if self.api == ModelApi::AnthropicOAuth {
+            return Err(mirror_agent::providers::claude::ClaudeError::configuration(
+                mirror_agent::providers::claude::ClaudeConfigurationError::UnsupportedSurface,
+            )
+            .into());
+        }
         if self.model.trim().is_empty() {
             return Err("model must not be empty".into());
         }
@@ -322,7 +336,10 @@ impl AgentArgs {
                     std::env::var("OPENAI_API_KEY").ok()
                 },
                 base_url: self.base_url.as_ref().map(ToString::to_string),
-                auth_path: std::env::var_os("MIRROR_CODEX_AUTH_PATH").map(Into::into),
+                auth_path: (self.api == ModelApi::CodexResponses)
+                    .then(|| std::env::var_os("MIRROR_CODEX_AUTH_PATH").map(Into::into))
+                    .flatten(),
+                claude_session: None,
                 prompt_cache_key: id.into(),
                 request_timeout: self.request_timeout_seconds,
             },

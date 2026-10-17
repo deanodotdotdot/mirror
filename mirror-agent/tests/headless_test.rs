@@ -1308,6 +1308,23 @@ async fn http_treats_the_entire_body_as_one_user_message() {
 }
 
 #[tokio::test]
+async fn http_subscription_is_rejected_before_any_api_key_request() {
+    let mut fixture = Fixture::start().await;
+    let output = fixture
+        .command("")
+        .args(["--api", "anthropic-oauth"])
+        .output()
+        .await
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not supported on this launch surface")
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-model-key"));
+    assert!(fixture.requests.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn cli_rejects_an_unwritable_trace_before_inference() {
     let mut fixture = Fixture::start().await;
     fixture.output = "full.jsonl".into();

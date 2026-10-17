@@ -53,6 +53,100 @@ fn provider(auth_path: &Path) -> CodexResponses {
 }
 
 #[tokio::test]
+async fn codex_switch_and_compactor_resolve_own_credential_path_override() {
+    use super::super::{ModelApi, ModelProvider, ModelProviderConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    const CHILD: &str = "MIRROR_TEST_CODEX_SWITCH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate both the environment override and the empty default home
+        // from parallel tests and the developer's real credentials.
+        let home = tempfile::tempdir().unwrap();
+        let auth = TestAuthFile::new();
+        let result = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "providers::codex_responses::tests::codex_switch_and_compactor_resolve_own_credential_path_override",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", home.path())
+            .env("MIRROR_CODEX_AUTH_PATH", &auth.0)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    // Cover both a per-request provider switch and the standalone provider
+    // created for an explicitly configured Codex compactor.
+    for explicit_compactor in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 16384];
+            let received = socket.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..received]).to_ascii_lowercase();
+            assert!(request.contains("\r\nauthorization: bearer oauth-token\r\n"));
+            assert!(!request.contains("api-key-must-not-survive"));
+            let body = concat!(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n",
+            );
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let provider = ModelProvider::new(
+            ModelProviderConfig {
+                context_window: Some(crate::providers::DEFAULT_CONTEXT_WINDOW),
+                api: if explicit_compactor {
+                    ModelApi::CodexResponses
+                } else {
+                    ModelApi::Responses
+                },
+                model: "test".into(),
+                api_key: (!explicit_compactor).then(|| "api-key-must-not-survive".into()),
+                base_url: explicit_compactor.then(|| format!("http://{address}")),
+                auth_path: None,
+                claude_session: None,
+                prompt_cache_key: "test-session".into(),
+                request_timeout: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let stream = provider.stream(CompletionRequest {
+            messages: vec![],
+            tools: vec![],
+            max_tokens: None,
+            inference: (!explicit_compactor).then(|| InferenceConfig {
+                api: Some("openai-codex-responses".into()),
+                base_url: Some(format!("http://{address}")),
+                ..Default::default()
+            }),
+        });
+        pin_mut!(stream);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            assert_matches!(stream.next().await, Some(Ok(StreamEvent::Content(_))));
+            assert_matches!(stream.next().await, Some(Ok(StreamEvent::Final(_))));
+            assert!(stream.next().await.is_none());
+            server.await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn responses_and_codex_forward_cumulative_usage() {
     use super::super::{ModelApi, ModelProvider, ModelProviderConfig};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -91,6 +185,7 @@ async fn responses_and_codex_forward_cumulative_usage() {
                 api_key: Some("test-key".to_string()),
                 base_url: Some(format!("http://{address}")),
                 auth_path: Some(auth.0.clone()),
+                claude_session: None,
                 prompt_cache_key: "test-session".to_string(),
                 request_timeout: None,
             },

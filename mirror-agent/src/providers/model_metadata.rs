@@ -5,19 +5,24 @@ use std::time::Duration;
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
 
-use super::{ModelApi, ModelProvider, ModelProviderConfig};
+use super::{LlmError, ModelApi, ModelProvider, ModelProviderConfig};
 
 pub const DEFAULT_CONTEXT_WINDOW: usize = 256_000;
 
 /// Discover the model's context limit, using a provider fallback on failure.
-pub async fn model_context_window(provider: &ModelProvider, config: &ModelProviderConfig) -> usize {
+pub async fn model_context_window(
+    provider: &ModelProvider,
+    config: &ModelProviderConfig,
+) -> Result<usize, LlmError> {
+    // Missing subscription support/auth is never a successful offline catalog.
+    config.ensure_subscription_available()?;
     let fallback = match config.api {
         ModelApi::CodexResponses => 272_000,
-        ModelApi::AnthropicMessages => 200_000,
+        ModelApi::AnthropicMessages | ModelApi::AnthropicOAuth => 200_000,
         _ => DEFAULT_CONTEXT_WINDOW,
     };
     // Bound connection resolution and authorization, not only the HTTP request.
-    tokio::time::timeout(
+    Ok(tokio::time::timeout(
         Duration::from_secs(10),
         discover_context_window(provider, config),
     )
@@ -26,7 +31,7 @@ pub async fn model_context_window(provider: &ModelProvider, config: &ModelProvid
     .unwrap_or_else(|reason| {
         eprintln!("{reason}; using a {fallback}-token fallback");
         fallback
-    })
+    }))
 }
 
 async fn discover_context_window(
@@ -224,13 +229,17 @@ mod tests {
             api_key: Some("synthetic-reflection-key".into()),
             base_url: Some(base_url),
             auth_path: None,
+            claude_session: None,
             prompt_cache_key: "session".into(),
             request_timeout: None,
         };
         let provider = ModelProvider::new(config.clone(), None)
             .await
             .expect("provider");
-        assert_eq!(model_context_window(&provider, &config).await, 262144);
+        assert_eq!(
+            model_context_window(&provider, &config).await.unwrap(),
+            262144
+        );
         server.await.expect("server");
     }
 

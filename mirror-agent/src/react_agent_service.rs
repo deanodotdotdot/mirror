@@ -98,9 +98,31 @@ pub enum ReactServiceEvent {
     TurnStarted,
     TurnCompleted,
     TurnInterrupted,
-    TurnError(String),
+    TurnError(mirror_protocol::TurnError),
     InputRejected { message_id: String },
     Closed,
+}
+
+impl ReactServiceEvent {
+    fn error_message(message: String) -> Self {
+        Self::TurnError(mirror_protocol::TurnError {
+            message,
+            claude_error: None,
+        })
+    }
+
+    fn from_agent_error(error: &ReactAgentError) -> Self {
+        let claude_error = match error {
+            ReactAgentError::Model(crate::providers::LlmError::Claude(error)) => {
+                Some(error.to_protocol())
+            }
+            _ => None,
+        };
+        Self::TurnError(mirror_protocol::TurnError {
+            message: error.to_string(),
+            claude_error,
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -537,7 +559,7 @@ impl<Model: Llm> ReactAgentService<Model> {
             {
                 let _ = self
                     .events
-                    .send(ReactServiceEvent::TurnError(error.to_string()));
+                    .send(ReactServiceEvent::from_agent_error(&error));
             }
             if self.resume_turn {
                 self.resume_turn = false;
@@ -783,7 +805,7 @@ impl<Model: Llm> ReactAgentService<Model> {
             if let Err(error) = self.finalize_interrupted_tools().await {
                 let _ = self
                     .events
-                    .send(ReactServiceEvent::TurnError(error.to_string()));
+                    .send(ReactServiceEvent::error_message(error.to_string()));
             }
             if !pending_messages.is_empty() {
                 let pending_ids = pending_messages
@@ -804,7 +826,7 @@ impl<Model: Llm> ReactAgentService<Model> {
                     }
                     let _ = self
                         .events
-                        .send(ReactServiceEvent::TurnError(error.to_string()));
+                        .send(ReactServiceEvent::error_message(error.to_string()));
                 }
             }
         }
@@ -877,7 +899,7 @@ impl<Model: Llm> ReactAgentService<Model> {
                             if let Some(accepted) = accepted {
                                 let _ = accepted.send(result);
                             } else if let Err(error) = result {
-                                let _ = events.send(ReactServiceEvent::TurnError(error.to_string()));
+                                let _ = events.send(ReactServiceEvent::error_message(error.to_string()));
                             }
                         }
                         Command::Compact(result) => {
@@ -959,10 +981,10 @@ impl<Model: Llm> ReactAgentService<Model> {
                         match result {
                             Ok(Ok(())) => break OperationOutcome::Completed,
                             Ok(Err(error)) => {
-                                let _ = events.send(ReactServiceEvent::TurnError(error.to_string()));
+                                let _ = events.send(ReactServiceEvent::from_agent_error(&error));
                             }
                             Err(payload) => {
-                                let _ = events.send(ReactServiceEvent::TurnError(format!(
+                                let _ = events.send(ReactServiceEvent::error_message(format!(
                                     "agent panicked: {}",
                                     panic_message(payload),
                                 )));
@@ -1090,7 +1112,7 @@ impl<Model: Llm> ReactAgentService<Model> {
             if let Err(error) = self.context.push(AgentEvent::Entries(pending)).await {
                 let _ = self
                     .events
-                    .send(ReactServiceEvent::TurnError(error.to_string()));
+                    .send(ReactServiceEvent::error_message(error.to_string()));
             }
         }
         self.commands.close();
@@ -1108,7 +1130,7 @@ impl<Model: Llm> ReactAgentService<Model> {
     fn reject_turn(&self, error: ReactServiceError) {
         let _ = self
             .events
-            .send(ReactServiceEvent::TurnError(error.to_string()));
+            .send(ReactServiceEvent::error_message(error.to_string()));
         let _ = self.events.send(ReactServiceEvent::TurnCompleted);
     }
 }

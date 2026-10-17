@@ -70,6 +70,44 @@ message InferenceConfig {
   // `{"chat_template_kwargs": {"enable_thinking": false}}`). Kept as JSON text
   // so integers reach the endpoint as integers.
   optional string extra_body = 8;
+  // Durable per-conversation Claude binding; retain while another API is active.
+  // No tokens, token generation/revision, installation ID or callback material.
+  ClaudeSessionBinding claude_session = 9;
+}
+
+message ClaudeIdentityBinding {
+  string account_id = 1;
+  string organization_id = 2;
+}
+
+message ClaudeSessionBinding {
+  uint32 schema_version = 1;
+  ClaudeIdentityBinding identity = 2;
+  string compatibility_profile = 3;
+}
+
+// Fixed enum names from the Rust contracts; no raw provider text or URLs.
+message ClaudeErrorDetails {
+  uint32 schema_version = 1;
+  string kind = 2;
+  string retry_disposition = 3;
+  string recovery = 4;
+  optional uint32 http_status = 5;
+  optional string provider_code = 6;
+  google.protobuf.Timestamp retry_at = 7;
+  google.protobuf.Timestamp resets_at = 8;
+  optional string extra_usage = 9;
+  ClaudeIdentityBinding expected_identity = 10;
+  ClaudeIdentityBinding current_identity = 11;
+  optional string configuration = 12;
+  string compatibility_profile = 13;
+  optional string limit_scope = 14;
+}
+
+message HistoryNormalizationNotice {
+  uint32 schema_version = 1;
+  string reason = 2;
+  uint32 affected_messages = 3;
 }
 
 message Interrupt {}
@@ -241,6 +279,7 @@ message TaskUpdate {
 
 message TurnError {
   string message = 1;
+  ClaudeErrorDetails claude_error = 2;
 }
 
 message GetMessagesRequest {
@@ -437,6 +476,7 @@ message ExtensionRecord {
 message LogRecord {
   string level = 1;
   string text = 2;
+  HistoryNormalizationNotice history_normalization = 3;
 }
 
 message ContextWindowRecord {

@@ -1,5 +1,6 @@
 mod anthropic_messages;
 mod chat_completions;
+pub mod claude;
 mod codex_responses;
 mod completion;
 mod completion_request;

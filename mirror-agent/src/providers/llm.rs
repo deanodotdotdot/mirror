@@ -63,6 +63,8 @@ pub enum StreamEvent {
     ToolCall(StreamToolCall),
     /// Cumulative generated tokens reported by the inference provider.
     OutputTokens(u64),
+    /// Safe structured notice; never treated as replay-unsafe model output.
+    Notice(super::claude::HistoryNormalizationNotice),
     Final(Completion),
 }
 
@@ -70,6 +72,8 @@ pub enum StreamEvent {
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LlmError {
+    #[error(transparent)]
+    Claude(#[from] super::claude::ClaudeError),
     #[error("model request failed: {0}")]
     Request(String),
     #[error("model context overflow: {0}")]

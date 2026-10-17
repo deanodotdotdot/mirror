@@ -42,6 +42,26 @@ async fn worker_adds_no_environment_section_unless_asked() {
 }
 
 #[tokio::test]
+async fn codex_compaction_resolves_its_own_credential_path_override() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    // The primary provider must not retain Codex's credential reference. The
+    // explicitly selected compactor still needs the documented environment
+    // override; HOME intentionally contains no default .codex/auth.json.
+    let context = initial_context(
+        workspace.path(),
+        serde_json::json!({
+            "api": "anthropic-messages",
+            "context_window": 200_000,
+            "compaction_model": "test-codex",
+            "compaction_model_api": "openai-codex-responses",
+        }),
+        None,
+    )
+    .await;
+    assert!(context.system_prompt_report.is_some());
+}
+
+#[tokio::test]
 async fn worker_omits_unconfigured_web_tools_by_default() {
     let workspace = tempfile::tempdir().expect("workspace");
     let context = initial_context(workspace.path(), serde_json::json!({}), None).await;
