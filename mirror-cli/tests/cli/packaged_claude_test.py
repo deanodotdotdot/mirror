@@ -16,6 +16,7 @@ import pathlib
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -42,6 +43,7 @@ _BEARER_CANARY = 'SYNTHETIC_PACKAGED_CLAUDE_BEARER_CANARY'
 _INPUT_CANARY = 'SYNTHETIC_PACKAGED_PRIVATE_INPUT_CANARY'
 _ACCESS_CANARY = 'sk-ant-oat-SYNTHETIC_PACKAGED_ACCESS_CANARY'
 _REFRESH_CANARY = 'SYNTHETIC_PACKAGED_REFRESH_CANARY'
+_LOGIN_PHASE_TIMEOUT = 15
 
 
 @pytest.fixture(params=['bundled', 'helper path with spaces'])
@@ -357,7 +359,7 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
       pytest.fail('Private terminal output exceeded the fixture bound')
 
   def await_notice(notice: bytes) -> None:
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + _LOGIN_PHASE_TIMEOUT
     while time.monotonic() < deadline:
       drain()
       if notice in private:
@@ -463,19 +465,121 @@ def test_installed_cli_private_callback_cancel_restores_terminal(installed):
     # Preparing login holds a stable private lock before creating any grant.
     _no_chat_files(env, cancelled_login=True)
   finally:
-    # These are the fixture's observed children, never a name-based process kill.
-    for pid in [*native_pids, cli_pid]:
-      if pid is not None:
+    try:
+      if child is not None and child.poll() is None:
+        # The first notice can time out before cli_pid/native_pids are known.
+        # Discover descendants while their parent is still alive: the native
+        # authority starts its own session, so killing the PTY group misses it.
+        processes = subprocess.run(
+          ['ps', '-axo', 'pid=,ppid='],
+          capture_output=True,
+          text=True,
+          timeout=5,
+          check=True,
+        )
+        parents = {
+          int(pid): int(parent)
+          for line in processes.stdout.splitlines()
+          for pid, parent in [line.split()]
+        }
+        direct = {pid for pid, parent in parents.items() if parent == child.pid}
+        descendants = set(direct)
+        while (
+          added := {
+            pid for pid, parent in parents.items() if parent in descendants
+          }
+          - descendants
+        ):
+          descendants.update(added)
+        # Kill the separate-session authorities first, then allow the CLI to
+        # restore its terminal and reap them before terminating a stuck CLI.
+        for pid in (descendants - direct) | set(native_pids):
+          with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 2
+        while child.poll() is None and time.monotonic() < deadline:
+          drain(capture=False)
+        if child.poll() is None:
+          for pid in direct:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+              os.kill(pid, signal.SIGKILL)
+          deadline = time.monotonic() + 2
+          while child.poll() is None and time.monotonic() < deadline:
+            drain(capture=False)
+    finally:
+      if child is not None:
+        if child.poll() is None:
+          child.kill()
+        child.wait(timeout=5)
+      for descriptor in (master, slave, report_read, report_write):
+        if descriptor >= 0:
+          os.close(descriptor)
+
+
+def test_terminal_failure_before_notice_cleans_separate_session_child(
+  tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+):
+  # Synthetic cleanup regression, separate from the real-native checks above.
+  # The CLI never emits the expected notice; its worker owns a real listener in
+  # another session. It must be killed/reaped before the parent is terminated.
+  observed = tmp_path / 'synthetic-processes.json'
+  script = tmp_path / 'synthetic-cli.py'
+  script.write_text(
+    """
+import json, os, pathlib, subprocess, sys, termios
+before = termios.tcgetattr(0)
+hidden = termios.tcgetattr(0)
+hidden[3] &= ~termios.ECHO
+termios.tcsetattr(0, termios.TCSANOW, hidden)
+worker = subprocess.Popen([sys.executable, '-c', '''
+import json, os, socket, time
+listener = socket.socket()
+listener.bind(('127.0.0.1', 0))
+listener.listen()
+print(json.dumps({'native_pid': os.getpid(), 'port': listener.getsockname()[1]}), flush=True)
+time.sleep(120)
+'''], stdout=subprocess.PIPE, text=True, start_new_session=True)
+try:
+    record = json.loads(worker.stdout.readline())
+    record['cli_pid'] = os.getpid()
+    pathlib.Path(sys.argv[1]).write_text(json.dumps(record))
+    worker.wait()
+finally:
+    termios.tcsetattr(0, termios.TCSANOW, before)
+"""
+  )
+  cli = tmp_path / 'synthetic mirror'
+  cli.write_text(
+    '#!/bin/sh\nexec '
+    + ' '.join(
+      shlex.quote(str(arg)) for arg in (sys.executable, script, observed)
+    )
+    + '\n'
+  )
+  cli.chmod(0o700)
+  monkeypatch.setattr(sys.modules[__name__], '_LOGIN_PHASE_TIMEOUT', 3)
+  env = {'HOME': str(tmp_path), 'PATH': os.defpath}
+  try:
+    with pytest.raises(
+      pytest.fail.Exception,
+      match='Installed login did not reach the expected terminal phase',
+    ):
+      test_installed_cli_private_callback_cancel_restores_terminal((
+        cli,
+        cli,
+        env,
+      ))
+    record = json.loads(observed.read_text())
+    for pid in (record['cli_pid'], record['native_pid']):
+      with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    with socket.socket() as connection:
+      connection.settimeout(1)
+      assert connection.connect_ex(('127.0.0.1', record['port'])) != 0
+  finally:
+    # Keep this regression hermetic even when testing an older broken cleanup.
+    if observed.exists():
+      record = json.loads(observed.read_text())
+      for key in ('native_pid', 'cli_pid'):
         with contextlib.suppress(ProcessLookupError, PermissionError):
-          os.kill(pid, signal.SIGKILL)
-    if child is not None and child.poll() is None:
-      # Let the supervisor reap the CLI before terminating the supervisor.
-      deadline = time.monotonic() + 2
-      while child.poll() is None and time.monotonic() < deadline:
-        drain(capture=False)
-      if child.poll() is None:
-        child.kill()
-      child.wait(timeout=5)
-    for descriptor in (master, slave, report_read, report_write):
-      if descriptor >= 0:
-        os.close(descriptor)
+          os.kill(record[key], signal.SIGKILL)
