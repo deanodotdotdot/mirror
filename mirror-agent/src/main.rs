@@ -1,3 +1,4 @@
+mod auth_command;
 mod http;
 mod memory_command;
 mod sandbox_command;
@@ -101,6 +102,9 @@ struct WorkerConfig {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("auth") {
+        return auth_command::run().await;
+    }
     if matches!(
         std::env::args().nth(1).as_deref(),
         Some("serve" | "--help" | "-h" | "--version" | "-V")
