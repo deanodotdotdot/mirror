@@ -17,7 +17,7 @@ checks run locally.
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
-| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Private auth checkpoint e66866b and metadata/UI checkpoint 575272b are tested; the latter passed 191 focused tests. Reviewed Task 6 is now integrated for final authoritative state/reconnect, launch guards and runtime wiring under the same Astra implementer. |
+| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Implementation complete on reviewed Task 6 under the same Astra implementer. Full installed-source Python CI passed 3,314 tests with five packaging-dependent skips; native development-worker and controlling-PTY interoperability passed. One PR is ready for a separate NEW Astra review and manager verification; production acceptance remains Task 8. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Task 7. Production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
@@ -419,3 +419,64 @@ matches `d15a1ff`. GitHub Actions remains disabled. Manager integrated that merg
 into Task 7's clean metadata checkpoint, resolving only this ledger conflict and
 preserving both tasks' evidence. Task 7 now owns the final Python enablement and
 ACP/remote rejection, including explicit OAuth compaction with an API main model.
+
+
+Task 7 final Astra implementation integrates the reviewed native execution
+protocol. Only native initial/reattach snapshots establish local knowledge of a
+conversation binding; unknown and explicitly unbound remain distinct. Snapshot
+state clears on detach, and old worker callbacks cannot overwrite a replacement
+session. Typed authentication rejection of initial inference configuration leaves
+history readable and explicit `/reconnect claude` available. Reconnect sends the
+native expected-binding CAS plus the current login target and succeeds only after
+its correlated state-before-Ack receipt. Typed Nack/busy/conflict/unknown outcomes
+never optimistically manufacture a target binding.
+
+Model/provider switches involving Claude wait for a correlated native
+configuration Ack before persisting their selection, including switches back to
+Anthropic API. Escape preserves the previous provider/model and draft; if native
+configuration already changed, the client confirms restoration before releasing
+queued turns. Missing binding requires explicit reconnect. Conversation metadata
+uses the native bound identity; unknown/unbound usage explicitly labels the
+current Mirror login. No identity is written into model/workspace preferences.
+
+Local native interactive and exec startup are enabled. ACP and remote startup,
+model-entry/saved selections, runtime selection and explicit OAuth compaction
+with another main provider remain excluded. Conflicting explicit keys/credential
+paths and both explicit/environment endpoints are rejected. Typed errors use the
+closed renderer; untyped Claude runtime error fallbacks do not echo raw provider
+text. Failed/truncated native responses retain visible partial content and
+incomplete-tool notices without executable tool fragments or successful exec
+output. The CLI README documents private login, SSH callback input, usage and
+explicit reconnect behavior.
+
+Final validation ran `mirror-cli/ci.sh` with Python 3.12, TERM=xterm-256color,
+NO_COLOR unset, and MIRROR_TEST_NATIVE_WORKER pointing to the separately rebuilt
+reviewed native development worker. The complete installed-source gate built
+sdist/wheels, checked packaging fixtures and all imports, regenerated protobufs,
+and passed Pyright with zero errors/warnings plus **3,314 tests passed, five
+skipped**, in 238.11 seconds of pytest execution. The five skips require actual
+bundled worker/sandbox wheels and remain Task 8. Four Python forkpty deprecation
+warnings came from intentional real controlling-PTY tests; those tests passed.
+An earlier run was intentionally interrupted after a final error-path audit and
+is not counted as completed evidence.
+
+The final suite includes actual native temporary-HOME status/logout and missing-
+login metadata, attachment Nack plus retained durable history for bound/unbound
+sessions, explicit reconnect rejection without mutation, and exec safe nonzero
+output. Synthetic gRPC regressions cover unknown/unbound authority, state/Ack
+ordering, unrelated/late receipts, busy/Nack/disconnect/timeout outcomes, expected
+bindings and queued-turn cancellation fencing. Both UI layouts cover native-Ack
+persistence in both billing directions, Escape and draft preservation; prior
+private-pipe/late-commit and metadata null/unit/timezone checks remain included.
+Focused final seam checks passed 88 tests, and the final untyped-error/bidirectional
+persistence check passed 18 tests before the full gate. Formatting and diff checks
+pass. Evidence logs are `/tmp/mirror-claude-task7-final-ci.log`,
+`/tmp/mirror-claude-task7-final-native-build.log`,
+`/tmp/mirror-claude-task7-final-format.log` and
+`/tmp/mirror-claude-task7-safe-runtime.log` on the implementation host.
+
+All checks used synthetic data and temporary HOME directories; no live provider
+calls or real credentials were used. Native Rust/protocol files are unchanged
+from reviewed Task 6. Actual bundled native-wheel macOS/Linux and production
+A1–A11/live-account acceptance remain Task 8. The implementer stops after the
+single Task 7 PR for a separate NEW Astra review; only the manager merges.

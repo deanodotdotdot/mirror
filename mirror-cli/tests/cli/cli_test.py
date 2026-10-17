@@ -15003,6 +15003,25 @@ async def test_claude_typed_error_preserves_partial_output_and_safe_recovery() -
     repl._handle_message(_stream_content('Partial answer already displayed.'))
     repl._handle_message(
       agent_pb2.SessionMessage(
+        stream_final=True,
+        agent_message=agent_pb2.AgentMessage(
+          id='incomplete-native-response',
+          inference=agent_pb2.InferenceConfig(
+            api='anthropic-oauth', model='synthetic'
+          ),
+          chat=agent_pb2.ChatRecord(
+            assistant=agent_pb2.AssistantMessage(
+              content='Partial answer already displayed.'
+            ),
+            success=False,
+            truncated=True,
+            display='Incomplete response\nIncomplete tool call read: {"path":',
+          ),
+        ),
+      )
+    )
+    repl._handle_message(
+      agent_pb2.SessionMessage(
         runtime_delta=agent_pb2.RuntimeDelta(
           turn_error=agent_pb2.TurnError(
             message='SYNTHETIC_PRIVATE_ERROR_CANARY',
@@ -15018,7 +15037,8 @@ async def test_claude_typed_error_preserves_partial_output_and_safe_recovery() -
       )
     )
     frame = _frame_text(repl, terminal)
-    assert 'Partial answer already displayed.' in frame
+    assert frame.count('Partial answer already displayed.') == 1
+    assert 'Incomplete tool call read' in frame
     assert 'output is incomplete' in frame
     assert 'SYNTHETIC_PRIVATE_ERROR_CANARY' not in frame
     repl._handle_message(
@@ -15027,7 +15047,8 @@ async def test_claude_typed_error_preserves_partial_output_and_safe_recovery() -
       )
     )
     frame = _frame_text(repl, terminal)
-    assert 'Partial answer already displayed.' in frame
+    assert frame.count('Partial answer already displayed.') == 1
+    assert 'Incomplete tool call read' in frame
     assert 'output is incomplete' in frame
     assert not repl._state.activity.busy
 
@@ -15154,7 +15175,7 @@ async def test_claude_native_catalog_selection_preserves_billing_and_draft(
     )
     return claude_auth.Completed(selected_status, 'fixture-v1')
 
-  repl = _repl(model='previous-api-model')
+  repl = _repl(model='previous-api-model', create_session=True)
   repl._worker_configuration = repl._worker_configuration.updated({
     'api': 'anthropic-messages'
   })
@@ -15476,3 +15497,182 @@ async def test_claude_escape_during_final_account_check_preserves_selection(
     finish.set()
     await operation
     await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+@pytest.mark.parametrize('subscription', [False, True])
+@pytest.mark.parametrize('outcome', ['ack', 'nack', 'escape', 'disconnect'])
+async def test_claude_selection_persists_only_after_native_confirmation(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  fullscreen: bool,
+  subscription: bool,
+  outcome: str,
+) -> None:
+  from mirror.cli import claude_session
+
+  monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(tmp_path / 'models.json'))
+  previous_api = 'anthropic-messages' if subscription else 'anthropic-oauth'
+  selected_api = 'anthropic-oauth' if subscription else 'anthropic-messages'
+  repl = _repl(model='same-model', fullscreen=fullscreen)
+  repl._worker_configuration = repl._worker_configuration.updated({
+    'api': previous_api
+  })
+  previous = repl.model_selection
+  _models.save_last_selection(previous)
+  repl._input.text = 'unfinished draft'
+  started, finish = asyncio.Event(), asyncio.Event()
+  native = mock.Mock(spec=_rpc_client.Client)
+  native.close = mock.AsyncMock()
+  native.claude_snapshot = claude_session.Snapshot(
+    'conv-1',
+    claude_session.Binding(
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+      'fixture-v1',
+    ),
+  )
+
+  async def select(inference, old, *, accept):
+    assert inference.api == selected_api
+    assert old.api == previous_api
+    started.set()
+    await finish.wait()
+    if outcome == 'nack':
+      raise claude_session.ControlError(
+        'The native worker rejected the Claude operation.'
+      )
+    if outcome == 'disconnect':
+      raise claude_session.ControlError(
+        'The worker disconnected before confirming.', unknown=True
+      )
+    return accept()
+
+  native.select_claude_model = mock.AsyncMock(side_effect=select)
+  repl._client = native
+  monkeypatch.setattr(
+    repl,
+    '_authenticate_model',
+    mock.AsyncMock(
+      return_value=_models.ModelOption(
+        'same-model', 'same-model', api=selected_api
+      )
+    ),
+  )
+  operation = asyncio.create_task(
+    repl._switch_model(
+      _models.ModelOption('same-model', 'same-model', api=selected_api)
+    )
+  )
+  try:
+    await asyncio.wait_for(started.wait(), 3)
+    assert repl.model_selection == previous
+    assert _models.load_last_selection() == previous
+    if outcome == 'escape':
+      for action in repl._selector_cancel():
+        await _dispatch_and_wait(repl, action)
+    finish.set()
+    await asyncio.wait_for(operation, 3)
+    await asyncio.sleep(0)  # Flush synchronous persistence effects.
+    assert repl.model_selection.api == (
+      selected_api if outcome == 'ack' else previous_api
+    )
+    assert _models.load_last_selection() == repl.model_selection
+    assert repl._input.text == 'unfinished draft'
+    native.send.assert_not_called()  # No duplicate config after correlated Ack.
+  finally:
+    finish.set()
+    await operation
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_resume_defers_login_to_keep_history_accessible(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  repl = _repl(model='saved', create_session=False)
+  repl._worker_configuration = repl._worker_configuration.updated({
+    'api': 'anthropic-oauth'
+  })
+  command = mock.AsyncMock(
+    side_effect=AssertionError('resume must not prompt for login')
+  )
+  monkeypatch.setattr(repl, '_claude_command', command)
+  try:
+    assert await repl.ensure_api_key()
+    command.assert_not_called()
+    assert repl._client is None
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_remote_model_selection_rejected_before_persistence() -> (
+  None
+):
+  repl = _repl(model='previous', remote_endpoint='https://synthetic.invalid')
+  previous = repl._worker_configuration
+  try:
+    repl._switch_remote_model('subscription', 'anthropic-oauth')
+    assert repl._worker_configuration == previous
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_usage_uses_native_bound_identity(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from mirror.cli import claude_session
+
+  repl = _repl()
+  native = mock.Mock(spec=_rpc_client.Client)
+  native.close = mock.AsyncMock()
+  binding = claude_session.Binding(
+    '11111111-1111-4111-8111-111111111111',
+    '22222222-2222-4222-8222-222222222222',
+    'fixture-v1',
+  )
+  native.claude_snapshot = claude_session.Snapshot('conv-1', binding)
+  repl._client = native
+  command = mock.AsyncMock()
+  monkeypatch.setattr(repl, '_claude_command', command)
+  try:
+    await repl._run_claude_command('usage')
+    command.assert_awaited_once_with(
+      'usage', expected_identity=binding.identity
+    )
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('payload', ['nack', 'turn_error'])
+async def test_claude_untyped_runtime_errors_do_not_echo_provider_payload(
+  payload: str,
+) -> None:
+  async with _visual_repl(fullscreen=True, rows=30) as (repl, terminal):
+    repl._worker_configuration = repl._worker_configuration.updated({
+      'api': 'anthropic-oauth'
+    })
+    repl.dispatch(_actions.SetReplaying(False))
+    if payload == 'nack':
+      event = agent_pb2.SessionMessage(
+        input_nack=agent_pb2.InputNack(
+          message_id='synthetic', error='SYNTHETIC_PRIVATE_ERROR_CANARY'
+        )
+      )
+    else:
+      event = agent_pb2.SessionMessage(
+        runtime_delta=agent_pb2.RuntimeDelta(
+          turn_error=agent_pb2.TurnError(
+            message='SYNTHETIC_PRIVATE_ERROR_CANARY'
+          )
+        )
+      )
+    repl._handle_message(event)
+    frame = _frame_text(repl, terminal)
+    assert 'SYNTHETIC_PRIVATE_ERROR_CANARY' not in frame
+    assert 'Claude' in frame

@@ -787,10 +787,10 @@ def _reduce(
           state.status_bar.reasoning_effort, mode
         ),
       )
-    case _actions.ModelSwitchFinished(model_id):
+    case _actions.ModelSwitchFinished(model_id, confirmed):
       status_bar = dataclasses.replace(state.status_bar, model=model_id)
       return _with_status_bar(state, status_bar), (
-        effects.SendInferenceConfiguration(),
+        *((effects.SendInferenceConfiguration(),) if not confirmed else ()),
         effects.SaveLastModel(model_id),
       )
     case _actions.SetToolGroup(summary):

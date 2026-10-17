@@ -514,3 +514,18 @@ def test_claude_catalog_and_usage_are_explicit_native_commands() -> None:
     assert commands.dispatch(
       text, _command_context(), available
     ) == actions.ShowText('Usage: /usage claude', style='ui.warning')
+
+
+@pytest.mark.parametrize(
+  'command', ['/reconnect', '/reconnect other', '/reconnect claude extra']
+)
+def test_reconnect_requires_exact_claude_argument(command: str) -> None:
+  result = commands.dispatch(command, _command_context(), _commands(_state()))
+  assert isinstance(result, actions.ShowText)
+  assert result.text == 'Usage: /reconnect claude'
+
+
+def test_reconnect_routes_only_explicit_claude() -> None:
+  assert commands.dispatch(
+    '/reconnect claude', _command_context(), _commands(_state())
+  ) == actions.ClaudeCommand('reconnect')

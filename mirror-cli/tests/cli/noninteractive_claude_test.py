@@ -71,11 +71,59 @@ def test_exec_returns_nonzero_for_native_partial_then_typed_terminal_error(
 
   monkeypatch.setattr(noninteractive, 'read_prompt', lambda _: 'task')
   monkeypatch.setattr(noninteractive, '_run', native_events)
-  assert noninteractive.run(
-    ['unused-worker'],
-    {'conversation_id': 'synthetic-session', 'model': 'claude-opus-4-8'},
-    'task',
-    reasoning_effort='none',
-  ) == 1
+  assert (
+    noninteractive.run(
+      ['unused-worker'],
+      {'conversation_id': 'synthetic-session', 'model': 'claude-opus-4-8'},
+      'task',
+      reasoning_effort='none',
+    )
+    == 1
+  )
   captured = capsys.readouterr()
   assert 'mirror:' in captured.err
+
+
+def test_development_native_exec_missing_login_is_safe_nonzero(
+  tmp_path,
+  monkeypatch: pytest.MonkeyPatch,
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  import os
+
+  executable = os.environ.get('MIRROR_TEST_NATIVE_WORKER')
+  if not executable:
+    pytest.skip(
+      'Set MIRROR_TEST_NATIVE_WORKER for native development integration'
+    )
+  monkeypatch.chdir(tmp_path)
+  monkeypatch.setenv('HOME', str(tmp_path))
+  for key in (
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'MIRROR_CODEX_AUTH_PATH',
+  ):
+    monkeypatch.delenv(key, raising=False)
+  monkeypatch.setattr(
+    noninteractive, 'read_prompt', lambda _: 'Synthetic offline prompt'
+  )
+  result = noninteractive.run(
+    [executable],
+    {
+      'conversation_id': 'synthetic-exec',
+      'model': 'claude-opus-4-8',
+      'api': 'anthropic-oauth',
+      'database': str(tmp_path / 'native.db'),
+      'create_session': True,
+      'tools': [],
+      'checkpoints_enabled': False,
+    },
+    'synthetic',
+    reasoning_effort='none',
+  )
+  captured = capsys.readouterr()
+  assert result == 1
+  assert captured.out == ''
+  assert 'mirror auth login claude' in captured.err
+  assert 'https://' not in captured.err

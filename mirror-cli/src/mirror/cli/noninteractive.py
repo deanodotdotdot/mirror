@@ -13,7 +13,13 @@ from collections.abc import Mapping, Sequence
 
 from mirror.protocol import agent_pb2
 
-from mirror.cli import claude_errors, cli_store, local_rpc_client, rpc_client
+from mirror.cli import (
+  claude_errors,
+  claude_session,
+  cli_store,
+  local_rpc_client,
+  rpc_client,
+)
 
 _MAX_PROMPT_BYTES = 8 * 1024 * 1024
 
@@ -73,6 +79,8 @@ async def _answer(
         'exec never grants an approval'
       )
     if payload == 'input_nack':
+      if event.input_nack.HasField('claude_error'):
+        raise RuntimeError(claude_session.nack_text(event.input_nack))
       raise RuntimeError('agent rejected the request; check run configuration')
     if payload == 'agent_message':
       record = event.agent_message

@@ -142,7 +142,7 @@ def _render_entry(
     return _rendering.user_text(message.user.content, skill_names)
   if role == 'assistant':
     assistant = message.assistant
-    return _rendering.assistant_turn_renderable(
+    rendered = _rendering.assistant_turn_renderable(
       (
         assistant.reasoning_content
         if include_reasoning
@@ -156,6 +156,12 @@ def _render_entry(
       assistant.refusal if assistant.HasField('refusal') else None,
       skill_names=skill_names,
     )
+    if message.truncated and not message.success:
+      notice = _rendering.error_text(message.display or 'Incomplete response')
+      return (
+        _console.Group(rendered, notice) if rendered is not None else notice
+      )
+    return rendered
   return None
 
 

@@ -560,6 +560,7 @@ class ToggleApprovalMode:
 @dataclasses.dataclass(frozen=True)
 class ModelSwitchFinished:
   model_id: str
+  confirmed: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

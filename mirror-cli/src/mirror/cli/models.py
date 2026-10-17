@@ -7,6 +7,7 @@ import dataclasses
 import json
 import os
 import pathlib
+from collections.abc import Mapping
 from typing import Any, cast
 
 from mirror.cli import reflection
@@ -78,8 +79,11 @@ def base_env(api: str) -> str | None:
 def validate_connection(api: str, base_url: str) -> None:
   """Check local provider prerequisites without probing model availability."""
   if api == 'anthropic-oauth':
-    endpoint = base_url or os.environ.get('ANTHROPIC_BASE_URL', '')
-    if endpoint and endpoint.rstrip('/') != 'https://api.anthropic.com':
+    endpoints = (base_url, os.environ.get('ANTHROPIC_BASE_URL', ''))
+    if any(
+      endpoint and endpoint.rstrip('/') != 'https://api.anthropic.com'
+      for endpoint in endpoints
+    ):
       raise ValueError(
         'Claude subscription requires the default Anthropic endpoint. '
         'Unset ANTHROPIC_BASE_URL or select Anthropic API.'
@@ -101,6 +105,46 @@ def validate_connection(api: str, base_url: str) -> None:
     raise ValueError(
       f'No API key found. Export {key_env(api)} or use --base-url '
       'for a keyless self-hosted endpoint.'
+    )
+
+
+def validate_claude_configuration(
+  values: Mapping[str, object], *, supported: bool
+) -> None:
+  """Fence every selected OAuth provider before launching excluded surfaces."""
+  api = values.get('model_api') or values.get('api')
+  compaction_api = (
+    (values.get('compaction_model_api') or api)
+    if values.get('compaction_model')
+    else None
+  )
+  remote_api = values.get('remote_model_api')
+  if 'anthropic-oauth' not in (api, compaction_api, remote_api):
+    return
+  if not supported:
+    raise ValueError(
+      'Claude subscription is not supported on this launch surface, including its compaction model.'
+    )
+  if api == 'anthropic-oauth':
+    if values.get('api_key') is not None:
+      raise ValueError('--api-key is not allowed with anthropic-oauth')
+    if values.get('auth_path') is not None:
+      raise ValueError(
+        'Claude subscription cannot use an external credential path.'
+      )
+    validate_connection(
+      'anthropic-oauth',
+      str(values.get('model_base_url') or values.get('base_url') or ''),
+    )
+  if compaction_api == 'anthropic-oauth':
+    inherited = (
+      (values.get('model_base_url') or values.get('base_url'))
+      if compaction_api == api
+      else None
+    )
+    validate_connection(
+      'anthropic-oauth',
+      str(values.get('compaction_model_base_url') or inherited or ''),
     )
 
 

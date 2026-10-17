@@ -380,6 +380,12 @@ def _usage(context: commands.CommandContext, arguments: str) -> actions.Action:
   return actions.ClaudeCommand('usage')
 
 
+def _reconnect(_: commands.CommandContext, arguments: str) -> actions.Action:
+  if arguments.strip() != 'claude':
+    return actions.ShowText('Usage: /reconnect claude', style='ui.warning')
+  return actions.ClaudeCommand('reconnect')
+
+
 def _logout(_: commands.CommandContext, arguments: str) -> actions.Action:
   if arguments == 'claude':
     return actions.ClaudeCommand('logout')
@@ -450,8 +456,15 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
         arguments=commands.OptionalArguments('[claude]'),
       ),
       commands.CommandDef(
+        'reconnect',
+        'Reconnect this idle conversation to the current Claude login',
+        _reconnect,
+        arguments=commands.OptionalArguments('claude'),
+        available_when_busy=True,
+      ),
+      commands.CommandDef(
         'usage',
-        'Show Claude subscription usage for the current Mirror login',
+        'Show Claude subscription usage for this conversation’s account',
         _usage,
         arguments=commands.OptionalArguments('claude'),
         available_when_busy=True,

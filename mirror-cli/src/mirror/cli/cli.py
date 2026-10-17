@@ -66,6 +66,7 @@ from mirror.cli import claude_auth as _claude_auth
 from mirror.cli import claude_errors as _claude_errors
 from mirror.cli import claude_login as _claude_login
 from mirror.cli import claude_metadata as _claude_metadata
+from mirror.cli import claude_session as _claude_session
 from mirror.cli import cli_store as _cli_store
 from mirror.cli import commands as _commands
 from mirror.cli import conversation_metrics as _conversation_metrics
@@ -1325,8 +1326,78 @@ class _Repl:
   async def _run_claude_command(self, action: str) -> None:
     if action == 'models':
       await self._choose_claude_model()
+    elif action == 'reconnect':
+      await self._reconnect_claude()
     else:
-      await self._claude_command(action)
+      await self._claude_command(
+        action,
+        expected_identity=self._claude_identity()
+        if action == 'usage'
+        else None,
+      )
+
+  def _claude_identity(self) -> Mapping[str, str] | None:
+    snapshot = (
+      self._client.claude_snapshot if self._client is not None else None
+    )
+    return (
+      snapshot.binding.identity
+      if snapshot is not None and snapshot.binding is not None
+      else None
+    )
+
+  def _uses_claude(self) -> bool:
+    return 'anthropic-oauth' in (
+      self.model_selection.api,
+      self._worker_configuration.values.get('compaction_model_api'),
+    )
+
+  async def _reconnect_claude(self) -> None:
+    client = self._client
+    if self._remote_endpoint is not None or client is None:
+      self.dispatch(
+        _actions.ShowText(
+          'Claude reconnect requires an attached local conversation.',
+          style='ui.warning',
+        )
+      )
+      return
+    if self._state.activity.busy:
+      self.dispatch(
+        _actions.ShowText(
+          'Finish or interrupt the current turn before reconnecting Claude.',
+          style='ui.warning',
+        )
+      )
+      return
+    status = await self._claude_command('status')
+    if client is not self._client:
+      return
+    if (
+      not isinstance(status, _claude_auth.Completed)
+      or status.status.identity is None
+      or status.status.state not in ('usable', 'refreshable')
+    ):
+      self.dispatch(
+        _actions.ShowText(
+          'Sign in with /login claude, then run /reconnect claude again.',
+          style='ui.warning',
+        )
+      )
+      return
+    try:
+      snapshot = await client.reconnect_claude(status.status.identity)
+    except _claude_session.ControlError as error:
+      self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
+      return
+    if client is self._client and snapshot.binding is not None:
+      self.dispatch(
+        _actions.ShowText(
+          'Claude conversation account reconnected: '
+          + snapshot.binding.account_id
+          + '. The selected model is unchanged.'
+        )
+      )
 
   async def _claude_command(
     self,
@@ -1446,29 +1517,46 @@ class _Repl:
       self._claude_operation = False
 
   async def _choose_claude_model(self) -> None:
-    requested = _models.ModelOption(
-      '', 'Claude subscription', api='anthropic-oauth'
-    )
-    if await self._authenticate_model(requested, initial=False) is None:
-      self.dispatch(_actions.CancelModelSelection())
-      return
-    status = await self._claude_command('status')
-    if (
-      not isinstance(status, _claude_auth.Completed)
-      or status.status.identity is None
-    ):
-      self.dispatch(_actions.CancelModelSelection())
-      return
-    identity = status.status.identity
     pending = _selection.Selector[_actions.Action](
       'claude-models',
       'Claude subscription model',
       (),
-      lambda model: _actions.ClaudeModelSelected(
-        model,
-        identity['account_id'],
-        identity['organization_id'],
-      ),
+      lambda _: _actions.ClearSelector(),
+      empty='Checking Claude subscription sign-in…',
+    )
+    self.dispatch(_actions.OpenSelector(pending))
+    active = lambda: self._state.selector.selector is pending
+    requested = _models.ModelOption(
+      '', 'Claude subscription', api='anthropic-oauth'
+    )
+    if (
+      await self._authenticate_model(requested, initial=False, active=active)
+      is None
+    ):
+      if active():
+        self.dispatch(_actions.ClearSelector(), _actions.CancelModelSelection())
+      return
+    if not active():
+      return
+    status = await self._claude_command('status')
+    if not active():
+      return
+    if (
+      not isinstance(status, _claude_auth.Completed)
+      or status.status.identity is None
+    ):
+      self.dispatch(_actions.ClearSelector(), _actions.CancelModelSelection())
+      return
+    identity = self._claude_identity() or status.status.identity
+
+    def on_select(model: str) -> _actions.Action:
+      return _actions.ClaudeModelSelected(
+        model, identity['account_id'], identity['organization_id']
+      )
+
+    pending = dataclasses.replace(
+      pending,
+      on_select=on_select,
       empty='Fetching Claude subscription model candidates…',
     )
     self.dispatch(_actions.OpenSelector(pending))
@@ -1507,31 +1595,67 @@ class _Repl:
     )
 
   async def _select_claude_model(
-    self, model: str, identity: Mapping[str, str]
+    self,
+    model: str,
+    identity: Mapping[str, str] | None,
+    *,
+    option: _models.ModelOption | None = None,
   ) -> None:
-    option = _models.ModelOption(model, model, api='anthropic-oauth')
+    option = option or _models.ModelOption(model, model, api='anthropic-oauth')
     pending = _selection.Selector[_actions.Action](
       'claude-model-check',
-      'Claude subscription model',
+      'Model selection',
       (),
       lambda _: _actions.ClearSelector(),
-      empty='Checking the selected Claude account…',
+      empty='Checking the selected provider…',
     )
     self.dispatch(_actions.OpenSelector(pending))
+    active = lambda: self._state.selector.selector is pending
     selected = await self._authenticate_model(
-      option, initial=False, expected_identity=identity
+      option, initial=False, expected_identity=identity, active=active
     )
-    if self._state.selector.selector is not pending:
-      return  # Escape cancelled the choice, independently of native auth state.
-    self.dispatch(_actions.ClearSelector())
+    if not active():
+      return
     if selected is None:
-      self.dispatch(_actions.CancelModelSelection())
+      self.dispatch(_actions.ClearSelector(), _actions.CancelModelSelection())
       return
     if self._onboarding_model is not None:
+      self.dispatch(_actions.ClearSelector())
       if not self._onboarding_model.done():
         self._onboarding_model.set_result(selected)
       return
-    self._apply_model(selected)
+    client = self._client
+    confirmed = False
+    if client is not None:
+      candidate = self._model_configuration(selected)
+      try:
+        confirmed = await client.select_claude_model(
+          candidate.inference_config(
+            model, self.reasoning_effort, remote=False
+          ),
+          self._worker_configuration.inference_config(
+            self.model, self.reasoning_effort, remote=False
+          ),
+          accept=lambda: active() and self._client is client,
+        )
+      except _claude_session.ControlError as error:
+        self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
+        if active():
+          self.dispatch(_actions.ClearSelector())
+        return
+      if not confirmed or not active() or self._client is not client:
+        return
+    elif not self._worker_configuration.values.get('create_session', False):
+      self.dispatch(
+        _actions.ShowText(
+          'Attach this conversation before selecting Claude subscription.',
+          style='ui.warning',
+        )
+      )
+      self.dispatch(_actions.ClearSelector())
+      return
+    self.dispatch(_actions.ClearSelector())
+    self._apply_model(selected, confirmed=confirmed)
     if self._state.lifecycle.failure is not None:
       await self._retry_worker()
 
@@ -1632,6 +1756,16 @@ class _Repl:
       if not self._onboarding_model.done():
         self._onboarding_model.set_result(option)
       return
+    if (option.api or self.model_selection.api) == 'anthropic-oauth' or (
+      self._client is not None
+      and 'anthropic-oauth'
+      in (
+        self.model_selection.api,
+        self._worker_configuration.values.get('compaction_model_api'),
+      )
+    ):
+      await self._select_claude_model(option.model_id, None, option=option)
+      return
     selected = await self._authenticate_model(option, initial=False)
     if selected is not None:
       self._apply_model(selected)
@@ -1641,22 +1775,39 @@ class _Repl:
   def _switch_remote_model(self, model_id: str, api: str) -> None:
     """Commit a server model selection, which needs no local credentials."""
     current = self._worker_configuration.values.get('remote_model_api')
+    if (api or current or self.model_selection.api) == 'anthropic-oauth':
+      self.dispatch(
+        _actions.ShowText(
+          'Claude subscription is not supported on remote sessions.',
+          style='ui.warning',
+        )
+      )
+      return
     self._worker_configuration = self._worker_configuration.updated({
       'model': model_id,
       'remote_model_api': api or current,
     })
     self.dispatch(_actions.ModelSwitchFinished(model_id))
 
-  def _apply_model(self, option: _models.ModelOption) -> None:
-    """Commit a model selection after its sign-in flow completes."""
+  def _model_configuration(
+    self, option: _models.ModelOption
+  ) -> _rpc_client.WorkerConfiguration:
     updates = {
       'model': option.model_id,
       'model_api': option.api or self.model_selection.api or None,
       'model_base_url': option.base_url or None,
       'base_url': None,
     }
-    self._worker_configuration = self._worker_configuration.updated(updates)
-    self.dispatch(_actions.ModelSwitchFinished(option.model_id))
+    return self._worker_configuration.updated(updates)
+
+  def _apply_model(
+    self, option: _models.ModelOption, *, confirmed: bool = False
+  ) -> None:
+    """Persist the selected provider after native confirmation when attached."""
+    self._worker_configuration = self._model_configuration(option)
+    self.dispatch(
+      _actions.ModelSwitchFinished(option.model_id, confirmed=confirmed)
+    )
 
   async def _load_prompt_history(self) -> None:
     request = self._state.selector.selector
@@ -2555,6 +2706,8 @@ class _Repl:
 
   def _handle_message(self, response: agent_pb2.SessionMessage) -> None:
     """Handle one AgentRPC message."""
+    if response.HasField('claude_session_state'):
+      return  # The RPC client owns native identity; it is not a telemetry/chat event.
     if response.HasField('agent_message') and self._transcript.contains(
       response.agent_message, replayed=self._state.session.replaying
     ):
@@ -2684,6 +2837,14 @@ class _Repl:
       return
     if payload == 'input_nack':
       message_id = response.input_nack.message_id
+      error = (
+        _claude_session.nack_text(response.input_nack)
+        if response.input_nack.HasField('claude_error')
+        or self._uses_claude()
+        or response.input_nack.reason
+        == agent_pb2.INPUT_NACK_REASON_CONVERSATION_BUSY
+        else response.input_nack.error
+      )
       if message_id == self._state.turn.interrupt_id:
         self.dispatch(_actions.InterruptDeclined(message_id))
         return
@@ -2696,13 +2857,11 @@ class _Repl:
           *self._state.turn.awaiting_inputs,
         )
       ):
-        self._record_decoration(
-          _rendering.error_text(response.input_nack.error)
-        )
+        self._record_decoration(_rendering.error_text(error))
         return
       self._stream_pane.clear_pending()
       self.dispatch(_actions.InputRejected(message_id))
-      self._record_decoration(_rendering.error_text(response.input_nack.error))
+      self._record_decoration(_rendering.error_text(error))
       return
     if payload == 'replay_done':
       self._on_replay_done(response.replay_done)
@@ -2785,7 +2944,11 @@ class _Repl:
       message = (
         _claude_errors.text(delta.turn_error.claude_error)
         if delta.turn_error.HasField('claude_error')
-        else delta.turn_error.message
+        else (
+          'The Claude request failed. Check the selected account and configuration; the request was not replayed.'
+          if self._uses_claude()
+          else delta.turn_error.message
+        )
       )
       self._record_decoration(_rendering.error_text(message))
     elif kind == 'turn_interrupted':
@@ -3220,6 +3383,9 @@ class _Repl:
     launch_configuration = launch_configuration.updated({
       'approval_mode': self._state.status_bar.approval_mode,
     })
+    _models.validate_claude_configuration(
+      launch_configuration.values, supported=self._remote_endpoint is None
+    )
     if self._remote_endpoint is None:
       inference = launch_configuration.inference_config(
         self.model, self.reasoning_effort, remote=False
@@ -3228,11 +3394,20 @@ class _Repl:
     self._extension_host.validate_selection()
     self._host_tools_registry.validate_selection()
     self._host_tools_registry.worker_starting()
+
+    async def on_message(response: agent_pb2.SessionMessage) -> None:
+      if self._client is client:
+        await self._on_worker_message(response)
+
+    async def on_error(error: str) -> None:
+      if self._client is client:
+        await self._exit_with_error(error)
+
     client = _rpc_client.Client(
       self._transport(launch_configuration),
       conversation_id,
-      on_message=self._on_worker_message,
-      on_error=self._exit_with_error,
+      on_message=on_message,
+      on_error=on_error,
       host_tools_registry=self._host_tools_registry
       if self._remote_endpoint is None
       else None,
@@ -3375,6 +3550,7 @@ class _Repl:
     *,
     initial: bool,
     expected_identity: Mapping[str, str] | None = None,
+    active: Callable[[], bool] = lambda: True,
   ) -> _models.ModelOption | None:
     """Resolve sign-in or model selection before committing a configuration."""
     if self._secret_input is not None:
@@ -3391,6 +3567,14 @@ class _Repl:
           )
           return None
         try:
+          _models.validate_claude_configuration(
+            (
+              self._worker_configuration
+              if initial
+              else self._model_configuration(option)
+            ).values,
+            supported=True,
+          )
           _models.validate_connection(
             api,
             option.base_url
@@ -3407,24 +3591,34 @@ class _Repl:
         except ValueError as error:
           self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
           return None
+        # A resumed conversation must attach even with missing/changed login:
+        # native state and history remain readable and reconnect stays explicit.
+        if initial and not self._worker_configuration.values.get(
+          'create_session', False
+        ):
+          return option
+        expected_identity = expected_identity or self._claude_identity()
         status = await self._claude_command('status')
-        if not isinstance(status, _claude_auth.Completed):
+        if not active() or not isinstance(status, _claude_auth.Completed):
           return None
+        if status.status.state not in ('usable', 'refreshable'):
+          status = await self._claude_command('login', offer=True)
+          if not active() or not isinstance(status, _claude_auth.Completed):
+            return None
         if (
           expected_identity is not None
           and status.status.identity != expected_identity
         ):
           self.dispatch(
             _actions.ShowText(
-              'The Claude account changed while choosing a model. Open /model anthropic-oauth again.',
+              'The current Claude login does not match the selected conversation account. Use /reconnect claude to explicitly change it, then choose the model again.',
               style='ui.warning',
             )
           )
           return None
-        if status.status.state in ('usable', 'refreshable'):
-          return option
-        connected = await self._claude_command('login', offer=True)
-        return option if connected is not None else None
+        return (
+          option if status.status.state in ('usable', 'refreshable') else None
+        )
       if api == 'reflection':
         needs_key = not _reflection.has_key()
       elif api == 'anthropic-messages':

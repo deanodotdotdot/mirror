@@ -590,6 +590,12 @@ class Server:
       )
     conversation_id = uuid.uuid4().hex
     config = self._worker_config(conversation_id)
+    from mirror.cli import models
+
+    try:
+      models.validate_claude_configuration(config, supported=False)
+    except ValueError as error:
+      raise RPCError(_INVALID_PARAMS, str(error)) from None
     configuration = rpc_client.WorkerConfiguration(config, cwd=workspace)
     model = str(configuration.values['model'])
     events: asyncio.Queue[agent_pb2.SessionMessage | None] = asyncio.Queue()
