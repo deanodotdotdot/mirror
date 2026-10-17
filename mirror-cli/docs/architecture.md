@@ -81,6 +81,45 @@ interval drives the UI, so visible animations update at 10 frames per second.
 Model and reasoning changes are sent as inference controls rather than forcing
 a worker restart. Changes during a request apply to the next model request.
 
+## Claude subscription boundary
+
+The Rust worker owns the Claude grant, token renewal, authenticated Messages
+transport and catalog/context/usage service. Python does not read credentials
+or send subscription HTTP. Subscription and Anthropic API are distinct provider
+values; failures cannot select an API key or another account/model implicitly.
+The subscription provider is enabled only for local TUI and exec launch paths.
+
+Prechat `mirror auth ... claude` and `mirror usage claude` commands run before
+chat logging, workspace trust and model initialization. They start the installed
+native worker's `auth --stdio` mode over private JSONL pipes. Login uses a
+controlling terminal with hidden callback input and a bounded loopback listener;
+Python restores terminal state and reaps the native child on cancellation.
+Authorization URLs are transient private login UI, never conversation records.
+Other responses contain only validated token-free status/metadata/error fields.
+
+`ClaudeAuthManager` serializes operations with a stable lock and atomically
+replaces private grant records. A generation/revision fences login, logout,
+refresh and concurrent requests. Metadata uses a separate normalized private
+cache with identity/generation/profile keys and request-driven expiration.
+Neither cache timers nor usage values trigger inference or billing changes.
+
+Native conversation state owns the account/organization binding. New native
+inserts may bind automatically; resumed/unbound histories do not. The UI consumes
+authoritative snapshots before accepting provider controls and uses an explicit
+compare-and-swap `/reconnect claude` request. A durable receipt and native state
+precede acknowledgment, including reconnect retries after a restart. Child
+agents, retries and compaction carry the same boundary checks.
+
+The subscription wire adapter preserves opaque reasoning signatures and tool
+IDs through durable history/replay. Its representable order is reasoning, text,
+then tools. Unsupported interleaving or truncation produces a terminal failure,
+not a successful partial answer or repeated tool dispatch. Exact capability
+presets constrain reasoning; catalog presence alone is not a capability claim.
+See [authority protocol](../../docs/claude-integration/AUTH-PROTOCOL.md),
+[transport](../../docs/claude-integration/TRANSPORT.md),
+[execution](../../docs/claude-integration/EXECUTION.md) and
+[acceptance evidence](../../docs/claude-integration/ACCEPTANCE.md).
+
 ## State and recovery
 
 The CLI keeps its history and workspace settings in `~/.mirror/cli.db`. Agent

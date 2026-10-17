@@ -52,6 +52,22 @@ sandbox; see [local data and safety](mirror-cli/README.md#local-data-and-safety)
 
 The Rust checkpoint tests also require Jujutsu (`jj`) on `PATH`.
 
+## Claude subscription
+
+Claude subscription and Anthropic API are separate provider choices. To use a
+subscription, sign in once through Mirror on each Mac or Linux host:
+
+```bash
+mirror auth login claude
+mirror --api anthropic-oauth
+```
+
+Mirror owns this login and renews it automatically. It does not import Claude
+Code or OMP credentials and never falls back to an API key. `mirror usage claude`
+shows account usage on demand, including the account's existing extra-usage
+settings. See the [Claude guide](mirror-cli/README.md#claude-subscription-sign-in)
+for SSH login, account changes, logout and supported launch modes.
+
 ## License
 
 [Apache-2.0](LICENSE). Preserve the component notices and third-party licenses

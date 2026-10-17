@@ -194,15 +194,24 @@ Mirror's own account store before selecting it:
 mirror auth login claude
 mirror auth status claude --json
 mirror usage claude
-mirror --api anthropic-oauth --model your-claude-model-id
+mirror --api anthropic-oauth
 ```
 
 Inside the local terminal UI, `/login claude` signs in, `/model anthropic-oauth`
 opens the native model catalog, and `/usage claude` shows usage on demand.
+The default subscription model is `claude-opus-4-8`; choose an available model
+with `--model` or the picker. `claude-sonnet-4-6` is the second bundled candidate.
 Candidates show their source and freshness; listing a model does not guarantee
 account access. Missing usage fields stay unavailable. `mirror usage claude
 --json` preserves UTC times and the reported units. Usage commands do not change
 extra-usage settings.
+
+The grant belongs to Mirror at `~/.mirror/claude_oauth.json`, protected by a
+stable lock and private, atomic writes. One account/workspace is active at a
+time. Renewal happens automatically when a request needs it. No API key is
+required, and an authentication or subscription-limit failure never switches
+to Anthropic API. Existing account extra usage can still incur charges if
+enabled at the provider; Mirror reports that setting and does not change it.
 
 Implicit reasoning defaults follow the reviewed native presets: `low` for Opus
 4.8 and Sonnet 4.6, and `none` for Sonnet 5. `/effort` lists the supported presets
@@ -233,6 +242,20 @@ supported in local interactive sessions and `mirror exec`; ACP, remote servers,
 and evaluation surfaces remain excluded. API keys and custom Anthropic endpoints
 cannot be used with this provider. Bare `/login` and `/logout` continue to manage
 Reflection.
+
+For automation, first trust the working directory interactively, then use
+`mirror exec --api anthropic-oauth 'your task'`. Exec never prompts for login or
+tool approval; missing login or required approval exits nonzero. Choose
+`--approval-mode auto` only when you intend to approve tools automatically.
+Exec starts a new conversation; resume its history later in the terminal UI.
+See [configuration and recovery](docs/configuration.md#claude-subscription) for
+login-required, account-change and model/usage errors.
+
+Subscription compatibility uses a pinned wire profile. Unsupported upstream
+block ordering fails closed; reasoning presets are explicit, and Sonnet 5
+reasoning is not claimed as verified. The
+[acceptance record](../docs/claude-integration/ACCEPTANCE.md) distinguishes
+deterministic coverage from observed production model behavior.
 
 ## Working with Mirror
 

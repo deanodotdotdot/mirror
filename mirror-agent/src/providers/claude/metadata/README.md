@@ -6,8 +6,10 @@ Python uses the private native actions documented in
 [AUTH-PROTOCOL.md](../../../../../docs/claude-integration/AUTH-PROTOCOL.md), and
 never reads a credential file or issues bearer HTTP. Task 6 connects native
 provider/session binding and guarded context lookup as documented in
-[EXECUTION.md](../../../../../docs/claude-integration/EXECUTION.md). Python UI
-wiring remains Task 7.
+[EXECUTION.md](../../../../../docs/claude-integration/EXECUTION.md). The local
+Python commands and picker consume validated native results; final installed
+and live evidence is tracked in
+[ACCEPTANCE.md](../../../../../docs/claude-integration/ACCEPTANCE.md).
 
 ## Rust seam
 

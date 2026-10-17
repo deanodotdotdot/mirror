@@ -1,10 +1,12 @@
 # Production acceptance record and runbook
 
-Status: **preparation only, based on reviewed Tasks 1–6 (`ec54e51`)**. Task 7
-must be reviewed and merged before final builds, public-command verification,
-live acceptance or user documentation is completed. Every A1–A11 gate below
-remains open. Historical [Phase 0 evidence](../../diagnostics/claude_oauth/EVIDENCE.md)
-does not establish production behavior.
+Status: **final validation in progress**. Reviewed Task 7 is merged at
+`072be411ad25b25aa7a82ba9b486db9cecbdd315`; Task 8's frozen runtime/test/build
+candidate is `591e0898df2f37260557c66ed86567cc5c545aab`. Mac and Linux checks
+build archives of that exact commit. Documentation changes after the freeze do
+not relabel those artifacts. A1–A11 are not yet declared complete. Historical
+[Phase 0 evidence](../../diagnostics/claude_oauth/EVIDENCE.md) does not establish
+production behavior.
 
 The accepted requirements are [SPEC.md](../../SPEC.md). Compatibility is pinned
 to `mirror-phase0-omp-df4f996-v1`, sourced from OMP
@@ -19,6 +21,29 @@ profile, model IDs, operation outcomes and safe timestamps. Artifact hashes are
 appropriate; credential/token hashes are forbidden. A revision supplied to an
 acceptance process is a label, not proof of the installed executable's origin.
 Link it to the exact build record and artifact hashes before claiming a result.
+
+### Frozen-candidate deterministic results
+
+All results in this table refer to source
+`591e0898df2f37260557c66ed86567cc5c545aab`, not later documentation commits.
+
+| Gate | Result |
+| --- | --- |
+| Linux full Rust workspace | Manager: 839 passed, zero failed, five intentional ignores across 20 suites, with the real built `SANDBOXD_BIN`. The ignores are two subprocess fixture helpers exercised by their parent tests, opt-in live refresh, and two real microVM tests requiring external runtime setup. |
+| Linux diagnostic / binding / launcher | Manager: 43 diagnostic fixtures passed, Python binding check and source launcher help passed. |
+| Linux Python source CI | Manager: 3,392 passed, 22 skipped, Pyright zero errors/warnings; 200.31 seconds. Skip categories match the Mac source run below. Six development-native opt-ins are being checked separately; the native wheel gate remains separate. |
+| Mac Python source CI | 3,392 passed, 22 skipped; Pyright zero errors/warnings; archives, synthetic native packaging hook, generated imports/protobuf and type checks passed. Skips are six development-native opt-ins and 16 installed-wheel cases. Four existing `forkpty` deprecation warnings. |
+| Mac development-native opt-ins | All six passed separately against the built candidate worker: private status/logout, metadata missing-login, actual prechat usage, two native attachment/reconnect cases and missing-login exec. |
+| Mac Rust agent/protocol | 728 passed across the original run and remaining suites, four intentional ignores. The original run failed only the unchanged `/dev/full` headless fixture, which requires Linux; this is **not** a passing Mac full-workspace claim. Linux's full workspace passed that fixture. The long Unicode spill case completed normally. |
+| Mac diagnostic / binding / launcher | 43 diagnostic fixtures passed; Python binding check and source launcher help passed. |
+| Mac/Linux actual native wheels | In progress; native packaging checks and artifact hashes pending. Source CI's dummy worker is not native acceptance. |
+| Production login / models / tools / restart / refresh / coexistence | Pending manager-coordinated installed-artifact observations. No live result is inferred from the rows above. |
+
+Local raw deterministic logs (synthetic data only) are under
+`/tmp/mirror-claude-task8-final-591e089/` on the Mac, and the manager's
+`/tmp/mirror-claude-manager/final-linux-591e0898df2f37260557c66ed86567cc5c545aab/`.
+The final committed record will contain artifact hashes and sanitized outcomes;
+these temporary paths alone are not release evidence that another host can use.
 
 Keep synthetic assertions, actual installed-artifact checks and live observations
 separate. A test name or compilation result does not prove an assertion ran.
@@ -170,10 +195,29 @@ The new-process marker is only a normal inference check, not A1 tool execution.
 
 ## A1–A11 matrix
 
-The assertions below were inspected in reviewed native source during
-preparation. Their presence is not a final rerun result. Task 7 Python assertions
-and final exact-source runs must be added after integration. All rows remain
-**pending production acceptance**.
+The assertions below were inspected in the reviewed native/CLI source. Their
+presence is not a final rerun result. Exact-source deterministic runs and live
+observations are recorded separately; no pending live row is replaced by a
+fixture pass. Follow [LIVE-RUNBOOK.md](LIVE-RUNBOOK.md) for the installed commands,
+read-only protobuf/database observer and two-model TUI restart procedure.
+
+Task 7's inspected assertions include real controlling-terminal restoration,
+hidden manual input and browser-open-failure instructions against a synthetic
+native worker; private command timeout/cancel result precedence; identity/model
+matching and UTC/null/unit-preserving metadata parsing; native state before
+attachment Nack; completed reconnect receipt handling; queued-turn fencing;
+model persistence only after native Ack; Escape preserving model/effort/draft;
+supported implicit startup effort; and nonzero exec after a failed partial
+response. Task 8 adds actual installed-native-wheel terminal cancellation and
+seeded credential/output/new-file canary checks. Those checks complement the
+native port/wrong-state/replayed-state/timeout and execution fixtures rather
+than pretending a synthetic worker is the shipped authority.
+
+The observer's four local synthetic checks pass with installed Python protobufs:
+successful prefix-preserving resume, changed prior record rejection, unsigned
+thinking rejection and missing new tool results rejection. Its signature
+canary stays out of stdout/stderr. This validates observation tooling only;
+there has been no live signed-thinking/tool/replay observation yet.
 
 The A5 regression `foreign_account_switch_cannot_supply_rebind_or_logout_mirror_grant`
 uses fresh native `auth --stdio` processes with a cleared environment and a

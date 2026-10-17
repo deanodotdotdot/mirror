@@ -607,3 +607,35 @@ resolves only ledger conflicts and preserves both tasks’ complete evidence.
 Runtime/test/build files merge unchanged from their respective clean checkpoints.
 The same Astra Task 8 implementer now resumes final acceptance and packaging; a
 separate new Astra reviewer follows before the manager’s final merge.
+
+Task 8 froze runtime/test/build source at
+`591e0898df2f37260557c66ed86567cc5c545aab` for simultaneous Mac/Linux acceptance.
+It corrects help for the supported implicit Claude effort and adds real
+installed-wheel controlling-PTY cancellation and seeded secret-boundary checks.
+The latter require hidden callback input, restored terminal state, native child
+reaping, closed IPv4/IPv6 listeners, no chat-side files and credential canaries
+confined to the deliberately seeded private test record. Wrong synthetic state
+is rejected before exchange; no real login/provider calls occur in these tests.
+
+On the exact archive, Mac full Python source CI passed 3,392 tests with 22 skips
+(six development-native opt-ins plus 16 native-wheel cases), zero Pyright errors
+or warnings, and four existing forkpty deprecation warnings. The six native
+opt-ins passed separately. Mac agent/protocol testing passed 728 cases with four
+intentional ignores across the original and remaining runs; the unchanged
+Linux `/dev/full` fixture failed on Mac, so this is not a full-Mac-workspace pass.
+The long Unicode spill test completed. Binding, source launcher help and all 43
+diagnostic fixtures passed. Manager exact-source Linux full workspace passed
+839 tests with five intentional ignores and no failures, including the `/dev/full`
+case, with a real built sandbox guest. Linux diagnostic43/binding/launcher and
+full Python CI3392/22/Pyright0 also passed. Actual native wheel builds are still
+running; their output, provenance and installed checks are not yet claimed.
+
+Documentation now describes the shipped local/SSH command contract, independent
+grant storage, automatic renewal, billing isolation/extra usage, explicit
+reconnect, metadata/reasoning limits and build gates. The
+[live runbook](LIVE-RUNBOOK.md) supplies installed TUI restart commands and a
+closed-output read-only protobuf/SQLite observer. Four synthetic observer checks
+passed, including unsigned/mutated/missing-tool failures and signature-canary
+redaction. They do not establish live behavior. All production login, two-model
+signed-thinking/tool replay, canonical-order acceptance, genuine refresh and
+Claude Code coexistence observations remain pending manager coordination.

@@ -18,6 +18,7 @@ API key does not select it.
 | OpenRouter                     | `openrouter`              | `OPENROUTER_API_KEY`                           |
 | OpenAI Responses               | `openai-responses`        | `OPENAI_API_KEY`                               |
 | Anthropic Messages             | `anthropic-messages`      | `ANTHROPIC_API_KEY`                            |
+| Claude subscription            | `anthropic-oauth`         | Mirror-owned Claude login                     |
 | ChatGPT plan via Codex         | `openai-codex-responses`  | Existing Codex CLI login                       |
 | Custom Chat Completions server | `openai-chat-completions` | Endpoint-specific; `--api-key` if required     |
 
@@ -35,6 +36,73 @@ mirror --api openai-chat-completions \
 
 Without an explicit protocol, saved selection, or model configuration, the CLI
 defaults to Reflection, or Chat Completions when a custom endpoint is supplied.
+
+## Claude subscription
+
+Sign in with `mirror auth login claude`, then select `--api anthropic-oauth` or
+`/model anthropic-oauth`. Login does not switch your current provider. Bare
+`/login` and `/logout` still manage Reflection; use the `claude` argument for
+subscription login/logout. Anthropic API remains `anthropic-messages` and uses
+its own API key.
+
+Mirror stores one host-local grant in `~/.mirror/claude_oauth.json` (0600), using
+`claude_oauth.lock` for process coordination and atomic replacement. Newly
+created `~/.mirror` directories are 0700. The Rust authority owns storage and
+automatic renewal; do not hand-edit expiry or copy a grant between hosts.
+Claude Code/OMP credential stores and bearer environment variables are not
+imported. Saved or environment API keys cannot replace this login. Subscription
+requests use fixed endpoints; custom base URLs, auth paths and API-key overrides
+are invalid for this provider.
+
+On Linux over SSH, keep `mirror auth login claude --no-browser` running, open
+its URL on your other computer, then copy the final localhost callback URL from
+the browser address bar into the waiting terminal and press Enter. A browser
+connection error is expected when the callback listener is on the SSH host.
+Input is hidden. Ctrl-C cancels; a fresh login flow needs its own callback.
+Never put a callback in chat, a shell argument or a command history file.
+Claude Code does not need to be installed on the SSH host.
+
+Use `mirror auth status claude` (or `--json`) to check the local login without
+refreshing it. `mirror usage claude` and `/usage claude` fetch usage on demand;
+there is no background polling or persistent quota widget. Human output uses
+local time and labels freshness; JSON retains UTC and reported units. Missing
+windows, limits or currency data remain unavailable. Percentages are not summed
+across shared/model windows. Existing extra usage may be enabled on the account;
+Mirror displays that setting without changing it or treating it as API fallback.
+Usage-reporting failure alone does not disable inference.
+
+New conversations bind to the native account and organization identity. An
+existing unbound conversation or changed identity needs `/reconnect claude`
+while idle; Mirror preserves the transcript and draft and waits for a durable
+native acknowledgment. Login alone does not reconnect. `mirror auth logout
+claude` removes only Mirror's local grant; it does not revoke the upstream grant
+or change Claude Code. Requests already sent cannot be recalled.
+
+Recovery messages distinguish these cases:
+
+- Missing/revoked login: run `mirror auth login claude` on this host.
+- Account/workspace changed: sign in to the intended account, then explicitly
+  `/reconnect claude` in the affected conversation.
+- Model unavailable: select an available model explicitly; Mirror does not
+  silently substitute one. Temporary catalog outages can show labeled stale or
+  bundled candidates; missing/revoked auth cannot.
+- Subscription limit: wait for the reported retry/reset time or manage the
+  account at the provider. Mirror never rotates accounts or falls back to a key.
+- Private-store failure: fix ownership/permissions using the reported recovery
+  guidance; do not remove locking or copy credentials from another application.
+
+The subscription provider supports local terminal sessions and `mirror exec`.
+ACP, remote gateways and evaluation entry points reject it. Exec requires prior
+directory trust and login, never prompts during a task, and exits nonzero on
+failure. It starts new conversations; use the TUI to resume saved history.
+
+The default is `claude-opus-4-8`. Exact native capability presets supply implicit
+`low` effort for Opus 4.8/Sonnet 4.6 and `none` for Sonnet 5. Explicit/saved effort
+is retained and may need changing if incompatible with another model. Sonnet 5
+reasoning is not verified. Context uses an explicit override, exact model
+metadata, or a labeled conservative fallback (200,000); model names never imply
+1M entitlement. See the [production evidence](../../docs/claude-integration/ACCEPTANCE.md)
+for the tested profile, models and canonical stream-order restriction.
 
 ## Model picker
 
