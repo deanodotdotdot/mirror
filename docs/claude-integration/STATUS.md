@@ -18,7 +18,7 @@ checks run locally.
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 + 5 | Separate new Astra review completed across the full Task 6 delta, with no P2-or-higher findings. Native execution, durable binding and explicit idle reconnect await final manager verification/merge. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Astra private-command/TUI checkpoint e66866b is tested. Catalog and usage integration can resume after merged Task 5; final reconnect/runtime integration waits for Task 6. |
-| 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 6–7. Production A1–A11 remain unproven. |
+| 8. Acceptance + packaging + docs | All preceding tasks | Independent packaging/harness preparation is checkpointed from reviewed Tasks 1–6. Final builds, public command verification, live evidence and docs wait for reviewed Task 7. [Acceptance runbook/matrix](ACCEPTANCE.md); production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
@@ -347,3 +347,30 @@ Linux run passed 725 tests, with three intentional ignores, plus binding and
 launcher checks, including the Unicode-spill and `/dev/full` cases. Final
 reviewed-head verification and merge remain with the manager. No real credential
 reads or live provider calls were used; production A1–A11 remain with Task 8.
+
+Task 8 preparatory checkpoint adds a real installed-native-wheel Claude smoke
+suite to the actual `build.sh` invocation, preserving the existing OpenAI PTY
+and bundled-tool checks. The new suite requires real executable bytes and checks
+status/logout/missing-login usage, strict private JSONL and redaction, permissions,
+no chat/trust/log files, packaged OMP notices, and worker paths with spaces.
+Its public command assertions await reviewed Task 7 and are not marked passing
+or xfailed against this Task 6 baseline. Actual Mac/Linux `build.sh` runs remain
+pending; the source CI's dummy packaging-hook worker is not native acceptance.
+
+The opt-in ignored Rust acceptance harness uses the real `ClaudeAuthManager`
+and `ClaudeAuthorization` interfaces, a real 61-second dedup wait, the current
+rejected version, a durable revision check and a new installed CLI process.
+It neither duplicates OAuth nor edits a grant; its output is restricted to
+closed diagnostics and nonsecret evidence. The normal request checks a no-tool
+marker only. Source/artifact provenance, live tool/reasoning/replay checks and
+all A1–A11 evidence remain separate required work in the acceptance runbook.
+
+Preparatory macOS validation passed eight native private-command tests and three
+harness safety/process tests; the production refresh test was ignored. Focused
+source `ci.sh` completed archive/packaging-hook/protobuf/type checks with zero
+pyright errors or warnings and 65 tests passed, 12 native-wheel cases skipped
+(including all seven new Claude packaging cases). Rust/Python formatting,
+Python lint, shell syntax and diff checks passed. No installed-native-wheel
+pass, full final suite pass, real credential inspection, live login, provider
+request or refresh is claimed by this checkpoint. Final work resumes only after
+the manager integrates reviewed Task 7 into this clean checkpoint.
