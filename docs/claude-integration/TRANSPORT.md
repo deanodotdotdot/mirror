@@ -15,7 +15,9 @@ new immediate-use authorization lease, optionally identifying the one rejected
 version. The authority performs freshness and the final guard/identity/generation
 check under its lock. There is no await between receiving that lease and starting
 the attempt. Cancellation and stream drop stop pending work; no transport task is
-detached. Canonical callback names and indices are previews; only a successful
+detached. Cancellation is checked between buffered payloads and callbacks and
+before final completion, including when no further network wait is necessary.
+Canonical callback names and indices are previews; only a successful
 `Final` contains executable complete calls and original tool IDs.
 
 ## Frozen wire contract
@@ -56,13 +58,15 @@ matches the exact model, billing mode and profile. Unknown legacy provenance is
 not portable. Normalization emits a structured notice, preserves visible text,
 tool calls and results, and leaves canonical messages untouched. A turn made
 empty by removing opaque reasoning is omitted only from the outgoing view.
-API-key and subscription responses record provenance in existing provider fields;
-normalization works in both directions without manufacturing signatures or
-converting opaque reasoning into unsigned text.
+API-key and subscription responses record provenance in existing provider fields.
+API-key normalization and response provenance use the effective request model,
+including the existing supported `extra_body.model` override. Normalization
+works in both directions without manufacturing signatures or converting opaque
+reasoning into unsigned text.
 
-OAuth validates block indices/lifetimes, delta types, complete object arguments,
-initial input, unique IDs, thinking signatures and terminal events around the
-shared Anthropic accumulator. Initial tool input and empty-object arguments are
+OAuth validates block indices/lifetimes (only one open block), delta types,
+complete object arguments, initial input, unique IDs, thinking signatures and
+terminal events around the shared Anthropic accumulator. Initial tool input and empty-object arguments are
 included in canonical callbacks; fragmented JSON remains ordered by index.
 Unknown tools and invalid/truncated streams never produce a successful final
 completion. Mirror's current canonical message representation requires blocks

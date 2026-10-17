@@ -90,7 +90,10 @@ impl ClaudeMessages {
             request.messages = messages;
             let prepared = PreparedRequest::new(&self.config.model, &request)?;
             let cancellation = cancellation.shared();
-            for notice in notices { yield StreamEvent::Notice(notice); }
+            for notice in notices {
+                cancellable(&cancellation, async { Ok(()) }).await?;
+                yield StreamEvent::Notice(notice);
+            }
             let mut budget = RetryBudget::default();
             let mut rejected = None;
             'attempt: loop {
@@ -150,8 +153,15 @@ impl ClaudeMessages {
                     let chunk = cancellable(&cancellation, async { chunks.next().await.transpose().map_err(|_| partial()) }).await?;
                     let Some(chunk) = chunk else { break; };
                     for payload in framer.feed(&chunk)? {
+                        // A yield gives control back to the caller, which may
+                        // cancel even when the rest of the response is already
+                        // buffered. Do not drain it into tools or a Final.
+                        cancellable(&cancellation, async { Ok(()) }).await?;
                         match decoder.accept(&payload, &prepared.names) {
-                            Ok(events) => for event in events { yield event; },
+                            Ok(events) => for event in events {
+                                cancellable(&cancellation, async { Ok(()) }).await?;
+                                yield event;
+                            },
                             Err(mut error) => {
                                 if decoder.exposed { Err(partial())?; }
                                 error.details.retry_at = retry_at(&stream_headers, SystemTime::now());
@@ -170,6 +180,7 @@ impl ClaudeMessages {
                     }
                     if decoder.ended { break; }
                 }
+                cancellable(&cancellation, async { Ok(()) }).await?;
                 let mut completion = decoder.finish()?;
                 provenance.insert_into(&mut completion.message.provider_fields);
                 yield StreamEvent::Final(completion);

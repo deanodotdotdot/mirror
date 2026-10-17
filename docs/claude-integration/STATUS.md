@@ -12,7 +12,7 @@ verification and merge into the integration branch.
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
 | 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after Astra review and final Linux verification. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Not started. |
-| 4. OAuth Messages transport | 2 | Implemented and locally validated; awaiting manager-arranged Astra review. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
+| 4. OAuth Messages transport | 2 | Implemented and independently Astra reviewed; three P2 findings fixed, awaiting manager verification/merge. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
 | 5. Model discovery + usage | 3 | Not started. |
 | 6. Agent execution integration | 3 + 4 | Not started. |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Not started. |
@@ -96,3 +96,15 @@ The OAuth decoder rejects thinking after text/tools and text after tools because
 Mirror's current canonical message cannot preserve those upstream orderings.
 Independent review and Task 8's two-model live gate must check this profile
 limitation; rejected streams expose no successful final or executable tools.
+
+Task 4 independent Astra review reproduced and fixed three P2 findings:
+overlapping open blocks could reorder streamed text in the canonical completion;
+API-key `extra_body.model` overrides used the configured model for reasoning
+normalization/provenance; and cancellation after a buffered callback could still
+emit tool callbacks and a final completion. Regressions cover text/thinking block
+overlap, compatible/incompatible overridden-model history, and cancellation after
+text/tool/usage callbacks. All 118 provider tests (39 OAuth module cases) and
+workspace/all-target compilation including the Python/eval binding passed.
+No remaining P2-or-higher findings. Final reviewed/integrated Linux verification
+remains with the manager, and Task 8 must exercise the approved ordering boundary
+with both live acceptance models. No live calls or credential reads were used.

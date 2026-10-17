@@ -148,17 +148,28 @@ impl AnthropicMessages {
         let endpoint = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let model = self.config.model.clone();
         let api_key = self.config.api_key.clone();
-        let mut request = request;
-        let provenance = super::claude::anthropic_reasoning_provenance(
-            &model,
-            super::claude::AnthropicBillingMode::ApiKey,
-        );
-        let (messages, notices) =
-            super::claude::normalize_anthropic_history(&request.messages, &provenance);
-        request.messages = messages;
-        let body = self.request_body(request);
+        let prepared = (|| {
+            // API-key callers retain unrestricted extra_body options. Resolve
+            // their effective model before deciding which signatures can replay
+            // or recording the provenance of the eventual response.
+            let mut options = Map::new();
+            apply_extra_body(&mut options, request.inference.as_ref())?;
+            let effective_model = match options.get("model") {
+                Some(value) => value.as_str().unwrap_or_default(),
+                None => &model,
+            };
+            let provenance = super::claude::anthropic_reasoning_provenance(
+                effective_model,
+                super::claude::AnthropicBillingMode::ApiKey,
+            );
+            let mut request = request;
+            let (messages, notices) =
+                super::claude::normalize_anthropic_history(&request.messages, &provenance);
+            request.messages = messages;
+            Ok::<_, LlmError>((self.request_body(request)?, provenance, notices))
+        })();
         try_stream! {
-            let body = body?;
+            let (body, provenance, notices) = prepared?;
             for notice in notices { yield StreamEvent::Notice(notice); }
             if let Some(guard) = guard {
                 guard.verify().await?;

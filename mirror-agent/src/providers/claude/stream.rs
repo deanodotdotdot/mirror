@@ -95,7 +95,9 @@ impl Decoder {
             }
             "content_block_start" if self.started && self.stop_reason.is_none() => {
                 let index = index(&value)?;
-                if index != self.blocks.len() {
+                if index != self.blocks.len()
+                    || self.blocks.last().is_some_and(|block| !block.closed)
+                {
                     return Err(partial());
                 }
                 let block = &mut value["content_block"];

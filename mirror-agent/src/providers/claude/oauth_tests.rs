@@ -1352,3 +1352,169 @@ async fn unrepresentable_upstream_interleavings_fail_without_final_or_retry() {
         );
     }
 }
+
+#[tokio::test]
+async fn overlapping_blocks_never_reorder_output_or_finalize_tools() {
+    for first in [
+        json!({"type":"text","text":""}),
+        json!({"type":"thinking","thinking":"","signature":"signed"}),
+    ] {
+        let delta = if first["type"] == "thinking" {
+            json!({"type":"thinking_delta","thinking":"late plan"})
+        } else {
+            json!({"type":"text_delta","text":"second"})
+        };
+        let input = vec![
+            json!({"type":"message_start","message":{"usage":{}}}),
+            json!({"type":"content_block_start","index":0,"content_block":first}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":"first"}}),
+            json!({"type":"content_block_delta","index":0,"delta":delta}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"never-execute","name":"_read","input":{}}}),
+            json!({"type":"content_block_stop","index":2}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
+            json!({"type":"message_stop"}),
+        ];
+        let (url, captures, server) = server(vec![(
+            200,
+            vec![("Content-Type", "text/event-stream".into())],
+            sse(&input),
+        )])
+        .await;
+        let auth = Arc::new(Authority::new());
+        let p = provider(url, auth.clone());
+        let output = p.stream(request()).collect::<Vec<_>>().await;
+        server.await.unwrap();
+        assert!(matches!(output.last(), Some(Err(LlmError::Claude(e)))
+            if e.kind == ClaudeErrorKind::PartialStreamError && e.retry == ClaudeRetryDisposition::Terminal));
+        assert!(!output
+            .iter()
+            .any(|event| matches!(event, Ok(StreamEvent::Final(_)))));
+        assert_eq!(auth.calls.lock().unwrap().len(), 1);
+        assert_eq!(captures.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn api_key_model_override_drives_normalization_and_response_provenance() {
+    for source_model in ["claude-opus-4-8", "claude-sonnet-4-6"] {
+        let response = events(
+            vec![
+                json!({"type":"thinking","thinking":"new plan","signature":"new signature"}),
+                json!({"type":"text","text":"done"}),
+            ],
+            "end_turn",
+        );
+        let (url, captures, server) = server(vec![(
+            200,
+            vec![("Content-Type", "text/event-stream".into())],
+            sse(&response),
+        )])
+        .await;
+        let api = AnthropicMessages::new(
+            AnthropicMessagesConfig {
+                model: "claude-opus-4-8".into(),
+                api_key: CANARY.into(),
+                base_url: url.strip_suffix("/v1/messages").unwrap().into(),
+            },
+            crate::providers::http_client(Some(Duration::from_secs(5))).unwrap(),
+        );
+        let mut r = request();
+        let mut history = AssistantMessage {
+            content: Some("prior visible answer".into()),
+            reasoning_details: vec![json_to_struct(json!({
+                "type":"thinking","thinking":"prior plan","signature":"prior signature"
+            }))
+            .unwrap()],
+            ..Default::default()
+        };
+        anthropic_reasoning_provenance(source_model, AnthropicBillingMode::ApiKey)
+            .insert_into(&mut history.provider_fields);
+        r.messages.push(chat_record::Message::Assistant(history));
+        r.inference = Some(InferenceConfig {
+            extra_body: Some(r#"{"model":"claude-sonnet-4-6"}"#.into()),
+            ..Default::default()
+        });
+        let output = api.stream(r).try_collect::<Vec<_>>().await.unwrap();
+        server.await.unwrap();
+        let captures = captures.lock().unwrap();
+        let body: Value = serde_json::from_slice(&captures[0].1).unwrap();
+        assert_eq!(body["model"], "claude-sonnet-4-6");
+        let compatible = source_model == "claude-sonnet-4-6";
+        assert_eq!(
+            body["messages"][1]["content"].as_array().unwrap().len(),
+            if compatible { 2 } else { 1 }
+        );
+        assert_eq!(
+            output
+                .iter()
+                .any(|event| matches!(event, StreamEvent::Notice(n)
+            if n.reason == HistoryNormalizationReason::ModelChanged)),
+            !compatible
+        );
+        let Some(StreamEvent::Final(completion)) = output.last() else {
+            panic!("final")
+        };
+        assert_eq!(
+            ReasoningProvenance::from_fields(completion.message.provider_fields.as_ref())
+                .unwrap()
+                .model_id,
+            "claude-sonnet-4-6"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancellation_after_a_buffered_callback_prevents_tools_and_final() {
+    for cancel_after in ["text", "tool", "usage"] {
+        let reply = events(
+            vec![
+                json!({"type":"text","text":"visible before cancellation"}),
+                json!({"type":"tool_use","id":"never-execute","name":"_read","input":{}}),
+            ],
+            "tool_use",
+        );
+        let (url, captures, server) = server(vec![(
+            200,
+            vec![("Content-Type", "text/event-stream".into())],
+            sse(&reply),
+        )])
+        .await;
+        let auth = Arc::new(Authority::new());
+        let p = provider(url, auth.clone());
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        let mut output = Box::pin(
+            p.stream_guarded(
+                request(),
+                None,
+                async {
+                    let _ = cancelled.await;
+                }
+                .boxed(),
+            ),
+        );
+        loop {
+            let event = output.next().await.unwrap().unwrap();
+            if matches!(
+                (cancel_after, &event),
+                ("text", StreamEvent::Content(_))
+                    | ("tool", StreamEvent::ToolCall(_))
+                    | ("usage", StreamEvent::OutputTokens(_))
+            ) {
+                break;
+            }
+            assert!(!matches!(event, StreamEvent::Final(_)));
+        }
+        cancel.send(()).unwrap();
+        let remaining = output.collect::<Vec<_>>().await;
+        server.await.unwrap();
+        assert_eq!(remaining.len(), 1, "after {cancel_after}");
+        assert!(
+            matches!(remaining.last(), Some(Err(LlmError::Claude(error)))
+            if error.kind == ClaudeErrorKind::RequestCancelled)
+        );
+        assert_eq!(auth.calls.lock().unwrap().len(), 1);
+        assert_eq!(captures.lock().unwrap().len(), 1);
+    }
+}
