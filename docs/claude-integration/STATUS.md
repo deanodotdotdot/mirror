@@ -16,9 +16,9 @@ checks run locally.
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdbea79e97695a071b5067a5d0cbed088bab after independent Astra review and manager Linux verification; three P2 findings fixed. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
-| 6. Agent execution integration | 3 + 4 + 5 | Independent native slice checkpointed at 81b551f; final metadata routing and integrated checks resume under Astra after manager integration of reviewed Task 5. |
-| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Astra private-command/TUI checkpoint e66866b is tested. Reviewed Task 5 is integrated for catalog/usage work; final reconnect/runtime wiring waits for reviewed Task 6. |
-| 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 5–7. Production A1–A11 remain unproven. |
+| 6. Agent execution integration | 3 + 4 + 5 | Merged as [PR 6](https://github.com/deanodotdotdot/mirror/pull/6) at ec54e513ddc09388cd0014aeb07450bddd99b646 after separate Astra review with no P2-or-higher findings. Manager Linux validation passed 725 tests, three intentional ignores, binding and launcher; the final review changed documentation only, and manager verified runtime/test/build equality and the exact merged tree. See [execution notes](EXECUTION.md). |
+| 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Private auth checkpoint e66866b and metadata/UI checkpoint 575272b are tested; the latter passed 191 focused tests. Reviewed Task 6 is now integrated for final authoritative state/reconnect, launch guards and runtime wiring under the same Astra implementer. |
+| 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Task 7. Production A1–A11 remain unproven. |
 
 Task 7 headless UX must explain that the SSH command stays running, a browser
 localhost error on another machine is expected, and the final callback is pasted
@@ -27,7 +27,7 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Tasks 1–5 are merged; three production tasks (6–8)
+manual/random callback fields. Tasks 1–6 are merged; two production tasks (7–8)
 remain pending review, merge or implementation. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
@@ -228,7 +228,8 @@ serialization failure or immediate retries. Production A1–A11 remain unproven.
 
 Manager integrated Task 4 before Task 5 independent review, retaining both
 module exports, OMP attributions and validation evidence. Runtime wiring remains
-Task 6. The combined Task 5 head awaits independent review and Linux validation.
+Task 6. The combined Task 5 head subsequently completed independent review and
+Linux validation as recorded below.
 
 
 Task 5 independent Astra review of manager-integrated head `72a609e` against
@@ -264,6 +265,88 @@ exactly matches the reviewed and validated head.
 No remaining P2-or-higher findings; no real credentials or live provider calls
 were used. Production A1–A11 remain unproven.
 
+
+Task 6 independent-slice checkpoint: native SQLite binding and transactional
+reconnect receipts, additive reconnect/state/Nack protocol, actor idle/activity
+barriers, native provider opt-in, inherited child UUIDs/binding, and persisted
+incomplete Claude output are implemented. A real loopback truncated-tool fixture
+proves exactly one failed/truncated final record followed by one typed error,
+with zero tool execution. Noninteractive regression fixtures return exit 1 for
+both failed final records and typed terminal errors. This checkpoint preceded
+the reviewed Task 5 merge and final metadata execution integration below.
+
+Intermediate Task 6 validation: 482 affected native library tests passed with
+one intentional ignore; two protocol wire/projection tests, workspace/all-target
+compilation including eval, and nine worker tests passed; Python packaging/typechecking
+and the complete CI script passed 3,091 tests with five skips. An earlier broad
+library attempt was stopped before the unrelated Unicode-spill test finished;
+it is incomplete, not a passing full-suite result. Race, store, protocol, fork and restarted-child UUID checks pass; final
+metadata/provider integration checks followed that checkpoint. No live login,
+credential inspection, live provider request or production acceptance was run.
+
+Task 6 final integration connects `ModelProvider` to the real metadata service
+and OAuth transport, forwards the guarded authority snapshot operation, and
+retains lazy authority construction for API conversations. Context precedence,
+source timestamp, fallback/stale provenance and closed error/recovery details
+reach persisted log entries before context usage/model work. Every OAuth context
+use passes through metadata's identity/generation/guard checks rather than the
+agent's generic cached context number. Explicit API compaction is labeled with
+its actual model/provider and API-key billing. Canonical signed-history ordering
+restrictions remain unchanged.
+
+Synthetic composed regressions exercise real provider/service seams: offline
+metadata followed by 401 recovery and a partial-tool failure; zero tool
+execution and exactly one persisted incomplete output before one typed terminal
+error; account/guard/logout failures before model dispatch; generation changes
+invalidating cached context; fresh/cached notices retaining source time without
+identical repetition; inherited OAuth and explicit API compaction; and OAuth
+children/grandchildren inheriting authorization with unique native UUIDs despite
+restarted task IDs. Production A1–A11 and live two-model acceptance remain
+deferred to Task 8.
+
+Final Task 6 local macOS validation passed 521 affected library tests, with two
+subprocess helpers intentionally ignored standalone and exercised by parent
+tests. The focused Claude group passed 127 tests. Eight native private-command,
+three binary, 36 headless, nine worker-environment, three worker-shutdown, two
+protocol and two lease doctests passed. The Linux-only `/dev/full` headless
+fixture remains excluded on macOS. Workspace/all-target compilation, including
+the eval binding, Rust formatting and diff checks passed. Three focused Python
+exec tests passed; the earlier complete Python CI result remains 3,091 passed
+with five skips. A final packaging/regeneration/typechecking CI run passed all
+31 focused Python protocol, turn-replay and exec tests, with zero pyright errors
+or warnings. The stopped broad native attempt above remains incomplete;
+these are affected-suite results, not a new full native-suite claim.
+
+The initial final headless run exposed two old expectations of HTTP 204 after
+model exception-limit exhaustion. The intended native error propagation now
+returns HTTP 502 with the actual model error. Updated regressions retain the
+one-/two-attempt counts and persisted trace assertions, and normal HTTP success
+cases pass unchanged. The independent review must assess this broader result
+correction along with subscription behavior. No production credential, live
+provider call or A1–A11 acceptance was used in Task 6.
+
+Task 6 independent Astra review compared the entire submitted `67ef42e` delta
+against Task 5 integration head `d4ceee3`. No P2-or-higher findings were identified;
+no runtime or test changes were needed. The review covered native binding and
+transactional receipts, reconnect races and external future lifetimes, initial
+state and duplicate RPC behavior, guarded metadata/cache reuse, compaction and
+descendant provider inheritance, and incomplete-stream persistence/replay.
+The generic exception-limit result change is intentional: the same failed
+attempts and trace now produce an actual HTTP 502, while ordinary success stays
+204. The review only changes documentation, including clarification that final
+ACP/remote Python guards (also explicit OAuth compaction) belong to Task 7.
+
+Reviewer macOS validation passed the provider group (171 tests), service group
+(98), SQLite store (24), RPC (34), descendants (9), additive protocol (2), all
+32 HTTP cases, eight native private-command tests, three binary tests, nine
+worker-environment tests and three shutdown tests. A separate Claude-focused run
+passed 127 tests. These groups overlap and are not a distinct-test total. Two
+synthetic subprocess helpers were intentionally ignored standalone and exercised
+by parent tests. Diff checks passed. The manager's initial exact-submission
+Linux run passed 725 tests, with three intentional ignores, plus binding and
+launcher checks, including the Unicode-spill and `/dev/full` cases. Final
+reviewed-head verification and merge remain with the manager. No real credential
+reads or live provider calls were used; production A1–A11 remain with Task 8.
 
 Task 7's remaining implementation uses Astra xhigh per the user's updated model
 policy; its initial Sol checkpoint is preserved. The private auth client now
@@ -328,3 +411,11 @@ calls were used. Task 6 reconnect/session-state/typed-Nack/runtime wiring and
 startup enablement remain gated on its reviewed merge. Full packaged Python CI,
 independent review, and the single final Task 7 PR remain outstanding. This is
 an implementation checkpoint, not production acceptance.
+
+Manager completed Task 6 verification and merged PR 6 as `ec54e51`. Reviewed
+`d15a1ff` differs from Linux-tested `67ef42e` only in EXECUTION and STATUS; runtime,
+tests and build files are byte-identical. The merged integration tree exactly
+matches `d15a1ff`. GitHub Actions remains disabled. Manager integrated that merge
+into Task 7's clean metadata checkpoint, resolving only this ledger conflict and
+preserving both tasks' evidence. Task 7 now owns the final Python enablement and
+ACP/remote rejection, including explicit OAuth compaction with an API main model.

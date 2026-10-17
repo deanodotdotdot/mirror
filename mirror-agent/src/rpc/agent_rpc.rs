@@ -75,10 +75,18 @@ enum SessionInput {
     DetachTools,
     SetApprovalMode(AgentApprovalMode),
     SetInferenceConfig(InferenceConfig),
+    ReconnectClaude(mirror_protocol::ReconnectClaude),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum SessionOutput {
+    ClaudeState(mirror_protocol::ClaudeSessionState),
+    ClaudeFailure {
+        message_id: String,
+        reason: SessionNackReason,
+        error: String,
+        claude_error: Option<mirror_protocol::ClaudeErrorDetails>,
+    },
     Event(ReactServiceEvent),
     Ack {
         message_id: String,
@@ -97,6 +105,7 @@ enum SessionNackReason {
     SessionMismatch,
     MessageIdConflict,
     TargetNotFound,
+    ConversationBusy,
 }
 
 #[derive(Clone)]
@@ -232,7 +241,8 @@ pub fn acquire_intent(message: &ClientMessage) -> AcquireIntent {
             client_message::Payload::Message(_)
             | client_message::Payload::SetInferenceConfig(_)
             | client_message::Payload::SetApprovalMode(_)
-            | client_message::Payload::Compact(_),
+            | client_message::Payload::Compact(_)
+            | client_message::Payload::ReconnectClaude(_),
         ) => AcquireIntent::Execute,
         _ => AcquireIntent::Observe,
     }
@@ -397,13 +407,14 @@ impl SessionState {
             Err(invalid) => return Ok(vec![invalid.into_output()]),
         };
         let fresh = !self.remembers(&request.message_id);
+        let was_detached = self.attached.is_none();
         let message_id = request.message_id.clone();
         let input = request.input.clone();
         let handled = match self.service(input.intent()).await {
             Ok(service) => self.handle_on(&service, request, responses).await,
             Err(status) => Err(status),
         };
-        let outputs = match handled {
+        let mut outputs = match handled {
             Ok(outputs) => outputs,
             Err(status) => {
                 let _ = send_output(closed_nack(message_id), responses).await;
@@ -412,6 +423,14 @@ impl SessionState {
         };
         if fresh && self.remembers(&message_id) {
             self.remember_setting(&input);
+        }
+        if was_detached {
+            if let Some(attached) = &self.attached {
+                outputs.insert(
+                    0,
+                    SessionOutput::ClaudeState(attached.service.claude_session_state(None)),
+                );
+            }
         }
         Ok(outputs)
     }
@@ -430,7 +449,10 @@ impl SessionState {
                 self.attached = None;
                 self.source.detached().await?;
                 let service = self.service(self.replay_intent(intent)).await?;
-                let mut outputs = self.replay(&service).await;
+                let mut outputs = vec![SessionOutput::ClaudeState(
+                    service.claude_session_state(None),
+                )];
+                outputs.extend(self.replay(&service).await);
                 match handle_request(&service, &mut self.previous_inputs, request.clone()).await {
                     Ok(handled) => outputs.extend(handled),
                     Err(ServiceClosed) => outputs.push(closed_nack(request.message_id)),
@@ -479,7 +501,11 @@ impl SessionState {
         let service = self
             .service(self.replay_intent(AcquireIntent::Observe))
             .await?;
-        Ok(self.replay(&service).await)
+        let mut outputs = vec![SessionOutput::ClaudeState(
+            service.claude_session_state(None),
+        )];
+        outputs.extend(self.replay(&service).await);
+        Ok(outputs)
     }
 
     fn replay_intent(&self, request: AcquireIntent) -> AcquireIntent {
@@ -525,7 +551,8 @@ impl SessionInput {
             Self::Message(_)
             | Self::SetApprovalMode(_)
             | Self::SetInferenceConfig(_)
-            | Self::Compact => AcquireIntent::Execute,
+            | Self::Compact
+            | Self::ReconnectClaude(_) => AcquireIntent::Execute,
             Self::Interrupt
             | Self::CancelTask { .. }
             | Self::HitlResponse { .. }
@@ -544,6 +571,16 @@ async fn run_session<Requests>(
     Requests: Stream<Item = Result<ClientMessage, Status>> + Send + 'static,
 {
     tokio::pin!(requests);
+    if let Some(attached) = &state.attached {
+        if !send_output(
+            SessionOutput::ClaudeState(attached.service.claude_session_state(None)),
+            &responses,
+        )
+        .await
+        {
+            return;
+        }
+    }
     loop {
         let step = tokio::select! {
             _ = shutdown.recv() => Step::End(None),
@@ -621,7 +658,14 @@ async fn handle_request(
     }
     if let Some(previous) = previous_inputs.get(&message_id) {
         return Ok(if previous == &request.input {
-            vec![SessionOutput::Ack { message_id }]
+            let mut outputs = Vec::new();
+            if matches!(request.input, SessionInput::ReconnectClaude(_)) {
+                outputs.push(SessionOutput::ClaudeState(
+                    service.claude_session_state(Some(message_id.clone())),
+                ));
+            }
+            outputs.push(SessionOutput::Ack { message_id });
+            outputs
         } else {
             vec![nack_output(
                 message_id.clone(),
@@ -632,6 +676,24 @@ async fn handle_request(
     }
 
     let accepted = match request.input.clone() {
+        SessionInput::ReconnectClaude(reconnect) => {
+            match service
+                .reconnect_claude(message_id.clone(), reconnect)
+                .await
+            {
+                Ok(()) => {
+                    previous_inputs.insert(message_id.clone(), request.input);
+                    return Ok(vec![
+                        SessionOutput::ClaudeState(
+                            service.claude_session_state(Some(message_id.clone())),
+                        ),
+                        SessionOutput::Ack { message_id },
+                    ]);
+                }
+                Err(ReactServiceError::Closed) => return Err(ServiceClosed),
+                Err(error) => return Ok(vec![service_nack(message_id, error)]),
+            }
+        }
         SessionInput::Message(message) => match service.accept(*message).await {
             Ok(()) => true,
             Err(ReactServiceError::Closed) => return Err(ServiceClosed),
@@ -709,7 +771,11 @@ async fn handle_request(
                     )]);
                 }
             }
-            accepted(service.set_inference_config(inference).await.map(|()| true))?
+            match service.set_inference_config(inference).await {
+                Ok(()) => true,
+                Err(ReactServiceError::Closed) => return Err(ServiceClosed),
+                Err(error) => return Ok(vec![service_nack(message_id, error)]),
+            }
         }
     };
     let mut outputs = Vec::new();
@@ -724,6 +790,30 @@ async fn handle_request(
         ));
     }
     Ok(outputs)
+}
+
+fn service_nack(message_id: String, error: ReactServiceError) -> SessionOutput {
+    let reason = match &error {
+        ReactServiceError::ConversationBusy => SessionNackReason::ConversationBusy,
+        ReactServiceError::MessageIdConflict(_) => SessionNackReason::MessageIdConflict,
+        _ => SessionNackReason::InvalidRequest,
+    };
+    let claude_error = match &error {
+        ReactServiceError::Claude(error) => Some(error.to_protocol()),
+        ReactServiceError::Store(_) => Some(
+            crate::providers::claude::ClaudeError::new(
+                crate::providers::claude::ClaudeErrorKind::CredentialStorageError,
+            )
+            .to_protocol(),
+        ),
+        _ => None,
+    };
+    SessionOutput::ClaudeFailure {
+        message_id,
+        reason,
+        error: error.to_string(),
+        claude_error,
+    }
 }
 
 fn accepted(result: Result<bool, ReactServiceError>) -> Result<bool, ServiceClosed> {
@@ -824,6 +914,9 @@ fn session_request(request: ClientMessage) -> Result<SessionRequest, InvalidClie
                 },
             }
         }
+        Some(client_message::Payload::ReconnectClaude(request)) => {
+            SessionInput::ReconnectClaude(request)
+        }
         Some(client_message::Payload::Compact(_)) => SessionInput::Compact,
         Some(client_message::Payload::DetachTools(_)) => SessionInput::DetachTools,
         Some(client_message::Payload::SetApprovalMode(mode)) => {
@@ -902,6 +995,24 @@ enum EncodedSessionOutput {
 
 fn encode_session_output(output: SessionOutput) -> EncodedSessionOutput {
     let messages = match output {
+        SessionOutput::ClaudeState(state) => vec![SessionMessage {
+            payload: Some(session_message::Payload::ClaudeSessionState(state)),
+            ..Default::default()
+        }],
+        SessionOutput::ClaudeFailure {
+            message_id,
+            reason,
+            error,
+            claude_error,
+        } => vec![SessionMessage {
+            payload: Some(session_message::Payload::InputNack(InputNack {
+                message_id,
+                reason: nack_reason(reason).into(),
+                error,
+                claude_error,
+            })),
+            ..Default::default()
+        }],
         SessionOutput::EventStreamLagged(count) => {
             return EncodedSessionOutput::Error(lagged_status(count));
         }
@@ -922,6 +1033,7 @@ fn nack_reason(reason: SessionNackReason) -> InputNackReason {
         SessionNackReason::SessionMismatch => InputNackReason::SessionMismatch,
         SessionNackReason::MessageIdConflict => InputNackReason::MessageIdConflict,
         SessionNackReason::TargetNotFound => InputNackReason::TargetNotFound,
+        SessionNackReason::ConversationBusy => InputNackReason::ConversationBusy,
     }
 }
 
@@ -992,6 +1104,9 @@ impl From<TaskInfo> for TaskUpdate {
 
 /// Forward startup context metadata without copying prompt contents into diagnostics.
 pub fn startup_responses(event: ReactServiceEvent) -> Vec<SessionMessage> {
+    if matches!(event, ReactServiceEvent::TurnError(_)) {
+        return service_responses(event);
+    }
     let ReactServiceEvent::Agent(event) = event else {
         return Vec::new();
     };
@@ -1079,6 +1194,7 @@ fn nack(message_id: &str, reason: InputNackReason, error: String) -> SessionMess
             message_id: message_id.to_string(),
             reason: reason.into(),
             error,
+            claude_error: None,
         })),
         ..SessionMessage::default()
     }

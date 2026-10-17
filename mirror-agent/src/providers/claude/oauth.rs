@@ -1,5 +1,5 @@
 //! Direct subscription Messages transport. Credential lifecycle belongs solely to
-//! ClaudeAuthorization. No runtime provider selection is enabled by this module.
+//! ClaudeAuthorization. Native execution opts in through ModelProvider.
 use super::{
     profile,
     stream::{partial, Decoder, Framer},
@@ -47,6 +47,15 @@ impl std::fmt::Debug for ClaudeMessages {
     }
 }
 impl ClaudeMessages {
+    #[cfg(test)]
+    pub(crate) fn with_test_endpoint(mut self, endpoint: &'static str) -> Self {
+        let url = reqwest::Url::parse(endpoint).unwrap();
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+        self.endpoint = endpoint;
+        self.client = oauth_client(self.config.request_timeout, false).unwrap();
+        self
+    }
+
     pub fn new(
         config: ClaudeMessagesConfig,
         authority: Arc<dyn ClaudeAuthorization>,

@@ -1124,10 +1124,20 @@ fn client_input(message_id: &str, content: &str) -> ClientMessage {
 async fn next_message(
     responses: &mut ReceiverStream<Result<SessionMessage, Status>>,
 ) -> SessionMessage {
-    match responses.next().await {
-        Some(Ok(message)) => message,
-        Some(Err(error)) => panic!("AgentRPC stream failed: {error}"),
-        None => panic!("AgentRPC stream ended"),
+    loop {
+        match responses.next().await {
+            Some(Ok(message))
+                if matches!(
+                    message.payload,
+                    Some(session_message::Payload::ClaudeSessionState(_))
+                ) =>
+            {
+                continue
+            }
+            Some(Ok(message)) => return message,
+            Some(Err(error)) => panic!("AgentRPC stream failed: {error}"),
+            None => panic!("AgentRPC stream ended"),
+        }
     }
 }
 

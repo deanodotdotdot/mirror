@@ -24,6 +24,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 3,
         sql: include_str!("../../migrations/0003_system_prompts.sql"),
     },
+    Migration {
+        version: 4,
+        sql: include_str!("../../migrations/0004_claude_session.sql"),
+    },
 ];
 
 pub(super) fn migrate(connection: &mut Connection) -> Result<(), StoreError> {

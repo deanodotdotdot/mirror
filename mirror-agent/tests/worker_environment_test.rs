@@ -212,3 +212,125 @@ fn worker_binary() -> PathBuf {
         .or_else(|| option_env!("CARGO_BIN_EXE_mirror-agent").map(PathBuf::from))
         .expect("worker binary path")
 }
+
+#[tokio::test]
+async fn subscription_without_login_still_attaches_with_native_unbound_state_and_history() {
+    use base64::Engine;
+    use prost::Message;
+    use tokio_stream::wrappers::ReceiverStream;
+    let workspace = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "rpc_address":"127.0.0.1:0", "conversation_id":"session", "model":"claude-opus-4-8",
+        "api":"anthropic-oauth", "database":workspace.path().join("state.db"), "create_session":true,
+        "tools":[], "context_window":200_000,
+    });
+    let mut child = Command::new(worker_binary())
+        .arg(config.to_string())
+        .env("HOME", workspace.path())
+        .env("MIRROR_WORKSPACE", workspace.path())
+        .env("ANTHROPIC_API_KEY", "SYNTHETIC-PAID-KEY-MUST-NOT-BE-USED")
+        .env_remove("ANTHROPIC_BASE_URL")
+        .env_remove("FIRECRAWL_API_KEY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let (address, typed_error) = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut typed_error = false;
+        loop {
+            let line = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("worker remains available");
+            if let Some(encoded) = line.strip_prefix("MIRROR_SESSION_MESSAGE=") {
+                let bytes = base64::prelude::BASE64_STANDARD.decode(encoded).unwrap();
+                let event = mirror_protocol::SessionMessage::decode(bytes.as_slice()).unwrap();
+                if let Some(mirror_protocol::session_message::Payload::RuntimeDelta(delta)) =
+                    event.payload
+                {
+                    if let Some(mirror_protocol::runtime_delta::Payload::TurnError(error)) =
+                        delta.payload
+                    {
+                        typed_error |= error.claude_error.is_some();
+                    }
+                }
+            }
+            if let Some(address) = line.strip_prefix("MIRROR_RPC_ADDRESS=") {
+                break (address.to_string(), typed_error);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(typed_error);
+    let mut client = AgentRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    assert!(!client
+        .get_messages(GetMessagesRequest {
+            session_id: "session".into(),
+            offset: 0,
+            limit: 10
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .messages
+        .is_empty());
+    let (_requests, receiver) = tokio::sync::mpsc::channel::<mirror_protocol::ClientMessage>(4);
+    let mut session = client
+        .session(ReceiverStream::new(receiver))
+        .await
+        .unwrap()
+        .into_inner();
+    let state = session.message().await.unwrap().unwrap();
+    assert!(
+        matches!(state.payload, Some(mirror_protocol::session_message::Payload::ClaudeSessionState(state)) if state.binding.is_none() && state.message_id.is_none())
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscription_invalid_configuration_is_rejected_before_workspace_or_secret_resolution() {
+    use base64::Engine;
+    use prost::Message;
+    for invalid in [
+        serde_json::json!({"api_key":"SYNTHETIC-KEY"}),
+        serde_json::json!({"base_url":"http://127.0.0.1:1"}),
+    ] {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = serde_json::json!({"rpc_address":"127.0.0.1:0", "conversation_id":"session", "model":"claude-opus-4-8", "api":"anthropic-oauth", "create_session":true});
+        config
+            .as_object_mut()
+            .unwrap()
+            .extend(invalid.as_object().unwrap().clone());
+        let output = Command::new(worker_binary())
+            .arg(config.to_string())
+            .env("HOME", workspace.path().join("does-not-exist"))
+            .env(
+                "MIRROR_WORKSPACE",
+                workspace.path().join("also-does-not-exist"),
+            )
+            .env_remove("ANTHROPIC_BASE_URL")
+            .output()
+            .await
+            .unwrap();
+        assert!(!output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("SYNTHETIC-KEY"));
+        let event = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("MIRROR_SESSION_MESSAGE="))
+            .expect("typed startup error");
+        let bytes = base64::prelude::BASE64_STANDARD.decode(event).unwrap();
+        let event = mirror_protocol::SessionMessage::decode(bytes.as_slice()).unwrap();
+        assert!(
+            matches!(event.payload, Some(mirror_protocol::session_message::Payload::RuntimeDelta(delta)) if matches!(&delta.payload, Some(mirror_protocol::runtime_delta::Payload::TurnError(error)) if error.claude_error.as_ref().is_some_and(|detail| detail.kind == "invalid_configuration")))
+        );
+        assert!(!workspace.path().join("does-not-exist").exists());
+    }
+}

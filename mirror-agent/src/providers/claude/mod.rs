@@ -18,3 +18,6 @@ pub use wire::{claude_model_capabilities, ClaudeModelCapabilities};
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) mod session;
+pub use session::ClaudeSession;

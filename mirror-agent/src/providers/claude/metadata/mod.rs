@@ -173,6 +173,19 @@ pub struct ClaudeMetadataService {
     transport: Arc<dyn Transport>,
 }
 impl ClaudeMetadataService {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        authority: Arc<dyn ClaudeAuthorization>,
+        directory: PathBuf,
+        origin: String,
+    ) -> Result<Self, ClaudeError> {
+        Ok(Self {
+            authority,
+            cache: Cache::new(directory)?,
+            transport: Arc::new(http::FixedTransport::loopback(origin)),
+        })
+    }
+
     pub fn new(authority: Arc<dyn ClaudeAuthorization>) -> Result<Self, ClaudeError> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
