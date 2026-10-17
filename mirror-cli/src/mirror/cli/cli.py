@@ -65,6 +65,7 @@ from mirror.cli import bash_approvals
 from mirror.cli import claude_auth as _claude_auth
 from mirror.cli import claude_errors as _claude_errors
 from mirror.cli import claude_login as _claude_login
+from mirror.cli import claude_metadata as _claude_metadata
 from mirror.cli import cli_store as _cli_store
 from mirror.cli import commands as _commands
 from mirror.cli import conversation_metrics as _conversation_metrics
@@ -770,6 +771,13 @@ class _Repl:
         return self._app.create_background_task(
           self._run_claude_command(action)
         )
+      case _effects.ClaudeModelSelected(model, account_id, organization_id):
+        return self._app.create_background_task(
+          self._select_claude_model(
+            model,
+            {'account_id': account_id, 'organization_id': organization_id},
+          )
+        )
       case _effects.ForgetReflectionKey():
         return self._app.create_background_task(self._forget_reflection_key())
       case _effects.SwitchModel(option):
@@ -1315,11 +1323,18 @@ class _Repl:
     await asyncio.gather(*self.dispatch(_actions.ModelResolved(option)))
 
   async def _run_claude_command(self, action: str) -> None:
-    await self._claude_command(action)
+    if action == 'models':
+      await self._choose_claude_model()
+    else:
+      await self._claude_command(action)
 
   async def _claude_command(
-    self, action: str, *, offer: bool = False
-  ) -> _claude_auth.Completed | None:
+    self,
+    action: str,
+    *,
+    offer: bool = False,
+    expected_identity: Mapping[str, str] | None = None,
+  ) -> _claude_auth.Completed | _claude_auth.MetadataCompleted | None:
     """Use a dedicated private native process, never the worker log transport."""
     if self._remote_endpoint is not None:
       self.dispatch(
@@ -1348,7 +1363,11 @@ class _Repl:
         cancelled_choice = offer and outcome.dismissed
       else:
         async with _claude_auth.NativeCommand(
-          self._worker_command, action
+          self._worker_command,
+          action,
+          params=_claude_metadata.params(action, expected_identity)
+          if action in ('models', 'usage')
+          else None,
         ) as command:
           try:
             result = await command.read_event()
@@ -1362,6 +1381,23 @@ class _Repl:
           message += ' Run mirror auth status claude before retrying.'
         self.dispatch(_actions.ShowText(message, style='ui.warning'))
         return None
+      if isinstance(result, _claude_auth.MetadataCompleted):
+        if action == 'usage':
+          self.dispatch(
+            _actions.ShowText(
+              _claude_metadata.text(
+                result.metadata,
+                result.compatibility_profile,
+                account_scope='conversation account'
+                if expected_identity is not None
+                else 'current Mirror login',
+              ),
+              style='ui.warning'
+              if result.metadata.state in ('stale', 'offline', 'unavailable')
+              else '',
+            )
+          )
+        return result
       if not isinstance(result, _claude_auth.Completed):
         raise _claude_auth.ProtocolError()
       if action != 'status':
@@ -1408,6 +1444,96 @@ class _Repl:
       return None
     finally:
       self._claude_operation = False
+
+  async def _choose_claude_model(self) -> None:
+    requested = _models.ModelOption(
+      '', 'Claude subscription', api='anthropic-oauth'
+    )
+    if await self._authenticate_model(requested, initial=False) is None:
+      self.dispatch(_actions.CancelModelSelection())
+      return
+    status = await self._claude_command('status')
+    if (
+      not isinstance(status, _claude_auth.Completed)
+      or status.status.identity is None
+    ):
+      self.dispatch(_actions.CancelModelSelection())
+      return
+    identity = status.status.identity
+    pending = _selection.Selector[_actions.Action](
+      'claude-models',
+      'Claude subscription model',
+      (),
+      lambda model: _actions.ClaudeModelSelected(
+        model,
+        identity['account_id'],
+        identity['organization_id'],
+      ),
+      empty='Fetching Claude subscription model candidates…',
+    )
+    self.dispatch(_actions.OpenSelector(pending))
+    result = await self._claude_command('models', expected_identity=identity)
+    if self._state.selector.selector is not pending:
+      return  # Escape or another selector owns the UI now.
+    if not isinstance(result, _claude_auth.MetadataCompleted):
+      self.dispatch(_actions.ClearSelector())
+      self.dispatch(_actions.CancelModelSelection())
+      return
+    metadata = result.metadata
+    choices = tuple(
+      _selection.Choice(
+        model.id,
+        model.display_name or model.id,
+        f'{model.id} · {metadata.state} · {metadata.payload["source"]} · '
+        + (
+          f'{model.context_window:,} context'
+          if model.context_window is not None
+          else 'context unavailable'
+        ),
+      )
+      for model in metadata.models
+    )
+    self.dispatch(
+      _actions.OpenSelector(
+        dataclasses.replace(
+          pending,
+          choices=choices,
+          empty='No model candidates are available.',
+          header=_text.Text(
+            _claude_metadata.text(metadata, result.compatibility_profile)
+          ),
+        )
+      )
+    )
+
+  async def _select_claude_model(
+    self, model: str, identity: Mapping[str, str]
+  ) -> None:
+    option = _models.ModelOption(model, model, api='anthropic-oauth')
+    pending = _selection.Selector[_actions.Action](
+      'claude-model-check',
+      'Claude subscription model',
+      (),
+      lambda _: _actions.ClearSelector(),
+      empty='Checking the selected Claude account…',
+    )
+    self.dispatch(_actions.OpenSelector(pending))
+    selected = await self._authenticate_model(
+      option, initial=False, expected_identity=identity
+    )
+    if self._state.selector.selector is not pending:
+      return  # Escape cancelled the choice, independently of native auth state.
+    self.dispatch(_actions.ClearSelector())
+    if selected is None:
+      self.dispatch(_actions.CancelModelSelection())
+      return
+    if self._onboarding_model is not None:
+      if not self._onboarding_model.done():
+        self._onboarding_model.set_result(selected)
+      return
+    self._apply_model(selected)
+    if self._state.lifecycle.failure is not None:
+      await self._retry_worker()
 
   async def _prompt_claude_login(
     self, *, offer: bool
@@ -1459,12 +1585,16 @@ class _Repl:
           login.cancel()
           await asyncio.gather(login, return_exceptions=True)
           restore()
-          return _claude_login.LoginOutcome(await command.cancel_result(), True)
+          return _claude_login.LoginOutcome(
+            await command.cancel_auth_result(), True
+          )
         except (asyncio.CancelledError, _claude_auth.CommandInterrupted):
           login.cancel()
           await asyncio.gather(login, return_exceptions=True)
           restore()
-          return _claude_login.LoginOutcome(await command.cancel_result(), True)
+          return _claude_login.LoginOutcome(
+            await command.cancel_auth_result(), True
+          )
         finally:
           login.cancel()
           cancelled.cancel()
@@ -3240,7 +3370,11 @@ class _Repl:
     return True
 
   async def _authenticate_model(
-    self, option: _models.ModelOption, *, initial: bool
+    self,
+    option: _models.ModelOption,
+    *,
+    initial: bool,
+    expected_identity: Mapping[str, str] | None = None,
   ) -> _models.ModelOption | None:
     """Resolve sign-in or model selection before committing a configuration."""
     if self._secret_input is not None:
@@ -3274,7 +3408,18 @@ class _Repl:
           self.dispatch(_actions.ShowText(str(error), style='ui.warning'))
           return None
         status = await self._claude_command('status')
-        if status is None:
+        if not isinstance(status, _claude_auth.Completed):
+          return None
+        if (
+          expected_identity is not None
+          and status.status.identity != expected_identity
+        ):
+          self.dispatch(
+            _actions.ShowText(
+              'The Claude account changed while choosing a model. Open /model anthropic-oauth again.',
+              style='ui.warning',
+            )
+          )
           return None
         if status.status.state in ('usable', 'refreshable'):
           return option

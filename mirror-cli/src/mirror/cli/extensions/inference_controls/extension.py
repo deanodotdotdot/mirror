@@ -288,6 +288,8 @@ def _select_inference(value: str) -> actions.Action:
       empty='Fetching OpenRouter models…',
       load=_fetch_openrouter_models,
     )
+  if value == 'anthropic-oauth':
+    return actions.ClaudeCommand('models')
   if value == 'anthropic-messages':
     if not api_keys.has_anthropic_key():
       return _default_model(value)
@@ -371,6 +373,13 @@ def _login(_: commands.CommandContext, arguments: str) -> actions.Action:
   return _default_model('reflection')
 
 
+def _usage(context: commands.CommandContext, arguments: str) -> actions.Action:
+  del context
+  if arguments.strip() != 'claude':
+    return actions.ShowText('Usage: /usage claude', style='ui.warning')
+  return actions.ClaudeCommand('usage')
+
+
 def _logout(_: commands.CommandContext, arguments: str) -> actions.Action:
   if arguments == 'claude':
     return actions.ClaudeCommand('logout')
@@ -439,6 +448,13 @@ class InferenceControlsExtension(extension.Extension[None, None, None]):
         'Remove Reflection credentials or use /logout claude',
         _logout,
         arguments=commands.OptionalArguments('[claude]'),
+      ),
+      commands.CommandDef(
+        'usage',
+        'Show Claude subscription usage for the current Mirror login',
+        _usage,
+        arguments=commands.OptionalArguments('claude'),
+        available_when_busy=True,
       ),
       commands.CommandDef(
         'model',

@@ -393,6 +393,10 @@ def _reduce(
       return state, (effects.CancelModelSelection(),)
     case _actions.ClaudeCommand(operation):
       return state, (effects.ClaudeCommand(operation),)
+    case _actions.ClaudeModelSelected(model, account_id, organization_id):
+      return state, (
+        effects.ClaudeModelSelected(model, account_id, organization_id),
+      )
     case _actions.ForgetReflectionKey():
       return state, (effects.ForgetReflectionKey(),)
     case _actions.SetModel(model_id):

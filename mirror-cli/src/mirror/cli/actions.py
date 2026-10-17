@@ -850,6 +850,15 @@ class ClaudeCommand:
 
 
 @dataclasses.dataclass(frozen=True)
+class ClaudeModelSelected:
+  """Choose a native catalog candidate with its observed account identity."""
+
+  model: str
+  account_id: str
+  organization_id: str
+
+
+@dataclasses.dataclass(frozen=True)
 class ForgetReflectionKey:
   """Remove the local saved Reflection credential."""
 
@@ -1197,6 +1206,7 @@ type Action = (
   | AcceptResumeConfirmation
   | CancelModelSelection
   | ClaudeCommand
+  | ClaudeModelSelected
   | ForgetReflectionKey
   | SetModel
   | SetRemoteModel

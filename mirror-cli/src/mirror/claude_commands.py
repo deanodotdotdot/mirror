@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from typing import NoReturn, override
 
 from mirror import worker
-from mirror.cli import claude_auth
+from mirror.cli import claude_auth, claude_metadata
 
 
 class _Parser(argparse.ArgumentParser):
@@ -81,6 +81,8 @@ def local_time(value: str | None) -> str:
 def error_text(
   error: claude_auth.ClaudeError,
   compatibility_profile: str | None = None,
+  *,
+  metadata: bool = False,
 ) -> str:
   """Render reviewed fixed text, never raw native/provider messages."""
   messages = {
@@ -94,7 +96,11 @@ def error_text(
     'rate_limited': 'Claude could not accept the request because of a rate limit.',
     'model_unavailable': 'The selected model is unavailable for this Claude subscription.',
     'access_denied': 'This Claude account cannot access the selected model or operation.',
-    'auth_temporarily_unavailable': 'Claude subscription authentication is temporarily unavailable.',
+    'auth_temporarily_unavailable': (
+      'Claude subscription metadata is temporarily unavailable.'
+      if metadata
+      else 'Claude subscription authentication is temporarily unavailable.'
+    ),
     'compatibility_error': 'This Mirror build needs an updated Claude compatibility profile.',
     'invalid_configuration': 'Claude subscription configuration is invalid.',
     'partial_stream_error': 'Claude output is incomplete; the request was not replayed.',
@@ -210,7 +216,10 @@ async def login(
             terminal.notice(
               'Browser launch failed; open the displayed URL manually.\n'
             )
-        elif event.notice == 'callback_rejected':
+        elif (
+          isinstance(event, claude_auth.Progress)
+          and event.notice == 'callback_rejected'
+        ):
           terminal.notice(
             'Callback rejected; paste the final callback URL again and press Enter (input hidden).\n'
           )
@@ -233,7 +242,7 @@ async def login(
 
 async def _execute(
   args: argparse.Namespace,
-) -> claude_auth.Completed | claude_auth.Failed:
+) -> claude_auth.TerminalResult:
   async with claude_auth.NativeCommand(
     worker.command(), args.action
   ) as command:
@@ -243,7 +252,14 @@ async def _execute(
         with claude_auth.PrivateTerminal() as terminal:
           return await login(command, terminal, no_browser=args.no_browser)
       event = await command.read_event()
-      if not isinstance(event, (claude_auth.Completed, claude_auth.Failed)):
+      if not isinstance(
+        event,
+        (
+          claude_auth.Completed,
+          claude_auth.MetadataCompleted,
+          claude_auth.Failed,
+        ),
+      ):
         raise claude_auth.ProtocolError()
       return event
     except (
@@ -337,6 +353,21 @@ def run(arguments: Sequence[str] | None = None) -> int:
       if result.error.kind in ('login_cancelled', 'request_cancelled')
       else 1
     )
+  if isinstance(result, claude_auth.MetadataCompleted):
+    if machine:
+      print(
+        json.dumps(
+          result.metadata.to_json()
+          | {
+            'compatibility_profile': result.compatibility_profile,
+          }
+        )
+      )
+    else:
+      print(claude_metadata.text(result.metadata, result.compatibility_profile))
+    # Native successfully delivered a degraded report; retain its explicit state
+    # in JSON and a nonzero shell result when there is no usable report at all.
+    return 1 if result.metadata.state == 'unavailable' else 0
   if machine:
     print(
       json.dumps(

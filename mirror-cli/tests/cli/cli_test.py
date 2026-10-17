@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import cProfile
+import dataclasses
 import datetime
 import gc
 import io
@@ -14821,13 +14822,13 @@ async def test_history_load_does_not_publish_a_previous_conversation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('select_provider', [False, True])
+@pytest.mark.parametrize('select_provider', [False, True, 'catalog'])
 @pytest.mark.parametrize('outcome', ['success', 'escape', 'escape_committed'])
 async def test_claude_login_preserves_draft_and_commits_only_requested_selection(
   tmp_path: pathlib.Path,
   monkeypatch: pytest.MonkeyPatch,
   capfd: pytest.CaptureFixture[str],
-  select_provider: bool,
+  select_provider: bool | str,
   outcome: str,
 ) -> None:
   from mirror.cli import claude_auth
@@ -14839,7 +14840,8 @@ async def test_claude_login_preserves_draft_and_commits_only_requested_selection
   native = tmp_path / 'synthetic-native.py'
   native.write_text(
     """
-import json, sys
+import json, pathlib, sys
+marker = pathlib.Path(LOGIN_MARKER)
 assert sys.argv[1:] == ['auth', '--stdio']
 request = json.loads(sys.stdin.readline())
 base = {key: request[key] for key in ('schema_version', 'request_id', 'provider', 'action')}
@@ -14847,8 +14849,14 @@ base['compatibility_profile'] = 'synthetic-fixture-v1'
 def emit(kind, **fields):
   print(json.dumps(base | {'type': kind} | fields), flush=True)
 status = {'schema_version': 1, 'provider': 'anthropic-oauth', 'source': 'Mirror login', 'state': 'logged_out', 'identity': None, 'display': None, 'expires_at': None, 'recovery': 'login', 'error': None}
+if marker.exists():
+  status.update(state='usable', identity={'account_id': '11111111-1111-4111-8111-111111111111', 'organization_id': '22222222-2222-4222-8222-222222222222'}, expires_at='2026-10-17T19:00:00Z', recovery='none')
 if request['action'] == 'status':
   emit('completed', result={'status': status})
+elif request['action'] == 'models':
+  assert status['state'] == 'usable'
+  assert request['params']['expected_identity'] == status['identity']
+  emit('completed', result={'models': {'schema_version': 1, 'provider': 'anthropic-oauth', 'identity': status['identity'], 'state': 'fresh', 'fetched_at': '2026-10-17T19:00:00Z', 'age_seconds': 0, 'retry_at': None, 'error': None, 'source': 'remote', 'models': [{'id': 'claude-selected', 'display_name': 'Selected candidate', 'context_window': None}]}})
 else:
   assert request['action'] == 'login'
   emit('authorization_url', authorization_url='https://claude.ai/oauth/authorize?state=SYNTHETIC_PRIVATE_STATE', expires_at='2026-10-17T19:00:00Z')
@@ -14860,8 +14868,11 @@ else:
     if control['type'] == 'callback':
       assert control['value'] == 'SYNTHETIC_PRIVATE_CALLBACK'
     status.update(state='usable', identity={'account_id': '11111111-1111-4111-8111-111111111111', 'organization_id': '22222222-2222-4222-8222-222222222222'}, expires_at='2026-10-17T19:00:00Z', recovery='none')
+    marker.touch()
     emit('completed', result={'status': status})
-""".replace('CANCEL_BEFORE_COMMIT', repr(outcome != 'escape_committed'))
+""".replace(
+      'CANCEL_BEFORE_COMMIT', repr(outcome != 'escape_committed')
+    ).replace('LOGIN_MARKER', repr(str(tmp_path / 'synthetic-login-completed')))
   )
   with (
     _input_defaults.create_pipe_input() as pipe,
@@ -14882,7 +14893,9 @@ else:
       operation = asyncio.create_task(
         _dispatch_and_wait(
           repl,
-          _actions.ModelResolved(
+          _actions.ClaudeCommand('models')
+          if select_provider == 'catalog'
+          else _actions.ModelResolved(
             _models.ModelOption(
               'claude-selected', 'Claude subscription', api='anthropic-oauth'
             )
@@ -14930,6 +14943,15 @@ else:
         assert 'signed in' in public
         if select_provider:
           assert 'model selection was cancelled' in public
+      if select_provider == 'catalog' and outcome == 'success':
+        # Login establishes only the grant. The requested catalog now resumes;
+        # a separate explicit candidate choice commits billing/model selection.
+        assert repl.model_selection == previous
+        assert _models.load_last_selection() == previous
+        selector = repl._state.selector.selector
+        assert selector is not None and selector.id == 'claude-models'
+        for action in repl._selector_choice():
+          await _dispatch_and_wait(repl, action)
       if select_provider and outcome == 'success':
         assert repl.model_selection.api == 'anthropic-oauth'
         assert repl.model_selection.model_id == 'claude-selected'
@@ -15041,7 +15063,7 @@ async def test_claude_private_login_displays_link_and_headless_instructions(
   native = mock.MagicMock()
   native.__aenter__.return_value = native
   native.read_event = mock.AsyncMock(side_effect=event)
-  native.cancel_result = mock.AsyncMock(
+  native.cancel_auth_result = mock.AsyncMock(
     side_effect=claude_auth.CommandInterrupted()
   )
   monkeypatch.setattr(claude_auth, 'NativeCommand', lambda *_: native)
@@ -15063,3 +15085,394 @@ async def test_claude_private_login_displays_link_and_headless_instructions(
     finally:
       operation.cancel()
       await asyncio.gather(operation, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+  'outcome', ['select', 'escape', 'changed_account', 'onboarding']
+)
+async def test_claude_native_catalog_selection_preserves_billing_and_draft(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  outcome: str,
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+  status = claude_auth.AuthStatus.parse({
+    'schema_version': 1,
+    'provider': 'anthropic-oauth',
+    'source': 'Mirror login',
+    'state': 'usable',
+    'identity': identity,
+    'display': None,
+    'expires_at': '2026-10-17T19:00:00Z',
+    'recovery': 'none',
+    'error': None,
+  })
+  catalog = claude_metadata.Metadata.parse(
+    'models',
+    {
+      'schema_version': 1,
+      'provider': 'anthropic-oauth',
+      'identity': identity,
+      'state': 'stale',
+      'fetched_at': '2026-10-17T18:00:00Z',
+      'age_seconds': 901,
+      'retry_at': None,
+      'error': None,
+      'source': 'remote',
+      'models': [
+        {'id': 'claude-chosen', 'display_name': None, 'context_window': None}
+      ],
+    },
+  )
+  observed: list[tuple[str, object]] = []
+  changed = False
+
+  async def command(
+    action: str, *, expected_identity: object = None, **_: object
+  ) -> claude_auth.Completed | claude_auth.MetadataCompleted:
+    observed.append((action, expected_identity))
+    if action == 'models':
+      assert expected_identity == identity
+      return claude_auth.MetadataCompleted(catalog, 'fixture-v1')
+    assert action == 'status'
+    selected_status = (
+      dataclasses.replace(
+        status,
+        identity=identity
+        | {'account_id': '33333333-3333-4333-8333-333333333333'},
+      )
+      if changed
+      else status
+    )
+    return claude_auth.Completed(selected_status, 'fixture-v1')
+
+  repl = _repl(model='previous-api-model')
+  repl._worker_configuration = repl._worker_configuration.updated({
+    'api': 'anthropic-messages'
+  })
+  repl._input.text = 'unfinished draft'
+  previous = repl.model_selection
+  _models.save_last_selection(previous)
+  monkeypatch.setattr(repl, '_claude_command', command)
+  if outcome == 'onboarding':
+    repl._onboarding_model = asyncio.get_running_loop().create_future()
+  try:
+    await _dispatch_and_wait(repl, _actions.ClaudeCommand('models'))
+    assert repl.model_selection == previous
+    selector = repl._state.selector.selector
+    assert selector is not None and selector.id == 'claude-models'
+    assert selector.choices[0].value == 'claude-chosen'
+    assert selector.choices[0].label == 'claude-chosen'
+    assert 'stale' in selector.choices[0].detail
+    assert 'context unavailable' in selector.choices[0].detail
+    assert '901 seconds' in str(selector.header)
+    assert 'Candidates do not guarantee account access.' in str(selector.header)
+    assert repl._input.text == 'unfinished draft'
+    if outcome == 'escape':
+      actions = repl._selector_cancel()
+    else:
+      changed = outcome == 'changed_account'
+      actions = repl._selector_choice()
+    for action in actions:
+      await _dispatch_and_wait(repl, action)
+    assert repl._input.text == 'unfinished draft'
+    assert not repl._state.selector.active
+    if outcome == 'select':
+      assert repl.model_selection.api == 'anthropic-oauth'
+      assert repl.model_selection.model_id == 'claude-chosen'
+      assert _models.load_last_selection() == repl.model_selection
+    else:
+      assert repl.model_selection == previous
+      assert _models.load_last_selection() == previous
+    if outcome == 'onboarding':
+      assert repl._onboarding_model is not None
+      assert repl._onboarding_model.result().model_id == 'claude-chosen'
+    assert all(action in ('status', 'models') for action, _ in observed)
+  finally:
+    repl._onboarding_model = None
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_catalog_escape_during_fetch_does_not_reopen_or_commit(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+  started, finish = asyncio.Event(), asyncio.Event()
+
+  async def command(
+    action: str, **_: object
+  ) -> claude_auth.Completed | claude_auth.MetadataCompleted:
+    if action == 'status':
+      return claude_auth.Completed(
+        claude_auth.AuthStatus(
+          'usable',
+          identity,
+          None,
+          '2026-10-17T19:00:00Z',
+          'none',
+          None,
+        ),
+        'fixture-v1',
+      )
+    assert action == 'models'
+    started.set()
+    await finish.wait()
+    return claude_auth.MetadataCompleted(
+      claude_metadata.Metadata.parse(
+        'models',
+        {
+          'schema_version': 1,
+          'provider': 'anthropic-oauth',
+          'identity': identity,
+          'state': 'offline',
+          'fetched_at': None,
+          'age_seconds': None,
+          'retry_at': None,
+          'error': None,
+          'source': 'bundled',
+          'models': [
+            {
+              'id': 'claude-candidate',
+              'display_name': 'Candidate',
+              'context_window': 200000,
+            }
+          ],
+        },
+      ),
+      'fixture-v1',
+    )
+
+  repl = _repl(model='previous-model')
+  previous = repl.model_selection
+  repl._input.text = 'unfinished draft'
+  monkeypatch.setattr(repl, '_claude_command', command)
+  pending = asyncio.create_task(
+    _dispatch_and_wait(repl, _actions.ClaudeCommand('models'))
+  )
+  try:
+    await asyncio.wait_for(started.wait(), 3)
+    for action in repl._selector_cancel():
+      await _dispatch_and_wait(repl, action)
+    finish.set()
+    await asyncio.wait_for(pending, 3)
+    assert not repl._state.selector.active
+    assert repl.model_selection == previous
+    assert repl._input.text == 'unfinished draft'
+  finally:
+    finish.set()
+    await pending
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_cancelled_login_ends_onboarding_choice(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  repl = _repl(model='previous-model')
+  repl._onboarding_model = asyncio.get_running_loop().create_future()
+  monkeypatch.setattr(
+    repl, '_authenticate_model', mock.AsyncMock(return_value=None)
+  )
+  try:
+    await _dispatch_and_wait(repl, _actions.ClaudeCommand('models'))
+    assert repl._onboarding_model.done()
+    assert repl._onboarding_model.result() is None
+  finally:
+    repl._onboarding_model = None
+    await repl.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fullscreen', [False, True])
+async def test_claude_catalog_candidates_visible_in_both_layouts(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  fullscreen: bool,
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+
+  async def command(
+    action: str, **_: object
+  ) -> claude_auth.Completed | claude_auth.MetadataCompleted:
+    if action == 'status':
+      return claude_auth.Completed(
+        claude_auth.AuthStatus(
+          'usable', identity, None, '2026-10-17T19:00:00Z', 'none', None
+        ),
+        'fixture-v1',
+      )
+    return claude_auth.MetadataCompleted(
+      claude_metadata.Metadata.parse(
+        'models',
+        {
+          'schema_version': 1,
+          'provider': 'anthropic-oauth',
+          'identity': identity,
+          'state': 'offline',
+          'fetched_at': None,
+          'age_seconds': None,
+          'retry_at': None,
+          'error': None,
+          'source': 'bundled',
+          'models': [
+            {
+              'id': 'claude-candidate',
+              'display_name': 'Candidate',
+              'context_window': 200000,
+            }
+          ],
+        },
+      ),
+      'fixture-v1',
+    )
+
+  async with _visual_repl(fullscreen=fullscreen, rows=24) as (repl, terminal):
+    monkeypatch.setattr(repl, '_claude_command', command)
+    repl._input.text = 'unfinished draft'
+    previous = repl.model_selection
+    await _dispatch_and_wait(repl, _actions.ClaudeCommand('models'))
+    frame = _frame_text(repl, terminal)
+    assert 'Claude subscription model' in frame
+    assert 'Candidate' in frame
+    assert 'offline' in frame
+    assert 'bundled' in frame
+    assert repl.model_selection == previous
+    for action in repl._selector_cancel():
+      await _dispatch_and_wait(repl, action)
+    assert repl._input.text == 'unfinished draft'
+
+
+@pytest.mark.asyncio
+async def test_claude_usage_unavailable_preserves_inference_and_draft(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  capfd: pytest.CaptureFixture[str],
+) -> None:
+  from mirror.cli import claude_auth, claude_metadata
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+  result = claude_auth.MetadataCompleted(
+    claude_metadata.Metadata.parse(
+      'usage',
+      {
+        'schema_version': 1,
+        'provider': 'anthropic-oauth',
+        'identity': identity,
+        'state': 'unavailable',
+        'fetched_at': None,
+        'age_seconds': None,
+        'retry_at': None,
+        'error': {
+          'schema_version': 1,
+          'kind': 'auth_temporarily_unavailable',
+          'retry': 'terminal',
+          'recovery': 'retry_later',
+          'details': {},
+        },
+        'windows': [],
+        'extra_usage': {
+          'state': 'unknown',
+          'source': 'unreported',
+          'used': None,
+          'limit': None,
+        },
+      },
+    ),
+    'fixture-v1',
+  )
+  native = mock.MagicMock()
+  native.__aenter__.return_value = native
+  native.read_event = mock.AsyncMock(return_value=result)
+  factory = mock.Mock(return_value=native)
+  monkeypatch.setattr(claude_auth, 'NativeCommand', factory)
+  repl = _repl(model='chosen-model')
+  repl._worker_configuration = repl._worker_configuration.updated({
+    'api': 'anthropic-oauth'
+  })
+  repl._input.text = 'unfinished draft'
+  previous = repl._worker_configuration
+  try:
+    await _dispatch_and_wait(repl, _actions.ClaudeCommand('usage'))
+    public = capfd.readouterr().out + _render_welcome_notices(repl)
+    assert 'usage: unavailable' in public
+    assert 'current Mirror login' in public
+    assert 'extra usage: unknown' in public
+    assert '0%' not in public
+    assert repl._worker_configuration == previous
+    assert repl._input.text == 'unfinished draft'
+    assert not repl._claude_operation
+    factory.assert_called_once_with(
+      repl._worker_command, 'usage', params={'expected_identity': None}
+    )
+  finally:
+    await repl.close()
+
+
+@pytest.mark.asyncio
+async def test_claude_escape_during_final_account_check_preserves_selection(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  started, finish = asyncio.Event(), asyncio.Event()
+
+  async def authenticate(
+    option: _models.ModelOption, **_: object
+  ) -> _models.ModelOption:
+    started.set()
+    await finish.wait()
+    return option
+
+  repl = _repl(model='previous-model')
+  previous = repl.model_selection
+  repl._input.text = 'unfinished draft'
+  monkeypatch.setattr(repl, '_authenticate_model', authenticate)
+  operation = asyncio.create_task(
+    _dispatch_and_wait(
+      repl,
+      _actions.ClaudeModelSelected(
+        'claude-selected',
+        '11111111-1111-4111-8111-111111111111',
+        '22222222-2222-4222-8222-222222222222',
+      ),
+    )
+  )
+  try:
+    await asyncio.wait_for(started.wait(), 3)
+    for action in repl._selector_cancel():
+      await _dispatch_and_wait(repl, action)
+    finish.set()
+    await asyncio.wait_for(operation, 3)
+    assert repl.model_selection == previous
+    assert repl._input.text == 'unfinished draft'
+    assert not repl._state.selector.active
+  finally:
+    finish.set()
+    await operation
+    await repl.close()

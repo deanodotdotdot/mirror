@@ -7,6 +7,7 @@ import dataclasses
 import datetime
 import json
 import os
+import re
 import select
 import sys
 import termios
@@ -14,7 +15,10 @@ import time
 import urllib.parse
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+  from mirror.cli.claude_metadata import Metadata
 
 PROVIDER = 'anthropic-oauth'
 SCHEMA_VERSION = 1
@@ -121,7 +125,7 @@ class CommandCancelled(RuntimeError):
     )
 
 
-def _object(value: object, keys: set[str]) -> dict[str, object]:
+def parse_object(value: object, keys: set[str]) -> dict[str, object]:
   if not isinstance(value, dict):
     raise ProtocolError()
   result = cast(dict[str, object], value)
@@ -130,7 +134,7 @@ def _object(value: object, keys: set[str]) -> dict[str, object]:
   return result
 
 
-def _enum(value: object, values: frozenset[str]) -> str:
+def parse_enum(value: object, values: frozenset[str]) -> str:
   if not isinstance(value, str) or value not in values:
     raise ProtocolError()
   return value
@@ -143,16 +147,27 @@ def _safe_enum(value: object, values: frozenset[str], fallback: str) -> str:
   return value if value in values else fallback
 
 
-def _timestamp(value: object) -> str | None:
+def parse_timestamp(value: object) -> str | None:
   if value is None:
     return None
-  if not isinstance(value, str) or len(value) > 40:
+  if (
+    not isinstance(value, str)
+    or re.fullmatch(
+      r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|\+00:00)',
+      value,
+    )
+    is None
+  ):
     raise ProtocolError()
   try:
     parsed = datetime.datetime.fromisoformat(value)
     if parsed.utcoffset() != datetime.timedelta(0):
       raise ValueError
-    return parsed.isoformat().replace('+00:00', 'Z')
+    # Keep native nanoseconds intact for machine output; datetime validates
+    # the calendar but only retains microseconds.
+    return (
+      value.removesuffix('+00:00') + 'Z' if value.endswith('+00:00') else value
+    )
   except ValueError:
     raise ProtocolError() from None
 
@@ -170,10 +185,10 @@ def compatibility_profile(value: object) -> str:
   return value
 
 
-def _identity(value: object) -> dict[str, str] | None:
+def parse_identity(value: object) -> dict[str, str] | None:
   if value is None:
     return None
-  record = _object(value, {'account_id', 'organization_id'})
+  record = parse_object(value, {'account_id', 'organization_id'})
   result: dict[str, str] = {}
   for key in ('account_id', 'organization_id'):
     item = record.get(key)
@@ -187,7 +202,7 @@ def _identity(value: object) -> dict[str, str] | None:
   return result
 
 
-def _label(value: object) -> str | None:
+def safe_label(value: object) -> str | None:
   if value is None:
     return None
   if not isinstance(value, str) or len(value) > 512:
@@ -204,7 +219,7 @@ class ClaudeError:
 
   @classmethod
   def parse(cls, value: object) -> ClaudeError:
-    record = _object(
+    record = parse_object(
       value, {'schema_version', 'kind', 'retry', 'recovery', 'details'}
     )
     if (
@@ -214,7 +229,7 @@ class ClaudeError:
       raise ProtocolError()
     if record.get('retry') != 'terminal':
       raise ProtocolError()
-    raw = _object(
+    raw = parse_object(
       record.get('details'),
       {
         'http_status',
@@ -247,9 +262,9 @@ class ClaudeError:
         else _safe_enum(raw[key], choices, 'unknown')
       )
     for key in ('retry_at', 'resets_at'):
-      details[key] = _timestamp(raw.get(key))
+      details[key] = parse_timestamp(raw.get(key))
     for key in ('expected_identity', 'current_identity'):
-      details[key] = _identity(raw.get(key))
+      details[key] = parse_identity(raw.get(key))
     return cls(
       _safe_enum(record.get('kind'), _KINDS, 'unknown'),
       _safe_enum(record.get('recovery'), _RECOVERIES, 'none'),
@@ -277,7 +292,7 @@ class AuthStatus:
 
   @classmethod
   def parse(cls, value: object) -> AuthStatus:
-    record = _object(
+    record = parse_object(
       value,
       {
         'schema_version',
@@ -300,16 +315,16 @@ class AuthStatus:
       raise ProtocolError()
     display = None
     if record.get('display') is not None:
-      raw = _object(record['display'], {'email', 'organization_name'})
+      raw = parse_object(record['display'], {'email', 'organization_name'})
       display = {
-        key: _label(raw.get(key)) for key in ('email', 'organization_name')
+        key: safe_label(raw.get(key)) for key in ('email', 'organization_name')
       }
-    state = _enum(
+    state = parse_enum(
       record.get('state'),
       frozenset(('logged_out', 'usable', 'refreshable', 'login_required')),
     )
-    identity = _identity(record.get('identity'))
-    expires_at = _timestamp(record.get('expires_at'))
+    identity = parse_identity(record.get('identity'))
+    expires_at = parse_timestamp(record.get('expires_at'))
     if state in ('usable', 'refreshable') and (
       identity is None or expires_at is None
     ):
@@ -319,7 +334,7 @@ class AuthStatus:
       identity,
       display,
       expires_at,
-      _enum(record.get('recovery'), _RECOVERIES),
+      parse_enum(record.get('recovery'), _RECOVERIES),
       ClaudeError.parse(record['error'])
       if record.get('error') is not None
       else None,
@@ -358,6 +373,12 @@ class Completed:
 
 
 @dataclasses.dataclass(frozen=True)
+class MetadataCompleted:
+  metadata: Metadata
+  compatibility_profile: str
+
+
+@dataclasses.dataclass(frozen=True)
 class Failed:
   error: ClaudeError
   phase: str
@@ -365,7 +386,8 @@ class Failed:
   compatibility_profile: str
 
 
-type Event = Progress | AuthorizationUrl | Completed | Failed
+type TerminalResult = Completed | MetadataCompleted | Failed
+type Event = Progress | AuthorizationUrl | TerminalResult
 
 
 class LoginTerminal(Protocol):
@@ -379,13 +401,20 @@ class LoginTerminal(Protocol):
 class NativeCommand:
   """One operation over dedicated pipes; EOF cancels native pending work."""
 
-  def __init__(self, worker_command: Sequence[str], action: str) -> None:
+  def __init__(
+    self,
+    worker_command: Sequence[str],
+    action: str,
+    *,
+    params: Mapping[str, object] | None = None,
+  ) -> None:
     self._argv = [*worker_command, 'auth', '--stdio']
     self.action = action
+    self._params = dict(params or {})
     self.request_id = str(uuid.uuid4())
     self._process: asyncio.subprocess.Process | None = None
     self._terminal = False
-    self._result: Completed | Failed | None = None
+    self._result: TerminalResult | None = None
     self._cleanup_deadline: float | None = None
     self._cancel_requested = False
     self._deadline = 0.0
@@ -405,7 +434,7 @@ class NativeCommand:
       self._deadline = time.monotonic() + (
         330 if self.action == 'login' else 45
       )
-      await self._send('request', {'params': {}})
+      await self._send('request', {'params': self._params})
     except BaseException:
       await self._close()
       raise
@@ -473,8 +502,8 @@ class NativeCommand:
     except (ValueError, UnicodeError):
       raise ProtocolError() from None
     event = self._parse_event(value)
-    self._terminal = isinstance(event, (Completed, Failed))
-    if isinstance(event, (Completed, Failed)):
+    self._terminal = isinstance(event, (Completed, MetadataCompleted, Failed))
+    if isinstance(event, (Completed, MetadataCompleted, Failed)):
       self._result = event
     return event
 
@@ -487,7 +516,7 @@ class NativeCommand:
       'type',
       'compatibility_profile',
     }
-    record = _object(
+    record = parse_object(
       value,
       common
       | {
@@ -523,7 +552,7 @@ class NativeCommand:
       if notice is not None and notice != 'callback_rejected':
         raise ProtocolError()
       return Progress(
-        _enum(record.get('phase'), _PHASES), cast(str | None, notice)
+        parse_enum(record.get('phase'), _PHASES), cast(str | None, notice)
       )
     if kind == 'authorization_url' and self.action == 'login':
       if not record.keys() <= common | {'authorization_url', 'expires_at'}:
@@ -542,14 +571,29 @@ class NativeCommand:
         )
       except ValueError:
         valid = False
-      expires = _timestamp(record.get('expires_at'))
+      expires = parse_timestamp(record.get('expires_at'))
       if not valid or expires is None:
         raise ProtocolError()
       return AuthorizationUrl(url, expires)
     if kind == 'completed':
       if not record.keys() <= common | {'result'}:
         raise ProtocolError()
-      result = _object(record.get('result'), {'status'})
+      if self.action in ('models', 'model_context', 'usage'):
+        from mirror.cli.claude_metadata import Metadata
+
+        result = parse_object(record.get('result'), {self.action})
+        metadata = Metadata.parse(self.action, result.get(self.action))
+        expected = self._params.get('expected_identity')
+        if expected is not None and metadata.identity != expected:
+          raise ProtocolError()
+        if self.action == 'model_context' and metadata.payload[
+          'model'
+        ] != self._params.get('model'):
+          raise ProtocolError()
+        return MetadataCompleted(metadata, profile)
+      if self.action not in ('login', 'status', 'logout'):
+        raise ProtocolError()
+      result = parse_object(record.get('result'), {'status'})
       status = AuthStatus.parse(result.get('status'))
       if self.action == 'login' and status.state not in (
         'usable',
@@ -563,17 +607,22 @@ class NativeCommand:
       if not record.keys() <= common | {'phase', 'error', 'commit_outcome'}:
         raise ProtocolError()
       outcome = record.get('commit_outcome')
+      if self.action in ('models', 'model_context', 'usage') and (
+        outcome is not None
+        or record.get('phase') not in ('protocol', 'preparing')
+      ):
+        raise ProtocolError()
       if outcome is not None and outcome not in ('not_committed', 'unknown'):
         raise ProtocolError()
       return Failed(
         ClaudeError.parse(record.get('error')),
-        _enum(record.get('phase'), _PHASES),
+        parse_enum(record.get('phase'), _PHASES),
         cast(str | None, outcome),
         profile,
       )
     raise ProtocolError()
 
-  async def cancel_result(self) -> Completed | Failed:
+  async def cancel_result(self) -> TerminalResult:
     """Ask native to stop, retaining any already committed terminal result."""
     if self._result is not None:
       return self._result
@@ -590,8 +639,14 @@ class NativeCommand:
       pass
     while True:
       event = await self.read_event()
-      if isinstance(event, (Completed, Failed)):
+      if isinstance(event, (Completed, MetadataCompleted, Failed)):
         return event
+
+  async def cancel_auth_result(self) -> Completed | Failed:
+    result = await self.cancel_result()
+    if not isinstance(result, (Completed, Failed)):
+      raise ProtocolError()
+    return result
 
   async def _close(self) -> None:
     process = self._process

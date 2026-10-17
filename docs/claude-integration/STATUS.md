@@ -273,8 +273,8 @@ isolated hidden buffer and transient display, clears both on Escape/completion,
 and restores the prior draft. Explicit login changes the grant only; selecting
 the subscription commits a model only after local configuration validation and
 usable/refreshable native auth status or successful login. Reflection's bare
-login/logout behavior remains separate. Metadata catalog/usage and authoritative
-conversation binding/reconnect still await the merged Task 5/6 interfaces.
+login/logout behavior remains separate. At that checkpoint, metadata catalog/usage and authoritative
+conversation binding/reconnect still awaited the merged Task 5/6 interfaces.
 
 Task 7 checkpoint validation: the merged Task 1–4 native binary builds in its
 own target directory. Final installed-package checks passed 90 focused
@@ -291,3 +291,40 @@ live provider calls or real credential reads. This is an implementation
 checkpoint, not independent review or production acceptance. Full packaged CI
 and final native metadata/execution interoperability remain for the integrated
 Task 5/6 source before Task 7's single PR is opened.
+
+
+Task 7's second Astra implementation checkpoint integrates the reviewed and
+merged Task 5 metadata protocol. Its dedicated private client validates the
+models/model_context/usage result wrapper, schema/provider/action/request ID,
+identity, nullable fields and numeric bounds. UTC JSON retains native timestamp
+precision; human timestamps use the local timezone. Usage preserves all windows,
+inactive rows, percentages above 100, reported extra-usage state and raw amount
+units, currencies and scales. Malformed or unknown amount units are unavailable;
+there is no guessed currency, conversion, zero balance or unlimited allowance.
+The Python usage command renders native degraded states/errors and returns 1
+for `unavailable` reports, while retaining the report in `--json` output. Stale
+reports remain explicitly labeled with their original fetch time and age.
+
+`/model anthropic-oauth` now obtains the native catalog after local auth checks
+and offers labeled candidates without a completion probe or model substitution.
+Missing login resumes that requested picker after the private login flow; login
+alone does not commit a model. A candidate's observed native identity is checked
+again before selection. Escape during discovery or that final local check keeps
+the prior provider/model and draft. A cancelled login also resolves a pending
+onboarding choice. Both layouts show the offline/bundled candidate labels.
+`/usage claude` is on demand and currently labels the current Mirror login;
+the adapter accepts explicit expected identity for the authoritative Task 6
+conversation snapshot to supply after integration. No binding is inferred here.
+
+This checkpoint's installed-package focused run passed 191 tests, including all
+prior private-pipe/controlling-PTY/late-commit cases, login-to-catalog continuation,
+Escape after a committed grant, catalog identity changes, provider persistence,
+strict metadata parser edge cases, units/nulls/timezones, and usage failure
+preserving inference configuration. The rebuilt Task 5 native command passed
+real temporary-HOME status/logout and missing-login models/model_context/usage
+interoperability, including pre-chat JSON output. Pyright reports zero errors or
+warnings; formatting and diff checks pass. No real credentials or live provider
+calls were used. Task 6 reconnect/session-state/typed-Nack/runtime wiring and
+startup enablement remain gated on its reviewed merge. Full packaged Python CI,
+independent review, and the single final Task 7 PR remain outstanding. This is
+an implementation checkpoint, not production acceptance.

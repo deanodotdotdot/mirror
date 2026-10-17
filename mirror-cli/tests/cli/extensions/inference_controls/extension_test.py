@@ -492,3 +492,25 @@ def test_claude_auth_commands_are_explicit_and_reject_extra_arguments(
     assert result == actions.ShowText(
       f'Usage: /{action} [claude]', style='ui.warning'
     )
+
+
+def test_claude_catalog_and_usage_are_explicit_native_commands() -> None:
+  available = _commands(_state())
+  assert commands.dispatch(
+    '/model anthropic-oauth', _command_context(), available
+  ) == actions.ClaudeCommand('models')
+  assert inference_controls.model_selector('current').on_select(
+    'anthropic-oauth'
+  ) == actions.ClaudeCommand('models')
+  assert commands.dispatch(
+    '/usage claude', _command_context(), available
+  ) == actions.ClaudeCommand('usage')
+  for text in (
+    '/usage',
+    '/usage other',
+    '/usage claude extra',
+    '/usage SYNTHETIC_PRIVATE_CANARY',
+  ):
+    assert commands.dispatch(
+      text, _command_context(), available
+    ) == actions.ShowText('Usage: /usage claude', style='ui.warning')
