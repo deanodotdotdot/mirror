@@ -1,10 +1,13 @@
 # Phase 0 evidence
 
-**Gate: PENDING LIVE PROOF.** No diagnostic login, token exchange/refresh, model
-lookup, inference, or complete Claude Code coexistence sequence has been performed.
+**Gate: PENDING LIVE PROOF.** The first user-coordinated browser login attempt
+failed locally before token exchange; no successful diagnostic login, real token
+exchange/refresh, model lookup, inference, or complete Claude Code coexistence
+sequence has been established.
 No Claude Code/OMP credentials have been read, copied, refreshed, or overwritten.
-The diagnostic has completed Astra review/fixes and is ready for the manager
-to coordinate private browser sign-in. Review does not pass the live gate.
+The original Astra review/fixes are complete. The terminal correction below
+requires another Astra review before the manager coordinates a fresh login.
+Review does not pass the live gate.
 
 Source baseline: `f9380337783b43804c25e5ffff60f389d311f018`.
 Specification baseline: root `SPEC.md`, 2026-10-17, unchanged by this task.
@@ -15,8 +18,8 @@ Compatibility: `mirror-phase0-omp-df4f996-v1`, based on OMP
 
 | Check | Outcome and boundary |
 | --- | --- |
-| macOS arm64, Python 3.14.7 | 36 unittest cases pass after Astra review. Local callback tests exercise IPv4 and IPv6 when available. |
-| Linux arm64, Python 3.12.15 | The same 36 cases pass as nonroot `mirror-test` with source mounted read-only. Unmocked HTTP/browser launches are blocked by the tests. This is not an SSH/browser login observation. The original 26-case suite also passed with Docker networking disabled. |
+| macOS arm64, Python 3.14.7 | 42 unittest cases pass after the terminal correction. Local callback tests exercise IPv4 and IPv6 when available; four new tests run the complete login path with an actual controlling `/dev/tty`. |
+| Linux arm64, Python 3.12.15 | The same 42 cases pass as nonroot UID 65534 with networking disabled and source mounted read-only. Unmocked HTTP/browser launches are also blocked by the tests. This is not an SSH/browser login observation. |
 | Independent wire oracle | Frozen synthetic request's UTF-16 billing seed and final-body CCH match Bun 1.4.3; five XXH64 vectors cover empty, small, 256-byte and complete request inputs. |
 | Login/callback fixtures | PKCE, exact redirect, URL and code-plus-state validation, wrong/duplicate state/code, bare code bound to pending state, replay, five-minute timeout, occupied port fallback, hidden manual pipe path, cancellation, browser-launch failure, restored terminal echo. |
 | Grant fixtures | Bearer/inference scope validation, rejection of API keys and malformed grants, authenticated bootstrap identity, no incomplete commit, newer logout wins over older login, actual-expiry calculation, refresh rotation/preservation, failed-refresh retention, generation tombstone. |
@@ -56,6 +59,37 @@ notice, endpoint/header profiles, PKCE, tool mapping, cache placement and exact
 serialized-byte fingerprint were compared directly; no newer client version
 was adopted. No production code or accepted specification decision changed.
 
+## First live attempt and terminal correction, 2026-10-17
+
+At reviewed revision `d261caa97e571001fd419db8c55a5fea107fac05`, the user opened
+the login browser flow in a private macOS terminal. The browser redirected to the
+preferred localhost callback, but the helper exited with only `diagnostic_failed`.
+No grant was saved and no process/listener remained. This is a failed attempt,
+not proof of token exchange or callback completion; no callback payload is
+retained or repeated in this document.
+
+A fully synthetic reproduction identified the local defect: Darwin's
+`KqueueSelector` rejects registration of an actual controlling `/dev/tty` with
+`EINVAL` (errno 22), while accepting a slave PTY and pipes. Earlier tests mocked
+the terminal's wait function or used pipes, and therefore missed that distinction.
+`SelectSelector` accepts the same controlling terminal. The manager independently
+confirmed this without invoking a live login.
+
+Callback waiting now uses `SelectSelector` for its small fixed descriptor set.
+Four subprocess tests create a real controlling terminal with `pty.fork()` and
+exercise loopback login, hidden manual completion after browser-launch failure,
+Ctrl-C cancellation, and a synthetic token-exchange exception. They use synthetic
+browser callbacks and token responses only, verify terminal echo restoration and
+listener cleanup, and prevent token/code/identity leakage to public output. The
+real transport's JSON reader is exercised against a mocked opener; no provider
+request or existing grant is accessed.
+
+Failures now add allowlisted `stage` and `error_class` labels. Unexpected errors
+retain only a fixed class category, with no exception name, message, values,
+cause, traceback, URLs, tokens, callback codes, or identities. Stage-label tests
+also reject arbitrary labels and preserve the innermost failure stage. This
+correction changes no endpoint, scope, OAuth exchange, or compatibility profile.
+
 Reproduce with `python3 -m unittest discover -s diagnostics/claude_oauth/tests -v`.
 These are synthetic tests, including tests whose mocked successful refresh result
 says `real_token_endpoint_refresh`: no mocked result is live evidence. Normal
@@ -70,8 +104,8 @@ never tokens, token hashes, codes, callback URLs, authorization URLs or bodies.
 
 | Required observation | Status | Revision / platform / model / time / outcome |
 | --- | --- | --- |
-| Fresh separate Mirror-owned subscription grant, identity and restart | Pending | — |
-| Preferred `localhost:54545` browser callback | Pending | — |
+| Fresh separate Mirror-owned subscription grant, identity and restart | Pending after failed attempt | d261caa, macOS; local terminal registration failure before exchange; fresh reviewed retry required. |
+| Preferred `localhost:54545` browser callback | Pending completion | d261caa, macOS; browser redirect observed, helper failed before processing callback. |
 | Actual random-port redirect accepted upstream | Pending | — |
 | Hidden manual callback on a local terminal | Pending | — |
 | Linux/SSH login with browser on another machine | Pending | — |

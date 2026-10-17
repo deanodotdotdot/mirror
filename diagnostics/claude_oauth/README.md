@@ -25,6 +25,11 @@ or read any existing login; unmocked HTTP and browser launches are blocked by
 the test harness. The wire fixture covers Unicode, signed/redacted
 reasoning, tool IDs and names, a preexisting tool prefix, forced tool selection,
 cache boundaries, and a literal `cch=00000` in user text that must remain intact.
+The login regression tests create an actual controlling `/dev/tty` with
+`pty.fork()`, use synthetic browser/HTTP responses, and verify hidden manual
+input, loopback completion, cancellation and terminal restoration. Callback
+waiting uses `SelectSelector`: Darwin's default `KqueueSelector` rejects that
+actual terminal even though slave PTYs and pipes work.
 Forced tool selection follows OMP's omission of explicit thinking/context
 management while retaining low effort. Normal probes let the model select the
 tool and retain the adaptive thinking/replay profile.
@@ -47,6 +52,10 @@ Do not run it inside an agent tool, screen recording, shell `set -x`, or a
 terminal recorder: the authorization URL is intentionally shown on `/dev/tty`.
 Only the eventual sanitized JSON result goes to stdout. Callback input is hidden
 on that terminal, and is never accepted through argv, environment, or chat.
+Failures include fixed `stage` and `error_class` labels alongside the safe error
+kind and recovery instruction. Give only this sanitized JSON to the manager;
+never copy a traceback, provider payload, or browser callback. The labels contain
+no exception messages, custom exception names, URLs, codes, tokens or identities.
 
 The default diagnostic directory is
 `~/.mirror/diagnostics/claude-oauth-phase0/`. Every new directory is created with

@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -266,6 +267,165 @@ class CallbackTests(unittest.TestCase):
             callbacks.close()
             os.close(master)
             os.close(slave)
+
+    def private_tty_login(self, mode):
+        """Use a new controlling terminal, not a mocked /dev/tty or slave FD.
+
+        All browser/HTTPS work is replaced in the child. The parent drains and
+        discards private terminal output; only fixed checks/error labels return.
+        """
+        private_code = b"SYNTHETIC_PRIVATE_TTY_CODE"
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp).resolve()
+            read_fd, write_fd = os.pipe()
+            pid, master = pty.fork()
+            if pid == 0:
+                os.close(read_fd)
+                summary = {}
+                try:
+                    tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+                    before = proof.termios.tcgetattr(tty)
+                    os.close(tty)
+                    workers, browser_checks, listeners, requests = [], [], [], []
+                    original_callbacks = proof.Callbacks
+
+                    def callbacks(random_port):
+                        instance = original_callbacks(random_port)
+                        listeners.append(instance)
+                        return instance
+
+                    def browser(url, new):
+                        if mode in ("manual", "cancel"):
+                            return False
+                        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+                        redirect = urllib.parse.urlsplit(query["redirect_uri"][0])
+                        self.assertEqual(redirect.hostname, "localhost")
+                        target = "/callback?" + urllib.parse.urlencode({"code": private_code.decode(), "state": query["state"][0]})
+
+                        def deliver():
+                            try:
+                                with socket.create_connection(("127.0.0.1", redirect.port), timeout=2) as client:
+                                    client.sendall(f"GET {target} HTTP/1.1\r\nHost: localhost:{redirect.port}\r\n\r\n".encode())
+                                    browser_checks.append(client.recv(4096).startswith(b"HTTP/1.1 200 OK"))
+                            except Exception:
+                                browser_checks.append(False)
+
+                        worker = threading.Thread(target=deliver, daemon=True)
+                        workers.append(worker)
+                        worker.start()
+                        return True
+
+                    def token_response(request, timeout):
+                        # This is the real Transport/JSON reader with a synthetic
+                        # opener. No HTTP connection or provider login is made.
+                        self.assertEqual(request.full_url, compat.API_ORIGIN + "/v1/oauth/token")
+                        body = json.loads(request.data)
+                        self.assertEqual(body["code"], private_code.decode())
+                        self.assertEqual(body["grant_type"], "authorization_code")
+                        requests.append(True)
+                        if mode == "failure":
+                            raise ValueError(ACCESS + REFRESH + private_code.decode())
+                        return io.BytesIO(compat.json_bytes(TOKEN))
+
+                    argv = [str(Path(proof.__file__)), "--state-dir", str(directory), "login", "--random-port"]
+                    with patch.object(sys, "argv", argv), patch.object(proof, "Callbacks", side_effect=callbacks), patch.object(proof.webbrowser, "open", side_effect=browser), patch.object(urllib.request.OpenerDirector, "open", side_effect=token_response):
+                        with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
+                            returncode = proof.run_cli()
+                    tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+                    restored = proof.termios.tcgetattr(tty) == before
+                    os.close(tty)
+                    for worker in workers:
+                        worker.join(3)
+                    public = stdout.getvalue() + stderr.getvalue()
+                    summary = {
+                        "returncode": returncode, "terminal_restored": restored,
+                        "listeners_closed": all(s.fileno() == -1 for c in listeners for s in c.sockets),
+                        "token_exchanges": len(requests), "grant_saved": (directory / "grant.json").exists(),
+                        "public_redacted": all(v not in public for v in (ACCESS, REFRESH, private_code.decode(), ACCOUNT, ORGANIZATION, "https://", "http://", "Traceback")),
+                        "callback_completed": browser_checks == [True],
+                    }
+                    if stderr.getvalue():
+                        summary["error"] = json.loads(stderr.getvalue())["error"]
+                    else:
+                        summary["callback_mode"] = json.loads(stdout.getvalue())["result"]["callback_mode"]
+                except Exception as error:
+                    summary = {"harness_failure": proof.error_class(error)}
+                os.write(write_fd, json.dumps(summary).encode())
+                os.close(write_fd)
+                os._exit(0)
+
+            os.close(write_fd)
+            result, private_output = bytearray(), bytearray()
+            sent = False
+            reaped = False
+            try:
+                with proof.selectors.SelectSelector() as selector:
+                    selector.register(master, proof.selectors.EVENT_READ, "terminal")
+                    selector.register(read_fd, proof.selectors.EVENT_READ, "result")
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        for key, _ in selector.select(0.1):
+                            try:
+                                chunk = os.read(key.fd, 8192)
+                            except OSError:
+                                chunk = b""
+                            if not chunk:
+                                selector.unregister(key.fd)
+                                continue
+                            if key.data == "result":
+                                result.extend(chunk)
+                            else:
+                                private_output.extend(chunk)
+                                if mode in ("manual", "cancel") and not sent and b"Waiting up to five minutes" in private_output:
+                                    os.write(master, b"\x03" if mode == "cancel" else private_code + b"\n")
+                                    sent = True
+                        if os.waitpid(pid, os.WNOHANG)[0]:
+                            reaped = True
+                            if not result:
+                                result.extend(os.read(read_fd, 8192))
+                            break
+                self.assertTrue(reaped, "Synthetic private-terminal login did not finish")
+                self.assertTrue(private_code not in private_output, "Hidden manual callback input was echoed")
+                self.assertTrue(ACCESS.encode() not in private_output and REFRESH.encode() not in private_output, "Private-terminal output contained token canaries")
+                return json.loads(result)
+            finally:
+                if not reaped:
+                    os.kill(pid, proof.signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(master)
+                os.close(read_fd)
+
+    def test_controlling_dev_tty_loopback_login(self):
+        result = self.private_tty_login("loopback")
+        self.assertEqual(result.get("returncode"), 0)
+        self.assertEqual(result["callback_mode"], "loopback")
+        self.assertEqual(result["token_exchanges"], 1)
+        self.assertTrue(result["callback_completed"] and result["grant_saved"])
+        self.assertTrue(result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
+
+    def test_controlling_dev_tty_manual_login(self):
+        result = self.private_tty_login("manual")
+        self.assertEqual(result.get("returncode"), 0)
+        self.assertEqual(result["callback_mode"], "manual")
+        self.assertEqual(result["token_exchanges"], 1)
+        self.assertTrue(result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
+
+    def test_controlling_dev_tty_cancellation_restores_terminal(self):
+        result = self.private_tty_login("cancel")
+        self.assertEqual(result.get("returncode"), 130)
+        self.assertEqual(result["error"]["stage"], "callback_wait")
+        self.assertEqual(result["error"]["error_class"], "cancelled")
+        self.assertEqual(result["token_exchanges"], 0)
+        self.assertTrue(not result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
+
+    def test_controlling_dev_tty_exchange_exception_is_payload_free(self):
+        result = self.private_tty_login("failure")
+        self.assertEqual(result.get("returncode"), 1)
+        self.assertEqual(result["error"]["kind"], "diagnostic_failed")
+        self.assertEqual(result["error"]["stage"], "token_exchange")
+        self.assertEqual(result["error"]["error_class"], "value_error")
+        self.assertEqual(result["token_exchanges"], 1)
+        self.assertTrue(not result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
 
 
 class StoreTests(unittest.TestCase):
@@ -612,6 +772,32 @@ class WireTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_diagnostic_stages_and_classes_never_include_exception_payloads(self):
+        custom = type("SYNTHETIC_SECRET_CLASS_NAME", (Exception,), {})
+        for error, classification in ((OSError(22, ACCESS), "os_error"),
+                                      (ValueError(REFRESH), "value_error"),
+                                      (custom(ACCOUNT, ACCESS, REFRESH), "unexpected_error")):
+            with self.assertRaises(compat.ProofError) as caught:
+                with proof.diagnostic_stage("callback_wait"):
+                    raise error
+            output = proof.safe_error(caught.exception)
+            self.assertEqual(output["error"]["stage"], "callback_wait")
+            self.assertEqual(output["error"]["error_class"], classification)
+            encoded = json.dumps(output)
+            self.assertTrue(all(value not in encoded for value in (ACCESS, REFRESH, ACCOUNT, custom.__name__)))
+
+    def test_diagnostic_labels_are_allowlisted_and_inner_stage_wins(self):
+        with self.assertRaises(compat.ProofError) as caught:
+            with proof.diagnostic_stage("command"):
+                with proof.diagnostic_stage("token_validation"):
+                    raise compat.ProofError("invalid_token_response")
+        self.assertEqual(proof.safe_error(caught.exception)["error"]["stage"], "token_validation")
+        for label in (ACCESS, [REFRESH]):
+            output = proof.safe_error(proof.DiagnosticError("diagnostic_failed", stage=label, classification=label))
+            self.assertEqual(output["error"]["stage"], "command")
+            self.assertEqual(output["error"]["error_class"], "unexpected_error")
+            self.assertTrue(ACCESS not in json.dumps(output) and REFRESH not in json.dumps(output))
+
     def test_http_header_deadline_interrupts_and_restores_signal_handler(self):
         transport = proof.Transport()
         previous = proof.signal.getsignal(proof.signal.SIGALRM)

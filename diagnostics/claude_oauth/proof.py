@@ -37,6 +37,48 @@ MAX_BODY = 2 * 1024 * 1024
 MAX_CALLBACK = 8192
 MAX_STORE = 16384
 STORE_SCHEMA = "mirror-claude-phase0-private-v1"
+SAFE_STAGES = frozenset({
+    "command", "credential_load", "callback_listener", "terminal_open",
+    "terminal_setup", "callback_wait", "terminal_cleanup", "token_exchange",
+    "token_validation", "identity_bootstrap", "identity_validation",
+    "credential_commit", "callback_cleanup",
+})
+SAFE_ERROR_CLASSES = frozenset({
+    "controlled_error", "cancelled", "os_error", "value_error", "type_error",
+    "attribute_error", "key_error", "runtime_error", "unexpected_error",
+})
+
+
+def error_class(error):
+    # Classify into fixed public constants. Never expose an exception's name,
+    # message, arguments, attributes, cause, or traceback: any can carry secrets.
+    for cls, label in ((OSError, "os_error"), (ValueError, "value_error"),
+                       (TypeError, "type_error"), (AttributeError, "attribute_error"),
+                       (KeyError, "key_error"), (RuntimeError, "runtime_error")):
+        if isinstance(error, cls):
+            return label
+    return "unexpected_error"
+
+
+class DiagnosticError(ProofError):
+    def __init__(self, kind, *, stage, classification):
+        super().__init__(kind)
+        self.stage = stage
+        self.classification = classification
+
+
+@contextlib.contextmanager
+def diagnostic_stage(stage):
+    try:
+        yield
+    except ProofError as error:
+        if not getattr(error, "stage", None):
+            error.stage = stage
+        raise
+    except KeyboardInterrupt:
+        raise DiagnosticError("login_cancelled", stage=stage, classification="cancelled") from None
+    except Exception as error:
+        raise DiagnosticError("diagnostic_failed", stage=stage, classification=error_class(error)) from None
 
 
 class Secret:
@@ -533,7 +575,10 @@ class Callbacks:
 
 
 def wait_for_callback(callbacks, pending, input_fd, notice, cancelled=lambda: False):
-    with selectors.DefaultSelector() as selector:
+    # Darwin's KqueueSelector rejects an actual /dev/tty (EINVAL), although it
+    # accepts the slave PTYs and pipes that our earlier tests exercised. This is
+    # a fixed, tiny descriptor set; select supports both the terminal and sockets.
+    with diagnostic_stage("callback_wait"), selectors.SelectSelector() as selector:
         for listener in callbacks.sockets:
             selector.register(listener, selectors.EVENT_READ, "callback")
         selector.register(input_fd, selectors.EVENT_READ, "manual")
@@ -560,66 +605,79 @@ def wait_for_callback(callbacks, pending, input_fd, notice, cancelled=lambda: Fa
 def browser_login(callbacks, pending, no_browser):
     # The dedicated terminal is intentionally required: no URLs/codes on JSON
     # stdout, traces, environment, argv, or agent tool transcripts.
+    with diagnostic_stage("terminal_open"):
+        try:
+            fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        except OSError:
+            raise ProofError("interactive_terminal_required") from None
+    old = None
     try:
-        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
-    except OSError:
-        raise ProofError("interactive_terminal_required") from None
-    old = termios.tcgetattr(fd)
-    try:
-        new = termios.tcgetattr(fd)
-        new[3] &= ~termios.ECHO
-        termios.tcflush(fd, termios.TCIFLUSH)
-        termios.tcsetattr(fd, termios.TCSANOW, new)
+        with diagnostic_stage("terminal_setup"):
+            old = termios.tcgetattr(fd)
+            new = termios.tcgetattr(fd)
+            new[3] &= ~termios.ECHO
+            termios.tcflush(fd, termios.TCIFLUSH)
+            termios.tcsetattr(fd, termios.TCSANOW, new)
 
         def notice(message):
             os.write(fd, message.encode())
 
-        url = pending.authorization_url()
-        notice("Mirror Phase 0: sign into your Claude subscription in this browser flow.\n"
-               "Authorization URL (only in this private terminal):\n" + url + "\n"
-               "Waiting up to five minutes. Paste callback/code here if needed; input is hidden. Ctrl-C cancels.\n")
-        if not no_browser:
-            try:
-                opened = webbrowser.open(url, new=2)
-            except Exception:
-                opened = False
-            if not opened:
-                notice("Browser launch failed; open the displayed URL manually.\n")
+        with diagnostic_stage("terminal_setup"):
+            url = pending.authorization_url()
+            notice("Mirror Phase 0: sign into your Claude subscription in this browser flow.\n"
+                   "Authorization URL (only in this private terminal):\n" + url + "\n"
+                   "Waiting up to five minutes. Paste callback/code here if needed; input is hidden. Ctrl-C cancels.\n")
+            if not no_browser:
+                try:
+                    opened = webbrowser.open(url, new=2)
+                except Exception:
+                    opened = False
+                if not opened:
+                    notice("Browser launch failed; open the displayed URL manually.\n")
         return wait_for_callback(callbacks, pending, fd, notice)
     finally:
-        # Do not wait for terminal output to drain during cancellation/cleanup.
-        termios.tcflush(fd, termios.TCIFLUSH)
-        termios.tcsetattr(fd, termios.TCSANOW, old)
-        os.write(fd, b"\n")
-        os.close(fd)
+        with diagnostic_stage("terminal_cleanup"):
+            try:
+                # Never wait for terminal output to drain during cleanup.
+                if old is not None:
+                    termios.tcflush(fd, termios.TCIFLUSH)
+                    termios.tcsetattr(fd, termios.TCSANOW, old)
+                os.write(fd, b"\n")
+            finally:
+                os.close(fd)
 
 
 def login(store, transport, no_browser=False, random_port=False):
-    with store.locked():
+    with diagnostic_stage("credential_load"), store.locked():
         starting = store.load()
-    callbacks = Callbacks(random_port)
+    with diagnostic_stage("callback_listener"):
+        callbacks = Callbacks(random_port)
     try:
         pending = PendingLogin(callbacks.redirect_uri)
         code, mode = browser_login(callbacks, pending, no_browser)
-        data = transport.json("exchange", data=pending.claim(code))
+        with diagnostic_stage("token_exchange"):
+            data = transport.json("exchange", data=pending.claim(code))
         # Validate the credential kind before authorizing any bootstrap call.
-        validation = dict(data)
-        validation["account"] = {"uuid": "00000000-0000-4000-8000-000000000001"}
-        validation["organization"] = {"uuid": "00000000-0000-4000-8000-000000000002"}
-        Grant.from_token(validation)
-        if not isinstance(data.get("account", {}), dict) or not isinstance(data.get("organization", {}), dict):
-            raise ProofError("invalid_identity")
+        with diagnostic_stage("token_validation"):
+            validation = dict(data)
+            validation["account"] = {"uuid": "00000000-0000-4000-8000-000000000001"}
+            validation["organization"] = {"uuid": "00000000-0000-4000-8000-000000000002"}
+            Grant.from_token(validation)
+            if not isinstance(data.get("account", {}), dict) or not isinstance(data.get("organization", {}), dict):
+                raise ProofError("invalid_identity")
         # Empty or partial identity also requires bootstrap; never infer it from
         # another app or commit an incomplete grant.
         if not data.get("account", {}).get("uuid") or not data.get("organization", {}).get("uuid"):
-            bootstrap = transport.json("bootstrap", Secret(data.get("access_token", "")))
-            account = bootstrap.get("oauth_account", {})
-            if not isinstance(account, dict):
-                raise ProofError("invalid_identity")
-            data["account"] = {"uuid": data.get("account", {}).get("uuid") or account.get("account_uuid")}
-            data["organization"] = {"uuid": data.get("organization", {}).get("uuid") or account.get("organization_uuid")}
-        grant = Grant.from_token(data)
-        with store.locked():
+            with diagnostic_stage("identity_bootstrap"):
+                bootstrap = transport.json("bootstrap", Secret(data.get("access_token", "")))
+                account = bootstrap.get("oauth_account", {})
+                if not isinstance(account, dict):
+                    raise ProofError("invalid_identity")
+                data["account"] = {"uuid": data.get("account", {}).get("uuid") or account.get("account_uuid")}
+                data["organization"] = {"uuid": data.get("organization", {}).get("uuid") or account.get("organization_uuid")}
+        with diagnostic_stage("identity_validation"):
+            grant = Grant.from_token(data)
+        with diagnostic_stage("credential_commit"), store.locked():
             current = store.load()
             if current["generation"] != starting["generation"]:
                 raise ProofError("newer_login_or_logout_won")
@@ -628,7 +686,8 @@ def login(store, transport, no_browser=False, random_port=False):
         return {"fresh_mirror_owned_grant": True, "callback_mode": mode,
                 "callback_port": "random" if callbacks.fallback else "preferred", "expires_at": utc(grant.expires_at)}
     finally:
-        callbacks.close()
+        with diagnostic_stage("callback_cleanup"):
+            callbacks.close()
 
 
 def refresh(store, transport):
@@ -907,7 +966,11 @@ def safe_error(error):
         "partial_stream_error": "The response was incomplete or invalid. No automatic replay occurred; ask the manager to review this sanitized failure.",
         "provider_limited": "Stop this run and review the account's reported limit; do not switch accounts, models, or billing modes.",
     }.get(error.kind, "Stop the live run and give the manager this sanitized error and compatibility revision; keep provider payloads and credentials private.")
-    return {"error": {"kind": error.kind, "http_status": error.status, "recovery": recovery},
+    stage = getattr(error, "stage", "command")
+    classification = getattr(error, "classification", "controlled_error")
+    return {"error": {"kind": error.kind, "http_status": error.status, "recovery": recovery,
+                      "stage": stage if isinstance(stage, str) and stage in SAFE_STAGES else "command",
+                      "error_class": classification if isinstance(classification, str) and classification in SAFE_ERROR_CLASSES else "unexpected_error"},
             "compatibility_revision": PROFILE}
 
 
@@ -947,16 +1010,15 @@ def main():
         store.close()
 
 
-if __name__ == "__main__":
+def run_cli():
     try:
-        main()
-    except KeyboardInterrupt:
-        print(json.dumps(safe_error(ProofError("login_cancelled"))), file=sys.stderr)
-        sys.exit(130)
+        with diagnostic_stage("command"):
+            main()
     except ProofError as error:
         print(json.dumps(safe_error(error)), file=sys.stderr)
-        sys.exit(1)
-    except Exception:
-        # Network/parse/storage exceptions must never expose raw credential data.
-        print(json.dumps(safe_error(ProofError("diagnostic_failed"))), file=sys.stderr)
-        sys.exit(1)
+        return 130 if error.kind == "login_cancelled" else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run_cli())
