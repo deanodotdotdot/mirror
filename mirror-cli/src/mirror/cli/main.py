@@ -10,8 +10,8 @@ import sys
 import uuid
 from collections.abc import Mapping, Sequence
 
-from mirror import config as _config
 from mirror import command_line, distribution, worker, workspace
+from mirror import config as _config
 from mirror.cli import (
   cli,
   cli_store,
@@ -175,7 +175,10 @@ def _parse_args() -> argparse.Namespace:
     '--reasoning-effort',
     choices=['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     default=None,
-    help='Reasoning effort for model requests (default: max).',
+    help=(
+      'Reasoning effort for model requests (default: supported Claude '
+      'subscription preset, otherwise max).'
+    ),
   )
   parser.add_argument(
     '--max-iterations',

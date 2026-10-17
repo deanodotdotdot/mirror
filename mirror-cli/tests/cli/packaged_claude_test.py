@@ -2,18 +2,29 @@
 
 build.sh runs these beside the existing OpenAI PTY and bundled-tool checks.
 The Python-only ci.sh wheel has no native worker and must skip this module.
-No login is started and no real credentials or provider endpoints are used.
+Login cancellation uses only a local listener and a rejected synthetic callback;
+no token exchange, real credentials or provider HTTP requests are used.
 """
 
 from __future__ import annotations
 
+import contextlib
+import datetime
 import json
 import os
 import pathlib
+import pty
+import re
+import select
 import shutil
+import signal
+import socket
 import stat
 import subprocess
 import sys
+import termios
+import time
+import urllib.parse
 import uuid
 
 import pytest
@@ -29,6 +40,8 @@ _PROFILE = 'mirror-phase0-omp-df4f996-v1'
 _API_CANARY = 'SYNTHETIC_PACKAGED_CLAUDE_API_CANARY'
 _BEARER_CANARY = 'SYNTHETIC_PACKAGED_CLAUDE_BEARER_CANARY'
 _INPUT_CANARY = 'SYNTHETIC_PACKAGED_PRIVATE_INPUT_CANARY'
+_ACCESS_CANARY = 'sk-ant-oat-SYNTHETIC_PACKAGED_ACCESS_CANARY'
+_REFRESH_CANARY = 'SYNTHETIC_PACKAGED_REFRESH_CANARY'
 
 
 @pytest.fixture(params=['bundled', 'helper path with spaces'])
@@ -75,13 +88,16 @@ def _clean_output(output: str) -> None:
     _API_CANARY,
     _BEARER_CANARY,
     _INPUT_CANARY,
+    _ACCESS_CANARY,
+    _REFRESH_CANARY,
     'access_token',
     'refresh_token',
     'code_verifier',
     'authorization_url',
     'Traceback',
   ):
-    assert forbidden not in output
+    if forbidden in output:
+      pytest.fail('Installed command exposed a private field or canary')
 
 
 def _no_chat_files(env: dict[str, str], *, logged_out: bool = False) -> None:
@@ -236,3 +252,157 @@ def test_installed_native_preserves_omp_notices():
   assert 'Permission is hereby granted, free of charge' in notice
   for name in ('LICENSE', 'RIPGREP-LICENSE-MIT', 'THIRD_PARTY_NOTICES.txt'):
     assert (binary_dir / name).read_text().strip()
+
+
+def test_installed_cli_status_never_copies_seeded_credentials(installed):
+  _, _, env = installed
+  home = pathlib.Path(env['HOME'])
+  directory = home / '.mirror'
+  directory.mkdir(mode=0o700)
+  now = datetime.datetime.now(datetime.UTC)
+  identity = {
+    'account_id': '11111111-1111-4111-8111-111111111111',
+    'organization_id': '22222222-2222-4222-8222-222222222222',
+  }
+  record = {
+    'schema_version': 1,
+    'generation': str(uuid.uuid4()),
+    'revision': 1,
+    'installation_id': str(uuid.uuid4()),
+    'credential': identity
+    | {
+      'access_token': _ACCESS_CANARY,
+      'refresh_token': _REFRESH_CANARY,
+      'authorized_at': (now - datetime.timedelta(hours=1)).isoformat(),
+      'expires_at': (now + datetime.timedelta(hours=1)).isoformat(),
+      'email': None,
+      'organization_name': None,
+      'scopes': ['user:inference'],
+    },
+  }
+  credential = directory / 'claude_oauth.json'
+  credential.write_text(json.dumps(record))
+  credential.chmod(0o600)
+  lock = directory / 'claude_oauth.lock'
+  lock.touch(mode=0o600)
+  before = credential.read_bytes()
+  status = json.loads(
+    _cli(installed, 'auth', 'status', 'claude', '--json').stdout
+  )
+  assert status['state'] == 'usable' and status['identity'] == identity
+  _cli(installed, 'auth', 'status', 'claude')
+  assert credential.read_bytes() == before
+  # Only the deliberately seeded private grant may contain these canaries.
+  assert set(home.rglob('*')) == {directory, credential, lock}
+  for path in home.rglob('*'):
+    if path.is_file() and path != credential:
+      _clean_output(path.read_text())
+  _cli(installed, 'auth', 'logout', 'claude')
+  _no_chat_files(env, logged_out=True)
+
+
+def test_installed_cli_private_callback_cancel_restores_terminal(installed):
+  cli, _, env = installed
+  master, slave = pty.openpty()
+  before = termios.tcgetattr(slave)
+  child = None
+  native_pids: list[int] = []
+  private = bytearray()
+
+  def await_notice(notice: bytes) -> None:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+      if notice in private:
+        return
+      if child is not None and child.poll() is not None:
+        break
+      if select.select([master], [], [], 0.05)[0]:
+        try:
+          private.extend(os.read(master, 65536))
+        except OSError:
+          break
+        if len(private) > 131072:
+          pytest.fail('Private terminal output exceeded the fixture bound')
+    # Never print private output or a generated authorization URL on failure.
+    pytest.fail('Installed login did not reach the expected terminal phase')
+
+  try:
+    child = subprocess.Popen(
+      [
+        sys.executable,
+        '-c',
+        'import os,sys; os.login_tty(0); os.execv(sys.argv[1], sys.argv[1:])',
+        str(cli),
+        'auth',
+        'login',
+        'claude',
+        '--no-browser',
+      ],
+      stdin=slave,
+      stdout=slave,
+      stderr=slave,
+      cwd=env['HOME'],
+      env=env,
+    )
+    await_notice(b'Ctrl-C cancels.')
+    assert not termios.tcgetattr(slave)[3] & termios.ECHO
+    # Inspect only process IDs, never command lines or environment contents.
+    processes = subprocess.run(
+      ['ps', '-axo', 'pid=,ppid='],
+      capture_output=True,
+      text=True,
+      timeout=5,
+      check=True,
+    )
+    native_pids = [
+      int(pid)
+      for line in processes.stdout.splitlines()
+      for pid, parent in [line.split()]
+      if int(parent) == child.pid
+    ]
+    assert len(native_pids) == 1, (
+      'Expected one private native authority process'
+    )
+    match = re.search(rb'https://claude.ai/oauth/authorize\?[^\s]+', private)
+    if match is None:
+      pytest.fail('Installed login did not provide its local callback setup')
+    try:
+      query = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(match[0].decode()).query
+      )
+      redirect = urllib.parse.urlsplit(query['redirect_uri'][0])
+    except (UnicodeError, ValueError, KeyError, IndexError):
+      pytest.fail('Installed login provided an invalid callback setup')
+    if redirect.hostname != 'localhost' or redirect.port is None:
+      pytest.fail('Unexpected callback listener address')
+    port = redirect.port
+    # Wrong state is rejected before exchange; no real code is ever submitted.
+    os.write(master, (_INPUT_CANARY + '#wrong-state\n').encode())
+    await_notice(b'Callback rejected;')
+    if _INPUT_CANARY.encode() in private:
+      pytest.fail('Private callback input was echoed')
+    os.write(master, b'\x03')
+    assert child.wait(timeout=10) == 130
+    assert termios.tcgetattr(slave) == before
+    for pid in native_pids:
+      with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    # The foreground command is reaped; the native listener must also be closed.
+    for family, host in (
+      (socket.AF_INET, '127.0.0.1'),
+      (socket.AF_INET6, '::1'),
+    ):
+      with socket.socket(family, socket.SOCK_STREAM) as connection:
+        connection.settimeout(1)
+        assert connection.connect_ex((host, port)) != 0
+    _no_chat_files(env)
+  finally:
+    if child is not None and child.poll() is None:
+      with contextlib.suppress(ProcessLookupError):
+        os.killpg(child.pid, signal.SIGKILL)
+      child.wait(timeout=5)
+    for pid in native_pids:
+      with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
+    os.close(master)
+    os.close(slave)
