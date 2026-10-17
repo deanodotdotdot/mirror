@@ -66,6 +66,12 @@ resolution. OAuth never enters the API-key credential resolver. Switching
 providers clears provider-specific key/base-URL/auth-path defaults and retains
 the conversation binding.
 
+ACP and remote subscription use remain outside the release scope. Those Python
+launchers share the native worker, so their final launch and model-selection
+guards belong to Task 7, including an explicitly selected OAuth compactor when
+the main provider is an API provider. Native opt-in alone is not evidence that
+every excluded Python entry point has its final guard.
+
 Main requests and retries use the durable identity and current request guard.
 Inherited compaction follows the selected provider; an explicitly selected
 compaction provider records its actual provider/model. Explicit API-key

@@ -16,7 +16,7 @@ checks run locally.
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdbea79e97695a071b5067a5d0cbed088bab after independent Astra review and manager Linux verification; three P2 findings fixed. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
 | 5. Model discovery + usage | 3 | Merged as [PR 5](https://github.com/deanodotdotdot/mirror/pull/5) at d4ceee3 after independent Astra review fixed two P2 findings. Manager verified reviewed head 0df4a2e: 695 Linux tests passed, three intentional ignores, binding and launcher passed; merged tree matches exactly. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
-| 6. Agent execution integration | 3 + 4 + 5 | Astra implementation connects reviewed Tasks 3–5 to native execution, durable binding and explicit idle reconnect. Awaiting a separate new Astra review/fix pass and manager verification. See [execution notes](EXECUTION.md). |
+| 6. Agent execution integration | 3 + 4 + 5 | Separate new Astra review completed across the full Task 6 delta, with no P2-or-higher findings. Native execution, durable binding and explicit idle reconnect await final manager verification/merge. See [execution notes](EXECUTION.md). |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Astra private-command/TUI checkpoint e66866b is tested. Catalog and usage integration can resume after merged Task 5; final reconnect/runtime integration waits for Task 6. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 6–7. Production A1–A11 remain unproven. |
 
@@ -324,3 +324,26 @@ one-/two-attempt counts and persisted trace assertions, and normal HTTP success
 cases pass unchanged. The independent review must assess this broader result
 correction along with subscription behavior. No production credential, live
 provider call or A1–A11 acceptance was used in Task 6.
+
+Task 6 independent Astra review compared the entire submitted `67ef42e` delta
+against Task 5 integration head `d4ceee3`. No P2-or-higher findings were identified;
+no runtime or test changes were needed. The review covered native binding and
+transactional receipts, reconnect races and external future lifetimes, initial
+state and duplicate RPC behavior, guarded metadata/cache reuse, compaction and
+descendant provider inheritance, and incomplete-stream persistence/replay.
+The generic exception-limit result change is intentional: the same failed
+attempts and trace now produce an actual HTTP 502, while ordinary success stays
+204. The review only changes documentation, including clarification that final
+ACP/remote Python guards (also explicit OAuth compaction) belong to Task 7.
+
+Reviewer macOS validation passed the provider group (171 tests), service group
+(98), SQLite store (24), RPC (34), descendants (9), additive protocol (2), all
+32 HTTP cases, eight native private-command tests, three binary tests, nine
+worker-environment tests and three shutdown tests. A separate Claude-focused run
+passed 127 tests. These groups overlap and are not a distinct-test total. Two
+synthetic subprocess helpers were intentionally ignored standalone and exercised
+by parent tests. Diff checks passed. The manager's initial exact-submission
+Linux run passed 725 tests, with three intentional ignores, plus binding and
+launcher checks, including the Unicode-spill and `/dev/full` cases. Final
+reviewed-head verification and merge remain with the manager. No real credential
+reads or live provider calls were used; production A1–A11 remain with Task 8.
