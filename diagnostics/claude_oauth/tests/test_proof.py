@@ -288,6 +288,15 @@ class CallbackTests(unittest.TestCase):
                     os.close(tty)
                     workers, browser_checks, listeners, requests = [], [], [], []
                     original_callbacks = proof.Callbacks
+                    original_flush = proof.termios.tcflush
+                    flush_count = 0
+
+                    def flush(fd, queue):
+                        nonlocal flush_count
+                        flush_count += 1
+                        if mode == "cleanup_failure" and flush_count == 2:
+                            raise OSError(22, ACCESS + REFRESH)
+                        return original_flush(fd, queue)
 
                     def callbacks(random_port):
                         instance = original_callbacks(random_port)
@@ -328,7 +337,7 @@ class CallbackTests(unittest.TestCase):
                         return io.BytesIO(compat.json_bytes(TOKEN))
 
                     argv = [str(Path(proof.__file__)), "--state-dir", str(directory), "login", "--random-port"]
-                    with patch.object(sys, "argv", argv), patch.object(proof, "Callbacks", side_effect=callbacks), patch.object(proof.webbrowser, "open", side_effect=browser), patch.object(urllib.request.OpenerDirector, "open", side_effect=token_response):
+                    with patch.object(sys, "argv", argv), patch.object(proof, "Callbacks", side_effect=callbacks), patch.object(proof.webbrowser, "open", side_effect=browser), patch.object(proof.termios, "tcflush", side_effect=flush), patch.object(urllib.request.OpenerDirector, "open", side_effect=token_response):
                         with contextlib.redirect_stdout(io.StringIO()) as stdout, contextlib.redirect_stderr(io.StringIO()) as stderr:
                             returncode = proof.run_cli()
                     tty = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
@@ -413,7 +422,9 @@ class CallbackTests(unittest.TestCase):
     def test_controlling_dev_tty_cancellation_restores_terminal(self):
         result = self.private_tty_login("cancel")
         self.assertEqual(result.get("returncode"), 130)
-        self.assertEqual(result["error"]["stage"], "callback_wait")
+        # The readiness notice precedes both browser launch and the wait. Ctrl-C
+        # may arrive in either stage; both must restore the actual terminal.
+        self.assertIn(result["error"]["stage"], ("terminal_setup", "callback_wait"))
         self.assertEqual(result["error"]["error_class"], "cancelled")
         self.assertEqual(result["token_exchanges"], 0)
         self.assertTrue(not result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
@@ -425,6 +436,15 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(result["error"]["stage"], "token_exchange")
         self.assertEqual(result["error"]["error_class"], "value_error")
         self.assertEqual(result["token_exchanges"], 1)
+        self.assertTrue(not result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
+
+    def test_controlling_dev_tty_cleanup_flush_failure_still_restores_echo(self):
+        result = self.private_tty_login("cleanup_failure")
+        self.assertEqual(result.get("returncode"), 1)
+        self.assertEqual(result["error"]["stage"], "terminal_cleanup")
+        self.assertEqual(result["error"]["error_class"], "os_error")
+        self.assertIn("stty echo", result["error"]["recovery"])
+        self.assertEqual(result["token_exchanges"], 0)
         self.assertTrue(not result["grant_saved"] and result["terminal_restored"] and result["listeners_closed"] and result["public_redacted"])
 
 

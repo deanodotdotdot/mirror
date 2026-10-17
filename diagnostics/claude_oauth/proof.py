@@ -640,8 +640,12 @@ def browser_login(callbacks, pending, no_browser):
             try:
                 # Never wait for terminal output to drain during cleanup.
                 if old is not None:
-                    termios.tcflush(fd, termios.TCIFLUSH)
-                    termios.tcsetattr(fd, termios.TCSANOW, old)
+                    try:
+                        termios.tcflush(fd, termios.TCIFLUSH)
+                    finally:
+                        # A failed flush must not leave the user's shell with
+                        # echo disabled; restoration is a separate obligation.
+                        termios.tcsetattr(fd, termios.TCSANOW, old)
                 os.write(fd, b"\n")
             finally:
                 os.close(fd)
@@ -968,6 +972,8 @@ def safe_error(error):
     }.get(error.kind, "Stop the live run and give the manager this sanitized error and compatibility revision; keep provider payloads and credentials private.")
     stage = getattr(error, "stage", "command")
     classification = getattr(error, "classification", "controlled_error")
+    if stage == "terminal_cleanup":
+        recovery = "Terminal cleanup failed. If input remains hidden, run stty echo in that private terminal. Give the manager only this sanitized error before starting another login."
     return {"error": {"kind": error.kind, "http_status": error.status, "recovery": recovery,
                       "stage": stage if isinstance(stage, str) and stage in SAFE_STAGES else "command",
                       "error_class": classification if isinstance(classification, str) and classification in SAFE_ERROR_CLASSES else "unexpected_error"},
