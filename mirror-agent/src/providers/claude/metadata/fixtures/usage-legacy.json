@@ -1,0 +1,8 @@
+{
+  "five_hour":{"utilization":27.5,"resets_at":"2026-10-18T01:00:00Z"},
+  "seven_day":{"utilization":null,"resets_at":null},
+  "seven_day_opus":null,
+  "seven_day_sonnet":{"utilization":105,"resets_at":"2026-10-20T09:00:00+02:00"},
+  "extra_usage":{"is_enabled":false,"used_credits":12345,"monthly_limit":null,"currency":"EUR","decimal_places":3},
+  "ignored_secret":"SYNTHETIC_PAYLOAD_CANARY"
+}

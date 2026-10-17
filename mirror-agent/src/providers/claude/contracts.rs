@@ -187,6 +187,23 @@ pub trait ClaudeAuthorization: Send + Sync {
         &'a self,
         cancellation: BoxFuture<'a, ()>,
     ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>>;
+
+    /// Inspect locally with a request guard under the stable credential lock.
+    /// Acquire the lock before awaiting the guard, then synchronously revalidate
+    /// the lock/current record and check cancellation before publishing. Never
+    /// renew or expose tokens. Wrappers must forward this operation explicitly:
+    /// composing an unguarded snapshot with a separate async guard is not atomic.
+    fn local_snapshot_guarded<'a>(
+        &'a self,
+        _request_guard: &'a dyn ModelRequestGuard,
+        _cancellation: BoxFuture<'a, ()>,
+    ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+        Box::pin(async {
+            Err(ClaudeError::configuration(
+                ClaudeConfigurationError::NotImplemented,
+            ))
+        })
+    }
 }
 
 /// Internal cache coordination only; deliberately not serializable or Clone.

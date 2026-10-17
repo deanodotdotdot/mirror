@@ -550,6 +550,151 @@ async fn final_guard_wait_rechecks_a_replaced_stable_lock() {
 }
 
 #[tokio::test]
+async fn guarded_snapshot_checks_guard_after_lock_wait_without_renewal() {
+    struct Guard {
+        revoked: AtomicBool,
+        calls: AtomicUsize,
+    }
+    impl crate::providers::ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if self.revoked.load(Ordering::SeqCst) {
+                    Err(cancelled().into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("auth");
+    let mock = Arc::new(Mock {
+        calls: AtomicUsize::new(0),
+    });
+    let auth = manager(&path, mock.clone());
+    let version = seed(&auth, true).await;
+    let before = std::fs::read(path.join("claude_oauth.json")).unwrap();
+    let guard = Guard {
+        revoked: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+    };
+    let locked = auth.store.lock(false).await.unwrap().unwrap();
+    let operation = auth.local_snapshot_guarded(&guard, Box::pin(std::future::pending()));
+    tokio::pin!(operation);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), &mut operation)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        guard.calls.load(Ordering::SeqCst),
+        0,
+        "guard must follow lock wait"
+    );
+    guard.revoked.store(true, Ordering::SeqCst);
+    drop(locked);
+    assert_eq!(
+        operation.await.unwrap_err().kind,
+        ClaudeErrorKind::RequestCancelled
+    );
+    guard.revoked.store(false, Ordering::SeqCst);
+    let snapshot = auth
+        .local_snapshot_guarded(&guard, Box::pin(std::future::pending()))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.status.state, ClaudeAuthState::Refreshable);
+    assert_eq!(snapshot.version, Some(version));
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        before,
+        std::fs::read(path.join("claude_oauth.json")).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn guarded_snapshot_rechecks_lock_replacement_after_guard_wait() {
+    struct Guard {
+        entered: Notify,
+        resume: Notify,
+    }
+    impl crate::providers::ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async {
+                self.entered.notify_one();
+                self.resume.notified().await;
+                Ok(())
+            })
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("auth");
+    let auth = manager(&path, script(Ok(token())));
+    seed(&auth, false).await;
+    let guard = Guard {
+        entered: Notify::new(),
+        resume: Notify::new(),
+    };
+    let replace_and_logout = async {
+        guard.entered.notified().await;
+        let replacement = path.join("replacement.lock");
+        std::fs::write(&replacement, b"").unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(replacement, path.join("claude_oauth.lock")).unwrap();
+        auth.logout(Box::pin(std::future::pending())).await.unwrap();
+        guard.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(
+        auth.local_snapshot_guarded(&guard, Box::pin(std::future::pending())),
+        replace_and_logout
+    );
+    assert_eq!(
+        result.unwrap_err().kind,
+        ClaudeErrorKind::CredentialStorageError
+    );
+    assert_eq!(
+        auth.local_snapshot(Box::pin(std::future::pending()))
+            .await
+            .unwrap()
+            .status
+            .state,
+        ClaudeAuthState::LoggedOut
+    );
+}
+
+#[tokio::test]
+async fn guarded_snapshot_same_poll_cancellation_prevents_publication() {
+    struct Guard(Notify);
+    impl crate::providers::ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async {
+                self.0.notify_one();
+                Ok(())
+            })
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let mock = Arc::new(Mock {
+        calls: AtomicUsize::new(0),
+    });
+    let auth = manager(&temp.path().join("auth"), mock.clone());
+    let version = seed(&auth, true).await;
+    let guard = Guard(Notify::new());
+    let result = auth
+        .local_snapshot_guarded(&guard, Box::pin(guard.0.notified()))
+        .await;
+    assert_eq!(result.unwrap_err().kind, ClaudeErrorKind::RequestCancelled);
+    assert_eq!(
+        auth.local_snapshot(Box::pin(std::future::pending()))
+            .await
+            .unwrap()
+            .version,
+        Some(version)
+    );
+    assert_eq!(mock.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn permissions_symlinks_hardlinks_unknown_schema_and_marker_validation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().canonicalize().unwrap();

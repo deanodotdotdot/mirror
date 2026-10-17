@@ -15,9 +15,8 @@ Write one initial JSON line and keep stdin open until the terminal event:
 ```
 
 Auth actions are `login`, `status` and `logout`, each with exactly empty params.
-`models`, `model_context` and `usage` are reserved for Task 5's additive typed
-actions/results. They currently fail explicitly as not implemented. Each
-request ID is a nonnil UUID. Fields, provider, schema and action are validated;
+Metadata actions are `models`, `model_context` and `usage`, with the typed params
+and results below. Each request ID is a nonnil UUID. Fields, provider, schema and action are validated;
 unknown fields are rejected. No secrets are permitted in arguments/environment.
 
 During login, submit callback input or cancel on private stdin:
@@ -41,17 +40,20 @@ Every output has `schema_version:1`, the validated `request_id`, fixed
 ```typescript
 { type: "progress", phase: Phase, notice: null | "callback_rejected" }
 { type: "authorization_url", authorization_url: string, expires_at: Rfc3339Utc }
-{ type: "completed", result: { status: ClaudeAuthStatus } }
+{ type: "completed", result: { status: ClaudeAuthStatus } } // login/status/logout
+{ type: "completed", result: { models: ClaudeModelsResult } }
+{ type: "completed", result: { model_context: ClaudeModelContextResult } }
+{ type: "completed", result: { usage: ClaudeUsageResult } }
 { type: "error", error: ClaudeError, phase: Phase | "protocol",
   commit_outcome: null | "not_committed" | "unknown" }
 ```
 
 `Phase` is `preparing`, `awaiting_callback`, `exchanging_code`,
 `resolving_identity` or `committing`. Shared status/error contracts are defined in
-`mirror-agent/src/providers/claude/contracts.rs`. `status` and `logout` emit only
-one terminal completed/error event. Login can also emit progress and its single
+`mirror-agent/src/providers/claude/contracts.rs`. Status, logout and metadata
+emit only one terminal completed/error event. Login can also emit progress and its single
 ephemeral URL. Failure to validate initial input permits null request ID/action;
-unvalidated input is never echoed. Output lines are bounded at 4 MiB for future
+unvalidated input is never echoed. Output lines are bounded at 4 MiB, including
 normalized metadata. Writes have a one-second budget and require no blocking
 stdin/stdout reader threads.
 
@@ -115,3 +117,123 @@ minted within 60 seconds reports temporary auth recovery; a different persisted
 revision is reloaded first. A server rotation followed by timeout/process death
 before commit is ambiguous and may require a new login. There is no force-refresh
 CLI, imported credential source, endpoint override or API-key fallback.
+
+## Metadata actions and normalized results
+
+The action-specific params are strict objects; unknown fields, wrong types,
+credential arguments and endpoint overrides are errors. Identity is always an
+account UUID plus organization UUID:
+
+```typescript
+type Identity = { account_id: Uuid, organization_id: Uuid };
+// models and usage: omitted/null identity resolves the current local login in Rust.
+type ModelsParams = { expected_identity?: Identity | null };
+type UsageParams = { expected_identity?: Identity | null };
+type ModelContextParams = {
+  expected_identity: Identity,
+  model: string,
+  explicit_context_window?: number | null
+};
+```
+
+Model IDs are 1–128 ASCII alphanumeric, hyphen, underscore, dot or colon
+characters. Context values are integers from 1 through 100,000,000. Invalid
+explicit values fail; they do not silently choose a fallback.
+
+Each result contains the following common fields. The common event envelope
+continues to own `compatibility_profile`; Python must copy it when presenting
+public JSON, rather than duplicating the Rust profile constant.
+
+```typescript
+type MetadataInfo = {
+  schema_version: 1,
+  provider: "anthropic-oauth",
+  identity: Identity,
+  state: "fresh" | "cached" | "stale" | "offline" | "unavailable",
+  fetched_at: Rfc3339Utc | null,
+  age_seconds: number | null,
+  retry_at: Rfc3339Utc | null,
+  error: ClaudeError | null
+};
+type ClaudeModelsResult = MetadataInfo & {
+  source: "remote" | "bundled",
+  models: Array<{ id: string, display_name: string | null, context_window: number | null }>
+};
+type ClaudeModelContextResult = MetadataInfo & {
+  model: string,
+  context_window: number,
+  provenance: "explicit" | "model_metadata" | "known_model_fallback" | "conservative_fallback"
+};
+type ReportedAmount = {
+  value: number,
+  unit: "credits" | "currency_minor",
+  currency: string | null,
+  decimal_places: number | null
+};
+type ClaudeUsageResult = MetadataInfo & {
+  windows: Array<{
+    id: string,
+    scope: "shared" | "model" | "unknown",
+    model: string | null,  // reported family label; not necessarily a model ID
+    window_seconds: number | null,
+    used_percent: number | null,
+    resets_at: Rfc3339Utc | null,
+    is_active: boolean | null
+  }>,
+  extra_usage: {
+    state: "enabled" | "disabled" | "unknown",
+    source: "legacy" | "spend" | "unreported",
+    used: ReportedAmount | null,
+    limit: ReportedAmount | null
+  }
+};
+```
+
+A successful remote fetch is `fresh`; reuse within the cache lifetime is
+`cached`. A failed fetch with prior remote data is `stale`, retaining the
+**original** `fetched_at` and increasing age. A bundled catalog or context
+fallback after an outage is `offline`; usage without prior data is `unavailable`.
+Explicit context has `state:"fresh"`, `fetched_at:null` and `age_seconds:null`
+because it is a validated local setting, not a collected provider value.
+A fresh/cached detail response lacking context may use a known/conservative
+fallback, explicitly indicated by `provenance`. Catalogs list candidates,
+including fresh remote catalogs; they do not promise entitlement or capabilities.
+
+Collection failures may be represented in `completed.result.*.error` when the
+result has an explicitly labeled stale/offline/unavailable state. This remains
+one terminal event with native exit 0: collection completed with degraded data.
+Clients must inspect state and error, and must never render unavailable as zero
+usage or a working login. Auth/recovery/storage/configuration/cancellation errors
+instead use the terminal `error` event and nonzero exit. A final 401/403 never
+becomes an offline catalog/context success. Selected-model 404 is
+`model_unavailable`, with no silent model substitution. Endpoint 429 uses the
+safe temporary-error kind plus HTTP 429 and `retry_at`, not inferred exhaustion.
+
+For example, this request uses only local authority inspection and an explicit
+context value; no HTTP or credential renewal is needed:
+
+```json
+{"schema_version":1,"request_id":"11111111-1111-4111-8111-111111111111","type":"request","provider":"anthropic-oauth","action":"model_context","params":{"expected_identity":{"account_id":"22222222-2222-4222-8222-222222222222","organization_id":"33333333-3333-4333-8333-333333333333"},"model":"claude-opus-4-8","explicit_context_window":200000}}
+```
+
+Its completed payload (inside the unchanged common envelope) is:
+
+```json
+{"result":{"model_context":{"schema_version":1,"provider":"anthropic-oauth","identity":{"account_id":"22222222-2222-4222-8222-222222222222","organization_id":"33333333-3333-4333-8333-333333333333"},"state":"fresh","fetched_at":null,"age_seconds":null,"retry_at":null,"error":null,"model":"claude-opus-4-8","context_window":200000,"provenance":"explicit"}}}
+```
+
+A prechat usage request is the same initial envelope with `action:"usage"` and
+`params:{}`. The result may contain a reported disabled extra-usage setting with
+amounts; disabled does not erase those values. Null limits mean unreported,
+never zero or unlimited. Values retain their original reported units and scales:
+legacy credits with missing currency/scale remain credits, not guessed USD
+cents. Human timezone and currency rendering belong to Python.
+
+All metadata calls share an absolute ten-second budget covering authority and
+metadata lock waits, renewal, the one 401 recovery, HTTP and response reads.
+HTTP stops at the shared nine-second mark to leave the last second for safe
+local auth/guard checks and labeled fallback after a network stall. If those
+checks cannot complete, the operation fails closed within the original budget.
+There are no background timers or hidden HTTP retries. Cache reuse also checks
+local auth and the request guard. See the [service module](../../mirror-agent/src/providers/claude/metadata/README.md)
+for cache limits, endpoint/source evidence, usage fixtures and lock ordering.
