@@ -391,6 +391,12 @@ def _reduce(
       return state, (effects.LoadRewindTurns(state.session.conversation_id),)
     case _actions.CancelModelSelection():
       return state, (effects.CancelModelSelection(),)
+    case _actions.ClaudeCommand(operation):
+      return state, (effects.ClaudeCommand(operation),)
+    case _actions.ClaudeModelSelected(model, account_id, organization_id):
+      return state, (
+        effects.ClaudeModelSelected(model, account_id, organization_id),
+      )
     case _actions.ForgetReflectionKey():
       return state, (effects.ForgetReflectionKey(),)
     case _actions.SetModel(model_id):
@@ -781,11 +787,25 @@ def _reduce(
           state.status_bar.reasoning_effort, mode
         ),
       )
-    case _actions.ModelSwitchFinished(model_id):
-      status_bar = dataclasses.replace(state.status_bar, model=model_id)
+    case _actions.ModelSwitchFinished(model_id, confirmed, reasoning_effort):
+      status_bar = dataclasses.replace(
+        state.status_bar,
+        model=model_id,
+        reasoning_effort=reasoning_effort or state.status_bar.reasoning_effort,
+      )
       return _with_status_bar(state, status_bar), (
-        effects.SendInferenceConfiguration(),
+        *((effects.SendInferenceConfiguration(),) if not confirmed else ()),
         effects.SaveLastModel(model_id),
+        *(
+          (
+            effects.SaveWorktreePreferences(
+              reasoning_effort, status_bar.approval_mode
+            ),
+          )
+          if reasoning_effort is not None
+          and reasoning_effort != state.status_bar.reasoning_effort
+          else ()
+        ),
       )
     case _actions.SetToolGroup(summary):
       return dataclasses.replace(state, tool_group=summary), ()

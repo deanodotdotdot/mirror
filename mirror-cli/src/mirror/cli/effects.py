@@ -355,6 +355,22 @@ class CancelModelSelection:
 
 
 @dataclasses.dataclass(frozen=True)
+class ClaudeCommand:
+  """Run a private native operation without changing the selected provider."""
+
+  action: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ClaudeModelSelected:
+  """Choose a native catalog candidate with its observed account identity."""
+
+  model: str
+  account_id: str
+  organization_id: str
+
+
+@dataclasses.dataclass(frozen=True)
 class ForgetReflectionKey:
   """Remove the local saved Reflection credential."""
 
@@ -518,6 +534,8 @@ type CoreEffect = (
   | ResolveResumeReference
   | ResumeConversation
   | CancelModelSelection
+  | ClaudeCommand
+  | ClaudeModelSelected
   | ForgetReflectionKey
   | SwitchModel
   | SwitchRemoteModel

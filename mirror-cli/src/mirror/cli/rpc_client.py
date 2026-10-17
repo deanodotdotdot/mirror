@@ -26,7 +26,9 @@ from mirror.protocol import (
 )
 
 from mirror.cli import host_tools as _host_tools
-from mirror.cli import safety, system_prompt
+from mirror.cli import claude_session, safety, system_prompt
+
+CLAUDE_CONTROL_TIMEOUT = 30
 
 _MAX_MESSAGE_SIZE = 10 * 1024 * 1024
 GRPC_CHANNEL_OPTIONS = (
@@ -168,6 +170,15 @@ class Transport(Protocol):
   async def close(self) -> None: ...
 
 
+@dataclasses.dataclass
+class _ClaudeControl:
+  future: asyncio.Future[
+    claude_session.Snapshot | claude_session.ControlError | None
+  ]
+  reconnect: bool
+  snapshot: claude_session.Snapshot | None = None
+
+
 class Client:
   """Exchange typed TUI messages over a transport-owned AgentRPC channel."""
 
@@ -180,6 +191,7 @@ class Client:
     on_error: ErrorHandler,
     host_tools_registry: _host_tools.HostToolRegistry | None = None,
     inference_config: agent_pb2.InferenceConfig | None = None,
+    claude_compaction: bool = False,
   ) -> None:
     self._transport = transport
     self._conversation_id = conversation_id
@@ -197,7 +209,13 @@ class Client:
     self._attachment_id: str | None = None
     self._attached = asyncio.Event()
     self._attachment_error: str | None = None
+    self._claude_sensitive = claude_compaction or (
+      inference_config is not None and inference_config.api == 'anthropic-oauth'
+    )
     self._replay_buffer: list[agent_pb2.SessionMessage] | None = None
+    self._claude_snapshot: claude_session.Snapshot | None = None
+    self._claude_controls: dict[str, _ClaudeControl] = {}
+    self._held_requests: list[agent_pb2.ClientMessage] | None = None
     if inference_config is not None:
       self._attachment_id = uuid.uuid4().hex
       self.send(
@@ -279,7 +297,218 @@ class Client:
     """Queue one typed request for the ordered AgentRPC session stream."""
     if self._closing:
       raise RuntimeError('AgentRPC client is closed')
-    self._request_queue.put_nowait(request)
+    if request.HasField('set_inference_config'):
+      # A worker that has handled OAuth may still report an earlier failure
+      # after a switch. Keep its transport diagnostics private for its lifetime.
+      if request.set_inference_config.api == 'anthropic-oauth':
+        self._claude_sensitive = True
+      request = agent_pb2.ClientMessage.FromString(request.SerializeToString())
+      if (
+        not request.set_inference_config.HasField('claude_session')
+        and self._claude_snapshot is not None
+        and self._claude_snapshot.binding is not None
+      ):
+        request.set_inference_config.claude_session.CopyFrom(
+          self._claude_snapshot.binding.to_proto()
+        )
+    if (
+      self._held_requests is not None
+      and request.message_id not in self._claude_controls
+    ):
+      self._held_requests.append(request)
+    else:
+      self._request_queue.put_nowait(request)
+
+  @property
+  def claude_snapshot(self) -> claude_session.Snapshot | None:
+    return self._claude_snapshot
+
+  @property
+  def claude_sensitive(self) -> bool:
+    """Late diagnostics can belong to any OAuth work handled by this worker."""
+    return self._claude_sensitive
+
+  async def _claude_control(
+    self,
+    request: agent_pb2.ClientMessage,
+    *,
+    reconnect: bool = False,
+  ) -> claude_session.Snapshot | None:
+    pending = _ClaudeControl(
+      asyncio.get_running_loop().create_future(), reconnect
+    )
+    self._claude_controls[request.message_id] = pending
+    try:
+      self.send(request)
+      try:
+        result = await asyncio.wait_for(
+          asyncio.shield(pending.future), CLAUDE_CONTROL_TIMEOUT
+        )
+      except TimeoutError:
+        if reconnect:
+          self._claude_snapshot = None
+        raise claude_session.ControlError(
+          'The native Claude operation ended without confirmation. Reopen this conversation before retrying.',
+          unknown=True,
+        ) from None
+      if isinstance(result, claude_session.ControlError):
+        raise result
+      return result
+    except asyncio.CancelledError:
+      if reconnect:
+        self._claude_snapshot = None
+      raise
+    finally:
+      self._claude_controls.pop(request.message_id, None)
+      pending.future.cancel()
+
+  async def reconnect_claude(
+    self, identity: Mapping[str, str]
+  ) -> claude_session.Snapshot:
+    snapshot = self._claude_snapshot
+    if snapshot is None:
+      raise claude_session.ControlError(
+        'Native conversation identity is unavailable. Reopen this conversation before reconnecting.'
+      )
+    request = agent_pb2.ClientMessage(
+      session_id=self._conversation_id, message_id=uuid.uuid4().hex
+    )
+    request.reconnect_claude.target_identity.CopyFrom(
+      agent_pb2.ClaudeIdentityBinding(**identity)
+    )
+    if snapshot.binding is not None:
+      request.reconnect_claude.expected_binding.CopyFrom(
+        snapshot.binding.to_proto()
+      )
+    result = await self._claude_control(request, reconnect=True)
+    if result is None or result.binding is None:
+      raise claude_session.ControlError(
+        'The native worker did not confirm a Claude conversation binding.',
+        unknown=True,
+      )
+    return result
+
+  async def select_claude_model(
+    self,
+    inference: agent_pb2.InferenceConfig,
+    previous: agent_pb2.InferenceConfig,
+    *,
+    accept: Callable[[], bool],
+  ) -> bool:
+    snapshot = self._claude_snapshot
+    if snapshot is None:
+      raise claude_session.ControlError(
+        'Native conversation identity is unavailable. Reopen this conversation before choosing Claude subscription.'
+      )
+    if snapshot.binding is None and inference.api == 'anthropic-oauth':
+      raise claude_session.ControlError(
+        'This conversation has no Claude account binding. Use /reconnect claude, then select the model again.'
+      )
+    if self._held_requests is not None:
+      raise claude_session.ControlError(
+        'A Claude model selection is already pending.'
+      )
+    self._held_requests = []
+
+    async def configure(value: agent_pb2.InferenceConfig) -> None:
+      request = agent_pb2.ClientMessage(
+        session_id=self._conversation_id,
+        message_id=uuid.uuid4().hex,
+        set_inference_config=value,
+      )
+      await self._claude_control(request)
+
+    try:
+      await configure(inference)
+      if accept():
+        return True
+      # Escape cancels the UI choice. Native may already have accepted it, so
+      # restore the previous configuration before allowing any queued turn.
+      try:
+        await configure(previous)
+      except (claude_session.ControlError, RuntimeError):
+        await self.close()
+        await self._on_error(
+          'Could not confirm the previous model after cancelling selection. Reopen this conversation before sending another message.'
+        )
+        raise claude_session.ControlError(
+          'Model selection cancelled; reconnect to the worker before sending another message.'
+        ) from None
+      return False
+    except claude_session.ControlError as error:
+      if error.unknown:
+        await self.close()
+        await self._on_error(str(error))
+      raise
+    except asyncio.CancelledError:
+      # Disconnecting is safer than allowing a turn under an unconfirmed model.
+      await self.close()
+      raise
+    finally:
+      held, self._held_requests = self._held_requests or [], None
+      if not self._closing:
+        for request in held:
+          self.send(request)
+
+  def _observe_claude(self, response: agent_pb2.SessionMessage) -> bool:
+    """Consume correlated control receipts; only native snapshots set identity."""
+    if response.HasField('claude_session_state'):
+      state = response.claude_session_state
+      pending = (
+        self._claude_controls.get(state.message_id)
+        if state.HasField('message_id')
+        else None
+      )
+      if state.HasField('message_id') and (
+        pending is None or not pending.reconnect or pending.future.done()
+      ):
+        return True  # An unrelated/late receipt cannot replace current state.
+      snapshot = claude_session.Snapshot.parse(state, self._conversation_id)
+      self._claude_snapshot = snapshot
+      if pending is not None and not pending.future.done():
+        pending.snapshot = snapshot
+      return False
+    kind = response.WhichOneof('payload')
+    if kind not in ('input_ack', 'input_nack'):
+      return False
+    message_id = (
+      response.input_ack.message_id
+      if kind == 'input_ack'
+      else response.input_nack.message_id
+    )
+    pending = self._claude_controls.get(message_id)
+    if pending is None:
+      return False
+    if pending.future.done():
+      return True
+    if kind == 'input_nack':
+      pending.future.set_result(
+        claude_session.ControlError(
+          claude_session.nack_text(response.input_nack)
+        )
+      )
+    elif pending.reconnect and pending.snapshot is None:
+      self._claude_snapshot = None
+      pending.future.set_result(
+        claude_session.ControlError(
+          'Reconnect acknowledgment arrived without native conversation state. Reopen this conversation before retrying.',
+          unknown=True,
+        )
+      )
+    else:
+      pending.future.set_result(pending.snapshot)
+    return True
+
+  def _clear_claude_state(self) -> None:
+    self._claude_snapshot = None
+    for pending in self._claude_controls.values():
+      if not pending.future.done():
+        pending.future.set_result(
+          claude_session.ControlError(
+            'The worker disconnected before confirming the Claude operation. Reopen this conversation before retrying.',
+            unknown=True,
+          )
+        )
 
   def enqueue(self, message: agent_pb2.AgentMessage) -> None:
     """Submit one durable record to the active session."""
@@ -329,6 +558,7 @@ class Client:
   async def close(self) -> None:
     """Close the RPC session and its transport-owned channel."""
     self._closing = True
+    self._clear_claude_state()
     self._request_queue.put_nowait(None)
     await self._transport.close()
     self._channel = None
@@ -412,6 +642,8 @@ class Client:
   ) -> None:
     try:
       async for response in responses:
+        if self._observe_claude(response):
+          continue
         if (
           response.HasField('input_ack')
           and response.input_ack.message_id == self._attachment_id
@@ -421,9 +653,19 @@ class Client:
           response.HasField('input_nack')
           and response.input_nack.message_id == self._attachment_id
         ):
-          raise RuntimeError(
-            f'TUI attachment rejected: {response.input_nack.error}'
-          )
+          if response.input_nack.HasField('claude_error'):
+            # Auth recovery must leave retained history and explicit reconnect
+            # available. This Nack rejects settings, not conversation attachment.
+            self._attached.set()
+          else:
+            raise RuntimeError(
+              'TUI attachment rejected: '
+              + (
+                claude_session.nack_text(response.input_nack)
+                if self._claude_sensitive
+                else response.input_nack.error
+              )
+            )
         if response.WhichOneof('payload') == 'host_tool_call':
           task = asyncio.create_task(
             self._execute_host_tool(response.host_tool_call, requests)
@@ -438,26 +680,29 @@ class Client:
         else:
           await deliver_message(self._on_message, response)
     except grpc.aio.AioRpcError as error:
+      self._clear_claude_state()
       self._attachment_error = (
-        f'agent worker RPC failed: {error.code().name}: {error.details()}'
+        'The Claude worker connection failed. Check the selected account and configuration, then reopen this conversation.'
+        if self._claude_sensitive
+        else f'agent worker RPC failed: {error.code().name}: {error.details()}'
       )
       self._attached.set()
       if not self._closing:
-        await self._on_error(
-          f'agent worker RPC failed: {error.code().name}: {error.details()}'
-        )
+        await self._on_error(self._attachment_error)
       return
     except Exception as error:  # noqa: BLE001 - transport isolation boundary.
+      self._clear_claude_state()
       self._attachment_error = (
-        f'agent worker protocol failed: {type(error).__name__}: {error}'
+        'The Claude worker returned an invalid session response. Reopen this conversation; upgrade Mirror if the failure persists.'
+        if self._claude_sensitive
+        else f'agent worker protocol failed: {type(error).__name__}: {error}'
       )
       self._attached.set()
       if not self._closing:
-        await self._on_error(
-          f'agent worker protocol failed: {type(error).__name__}: {error}'
-        )
+        await self._on_error(self._attachment_error)
       return
     if not self._closing:
+      self._clear_claude_state()
       self._attachment_error = 'the agent worker exited unexpectedly.'
       self._attached.set()
       await self._on_error('the agent worker exited unexpectedly.')

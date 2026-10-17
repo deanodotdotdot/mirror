@@ -423,6 +423,15 @@ class WorkspaceController:
       active and config.get('reasoning_effort_override')
     ):
       reasoning_effort = definition.reasoning_effort
+      config['reasoning_effort_saved'] = True
+    elif (
+      reasoning_effort is None
+      and config.get('reasoning_effort_override') is False
+    ):
+      reasoning_effort = models.default_reasoning_effort(
+        str(config.get('model_api') or config.get('api') or ''),
+        str(config.get('model') or ''),
+      )
     agent = self._create_agent(
       workspaces.AgentSpec(
         config=config,

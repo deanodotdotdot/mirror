@@ -560,6 +560,8 @@ class ToggleApprovalMode:
 @dataclasses.dataclass(frozen=True)
 class ModelSwitchFinished:
   model_id: str
+  confirmed: bool = False
+  reasoning_effort: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -840,6 +842,22 @@ class AcceptResumeConfirmation:
 @dataclasses.dataclass(frozen=True)
 class CancelModelSelection:
   """Cancel the model picker opened from sign-in."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ClaudeCommand:
+  """Run a private native operation without changing the selected provider."""
+
+  action: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ClaudeModelSelected:
+  """Choose a native catalog candidate with its observed account identity."""
+
+  model: str
+  account_id: str
+  organization_id: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1189,6 +1207,8 @@ type Action = (
   | ClearResume
   | AcceptResumeConfirmation
   | CancelModelSelection
+  | ClaudeCommand
+  | ClaudeModelSelected
   | ForgetReflectionKey
   | SetModel
   | SetRemoteModel

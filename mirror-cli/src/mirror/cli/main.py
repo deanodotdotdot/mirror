@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 from mirror import config as _config
-from mirror import distribution, workspace
+from mirror import command_line, distribution, worker, workspace
 from mirror.cli import (
   cli,
   cli_store,
@@ -106,7 +106,10 @@ def _parse_args() -> argparse.Namespace:
   parser = argparse.ArgumentParser(
     prog='mirror',
     description='Mirror coding agent.',
-    epilog='Use mirror update to check for updates without starting a session.',
+    epilog=(
+      'Use mirror auth <login|status|logout> claude or mirror usage claude '
+      'before starting a session. Use mirror update to check for updates.'
+    ),
   )
   parser.add_argument(
     '--no-update',
@@ -309,7 +312,7 @@ def _parse_args() -> argparse.Namespace:
   parser.add_argument(
     'command',
     nargs='?',
-    metavar='PROMPT|exec|acp',
+    metavar='PROMPT|exec|acp|auth|usage',
     help=(
       'A prompt or exec runs one new local session without a TUI; approvals '
       'fail rather than prompt. acp serves the Agent Client Protocol on '
@@ -330,6 +333,10 @@ def _parse_args() -> argparse.Namespace:
   args, remaining = parser.parse_known_args()
   if remaining:
     args = parser.parse_intermixed_args()
+  if args.command in ('auth', 'usage'):
+    parser.error(
+      'use mirror auth <login|status|logout> claude or mirror usage claude'
+    )
   if args.command is not None and args.command not in ('exec', 'acp'):
     if args.prompt is not None:
       parser.error('expected one prompt; quote prompts containing spaces')
@@ -434,6 +441,10 @@ def _parse_args() -> argparse.Namespace:
     )
   if args.model is None:
     args.model = _models.default_model(args.api)
+  if not args.reasoning_effort_override:
+    args.reasoning_effort = _models.default_reasoning_effort(
+      args.model_api or args.api, args.model
+    )
   return args
 
 
@@ -526,20 +537,15 @@ def _resolve_conversation(
 
 def _worker_command() -> list[str]:
   """Return the Rust AgentRPC worker command."""
-  worker = os.environ.get('MIRROR_RUST_WORKER')
-  if worker is not None:
-    return [worker]
-  bundled = pathlib.Path(__file__).parents[1] / 'bin' / 'mirror-agent'
-  if bundled.is_file() and os.access(bundled, os.X_OK):
-    return [str(bundled)]
-  raise SystemExit(
-    'mirror: no executable agent bundled; install a platform wheel or '
-    'set MIRROR_RUST_WORKER to a built mirror-agent executable'
-  )
+  return worker.command(pathlib.Path(__file__).parents[1])
 
 
 def main(logs: _logging.Logs | None = None) -> None:
   """Parse flags and run the TUI over the agent worker subprocess."""
+  if command_line.private_command(sys.argv[1:]):
+    from mirror import claude_commands
+
+    raise SystemExit(claude_commands.run(sys.argv[1:]))
   args = _parse_args()
   if args.showcase:
     showcase.run(
@@ -550,20 +556,18 @@ def main(logs: _logging.Logs | None = None) -> None:
   # What to authenticate is what the worker will build: the startup model's own
   # protocol when its entry names one, and the session flag for the rest.
   api = args.model_api or args.api
-  if api == 'anthropic-oauth':
-    if args.api_key is not None:
-      raise SystemExit('mirror: --api-key is not allowed with anthropic-oauth')
-    if args.command == 'acp' or args.remote_endpoint:
-      raise SystemExit(
-        'mirror: anthropic-oauth is not supported on this launch surface'
-      )
-    raise SystemExit(
-      'mirror: Claude subscription auth/transport integration is not '
-      'available in this build'
+  try:
+    _models.validate_claude_configuration(
+      vars(args),
+      supported=args.command != 'acp' and not args.remote_endpoint,
     )
+  except ValueError as error:
+    raise SystemExit(f'mirror: {error}') from None
   # Interactive validation belongs inside the UI so /model can repair it.
   if args.command in ('exec', 'acp'):
     try:
+      if api == 'anthropic-oauth':
+        _models.validate_claude_reasoning(args.model, args.reasoning_effort)
       _models.validate_connection(
         api, args.base_url or args.model_base_url or ''
       )
@@ -641,6 +645,10 @@ def main(logs: _logging.Logs | None = None) -> None:
 
 def run() -> None:
   """Console-script entry point (`mirror`)."""
+  if command_line.private_command(sys.argv[1:]):
+    from mirror import claude_commands
+
+    raise SystemExit(claude_commands.run(sys.argv[1:]))
   try:
     main(_logging.configure_logging())
   except cli_store.DatabaseCompatibilityError as error:

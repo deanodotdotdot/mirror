@@ -703,12 +703,13 @@ def test_anthropic_messages_reads_its_own_credentials() -> None:
   assert models.base_env('anthropic-messages') == 'ANTHROPIC_BASE_URL'
 
 
-@pytest.mark.parametrize('arguments', [
-  ['--api', 'anthropic-oauth'],
-  ['exec', '--api', 'anthropic-oauth', 'hello'],
-  ['acp', '--api', 'anthropic-oauth'],
-  ['--api', 'anthropic-oauth', '--api-key', 'synthetic-secret-canary'],
-])
+@pytest.mark.parametrize(
+  'arguments',
+  [
+    ['acp', '--api', 'anthropic-oauth'],
+    ['--api', 'anthropic-oauth', '--api-key', 'synthetic-secret-canary'],
+  ],
+)
 def test_subscription_launch_fails_before_onboarding_or_key_fallback(
   tmp_path: pathlib.Path,
   monkeypatch: pytest.MonkeyPatch,
@@ -901,3 +902,153 @@ def test_incompatible_database_exits_cleanly_without_changing_it(
   assert 'newer than this binary' in result.stderr
   assert 'Traceback' not in result.stderr
   assert database.read_bytes() == before
+
+
+@pytest.mark.parametrize('surface', ['acp', 'remote'])
+@pytest.mark.parametrize('route', ['entry', 'saved', 'compactor'])
+def test_subscription_excluded_launch_uses_effective_config_before_onboarding(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  surface: str,
+  route: str,
+) -> None:
+  import json
+
+  config = tmp_path / 'models.json'
+  config.write_text(
+    json.dumps([
+      {
+        'id': 'subscription',
+        'label': 'Claude subscription',
+        'api': 'anthropic-oauth',
+      }
+    ])
+  )
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(config))
+  arguments = (
+    ['acp']
+    if surface == 'acp'
+    else ['--remote-endpoint', 'https://synthetic.invalid']
+  )
+  if route == 'saved':
+    models.save_last_selection(
+      models.ModelOption('subscription', 'subscription', api='anthropic-oauth')
+    )
+  elif route == 'entry':
+    arguments += ['--model', 'subscription']
+  else:
+    arguments += [
+      '--api',
+      'anthropic-messages',
+      '--model',
+      'api-main',
+      '--compaction-model',
+      'subscription',
+    ]
+  monkeypatch.setattr(sys, 'argv', ['mirror', *arguments])
+  onboarding_check = mock.Mock(
+    side_effect=AssertionError('must not reach onboarding')
+  )
+  monkeypatch.setattr(main.onboarding, 'ensure_consent', onboarding_check)
+  with pytest.raises(SystemExit, match='not supported'):
+    main.main()
+  onboarding_check.assert_not_called()
+
+
+@pytest.mark.parametrize('command', [[], ['exec', 'synthetic prompt']])
+@pytest.mark.parametrize(
+  ('model', 'effort'),
+  [
+    ('claude-opus-4-8', 'low'),
+    ('claude-sonnet-4-6', 'low'),
+    ('claude-sonnet-5', 'none'),
+  ],
+)
+@pytest.mark.parametrize('route', ['flag', 'entry', 'saved'])
+def test_subscription_startup_uses_reviewed_implicit_reasoning(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  command: list[str],
+  model: str,
+  effort: str,
+  route: str,
+) -> None:
+  import json
+
+  monkeypatch.setenv('HOME', str(tmp_path))
+  config = tmp_path / 'models.json'
+  monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(config))
+  arguments = [*command]
+  if route == 'flag':
+    arguments += ['--api', 'anthropic-oauth', '--model', model]
+  elif route == 'entry':
+    config.write_text(
+      json.dumps([{'id': model, 'label': model, 'api': 'anthropic-oauth'}])
+    )
+    arguments += ['--model', model]
+  else:
+    models.save_last_selection(
+      models.ModelOption(model, model, api='anthropic-oauth')
+    )
+  monkeypatch.setattr(sys, 'argv', ['mirror', *arguments])
+  args = main._parse_args()
+  assert args.reasoning_effort == effort
+  assert not args.reasoning_effort_override
+  monkeypatch.setattr(
+    sys, 'argv', ['mirror', *arguments, '--reasoning-effort', 'high']
+  )
+  explicit = main._parse_args()
+  assert explicit.reasoning_effort == 'high'
+  assert explicit.reasoning_effort_override
+
+
+@pytest.mark.parametrize('command', [[], ['exec', 'synthetic prompt']])
+def test_subscription_local_launch_passes_provider_guard_without_api_key_fallback(
+  tmp_path: pathlib.Path,
+  monkeypatch: pytest.MonkeyPatch,
+  command: list[str],
+) -> None:
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.setenv('MIRROR_MODELS_CONFIG', str(tmp_path / 'models.json'))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  monkeypatch.setenv('ANTHROPIC_API_KEY', 'SYNTHETIC_IGNORED_API_KEY')
+  monkeypatch.setattr(
+    sys, 'argv', ['mirror', *command, '--api', 'anthropic-oauth']
+  )
+
+  class ReachedLocalStartup(Exception):
+    pass
+
+  monkeypatch.setattr(
+    main.onboarding,
+    'ensure_consent',
+    mock.Mock(side_effect=ReachedLocalStartup),
+  )
+  with pytest.raises(ReachedLocalStartup):
+    main.main()
+
+
+def test_subscription_exec_rejects_explicit_unsupported_effort_before_startup(
+  tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.setenv('HOME', str(tmp_path))
+  monkeypatch.delenv('ANTHROPIC_BASE_URL', raising=False)
+  monkeypatch.setattr(
+    sys,
+    'argv',
+    [
+      'mirror',
+      'exec',
+      'synthetic task',
+      '--api',
+      'anthropic-oauth',
+      '--reasoning-effort',
+      'max',
+    ],
+  )
+  startup = mock.Mock(side_effect=AssertionError('must not start'))
+  monkeypatch.setattr(main.onboarding, 'ensure_consent', startup)
+  with pytest.raises(SystemExit, match='--reasoning-effort low'):
+    main.main()
+  startup.assert_not_called()
