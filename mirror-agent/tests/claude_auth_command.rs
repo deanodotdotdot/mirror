@@ -12,6 +12,9 @@ struct Native {
 }
 impl Native {
     fn start(home: &std::path::Path) -> Self {
+        Self::with_stdin(home, std::process::Stdio::piped(), Uuid::new_v4())
+    }
+    fn with_stdin(home: &std::path::Path, stdin: std::process::Stdio, id: Uuid) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_mirror-agent"))
             .args(["auth", "--stdio"])
             .env("HOME", home)
@@ -19,18 +22,14 @@ impl Native {
             .env("ANTHROPIC_API_KEY", "SYNTHETIC_API_KEY_CANARY")
             .env("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_BEARER_CANARY")
             .current_dir(home)
-            .stdin(std::process::Stdio::piped())
+            .stdin(stdin)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .unwrap();
         let lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        Self {
-            child,
-            lines,
-            id: Uuid::new_v4(),
-        }
+        Self { child, lines, id }
     }
     async fn write(&mut self, value: Value) {
         let mut bytes = serde_json::to_vec(&value).unwrap();
@@ -127,13 +126,22 @@ async fn local_status_creates_nothing_and_logout_has_one_durable_result() {
     assert!(!path.join(".mirror").exists());
     let mut native = Native::start(&path);
     native.request("logout").await;
-    // A late buffered cancellation must not turn a committed logout into failure.
-    native
-        .write(json!({"schema_version":1,"request_id":native.id,"type":"cancel"}))
-        .await;
     let result = native.event().await;
     assert_eq!(result["type"], "completed");
     public_clean(&result);
+    // Only receipt of the terminal result proves that the synchronous commit
+    // has happened. A subsequent cancel may race process exit (BrokenPipe).
+    let late = format!(
+        "{}\n",
+        json!({"schema_version":1,"request_id":native.id,"type":"cancel"})
+    );
+    let _ = native
+        .child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(late.as_bytes())
+        .await;
     native.finish(0).await;
     let record: Value =
         serde_json::from_slice(&std::fs::read(path.join(".mirror/claude_oauth.json")).unwrap())
@@ -147,6 +155,52 @@ async fn local_status_creates_nothing_and_logout_has_one_durable_result() {
         "logged_out"
     );
     native.finish(0).await;
+}
+
+#[tokio::test]
+async fn queued_cancel_and_eof_prevent_logout_before_commit() {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    for mode in ["cancel", "eof"] {
+        let (_temp, path) = home();
+        let id = Uuid::new_v4();
+        let mut input = format!(
+            "{}\n",
+            json!({"schema_version":1,"request_id":id,"type":"request","provider":"anthropic-oauth","action":"logout","params":{}})
+        );
+        if mode == "cancel" {
+            input.push_str(&format!(
+                "{}\n",
+                json!({"schema_version":1,"request_id":id,"type":"cancel"})
+            ));
+        }
+        let (read, write) = nix::unistd::pipe().unwrap();
+        // SAFETY: pipe returned two newly owned descriptors.
+        let read = unsafe { std::fs::File::from_raw_fd(read) };
+        let mut write = Some(unsafe { std::fs::File::from_raw_fd(write) });
+        use std::os::fd::AsRawFd;
+        for file in [&read, write.as_ref().unwrap()] {
+            nix::fcntl::fcntl(
+                file.as_raw_fd(),
+                nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+            )
+            .unwrap();
+        }
+        write.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+        // Preload input and close the EOF writer before spawning: cancellation
+        // is already observable before the child can begin any mutation.
+        if mode == "eof" {
+            write.take();
+        }
+        let mut native = Native::with_stdin(&path, read.into(), id);
+        let result = native.event().await;
+        assert_eq!(result["type"], "error");
+        assert_eq!(result["error"]["kind"], "request_cancelled");
+        assert_eq!(result["commit_outcome"], "not_committed");
+        public_clean(&result);
+        native.finish(130).await;
+        assert!(!path.join(".mirror").exists());
+    }
 }
 
 #[tokio::test]

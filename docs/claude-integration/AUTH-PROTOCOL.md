@@ -68,6 +68,10 @@ EOF, cancel, SIGINT and SIGTERM cancel a pending operation. Python must keep std
 open; `communicate(input)` closes it too early. Cancellation drops pending
 network futures and loopback listeners without detached renewal or reads.
 Before a mutation's synchronous commit boundary it reports `not_committed`.
+Already-buffered cancel/EOF and ready signals are handled before polling an
+uncommitted operation. Login/logout recheck cancellation immediately before
+starting the synchronous write, including when exchange/bootstrap or a lock
+becomes ready in the same poll.
 Once a durable login/logout commit finishes, completed wins later cancellation.
 Native code selects exactly one terminal result, writes it and exits. A received
 terminal event determines the outcome; subsequent exit/cancellation races must
@@ -102,7 +106,10 @@ the frozen profile ID; Task 6 owns conversation storage and explicit reconnect.
 Each network attempt calls `authorize` immediately before dispatch. No lease
 survives a wait/retry. Lock wait is cancellable and bounded at 30 seconds; refresh
 HTTP is bounded at ten seconds and held under the stable credential lock through
-commit. Successful refresh preserves original authorized_at, increments revision
+commit. Authorization revalidates the stable lock and stored record after the
+final asynchronous request guard, and checks cancellation again before returning
+a lease. A completed renewal stays persisted even when that request is cancelled.
+Successful refresh preserves original authorized_at, increments revision
 and records actual expiry plus last_refreshed_at. A rejected current revision
 minted within 60 seconds reports temporary auth recovery; a different persisted
 revision is reloaded first. A server rotation followed by timeout/process death

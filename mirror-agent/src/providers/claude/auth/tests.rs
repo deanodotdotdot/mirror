@@ -436,6 +436,120 @@ async fn wrong_identity_and_guard_reject_before_http_and_final_guard_rechecks() 
 }
 
 #[tokio::test]
+async fn cancellation_during_final_guard_never_publishes_a_lease() {
+    struct Guard {
+        calls: AtomicUsize,
+        cancel: Notify,
+    }
+    impl crate::providers::ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    // The renewal has committed before this final guard runs.
+                    // This future is ready immediately, so the authorization
+                    // driver's initial cancellation poll cannot observe it.
+                    self.cancel.notify_one();
+                }
+                Ok(())
+            })
+        }
+    }
+    for near_expiry in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let mock = Arc::new(Mock {
+            calls: AtomicUsize::new(0),
+        });
+        let auth = manager(&temp.path().join("auth"), mock.clone());
+        let original = seed(&auth, near_expiry).await;
+        let expected = identity();
+        let guard = Guard {
+            calls: AtomicUsize::new(0),
+            cancel: Notify::new(),
+        };
+        let mut ctx = context(&expected);
+        ctx.request_guard = Some(&guard);
+        ctx.cancellation = Box::pin(guard.cancel.notified());
+        assert_eq!(
+            auth.authorize(ctx, None).await.unwrap_err().kind,
+            ClaudeErrorKind::RequestCancelled
+        );
+        let persisted = auth
+            .local_snapshot(Box::pin(std::future::pending()))
+            .await
+            .unwrap()
+            .version
+            .unwrap();
+        assert_eq!(persisted.generation, original.generation);
+        assert_eq!(persisted.revision, if near_expiry { 2 } else { 1 });
+        // Cancellation never rolls back a rotation already committed, and a
+        // later request reloads it without performing another refresh.
+        assert_eq!(
+            auth.authorize(context(&expected), None)
+                .await
+                .unwrap()
+                .version,
+            persisted
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), usize::from(near_expiry));
+    }
+}
+
+#[tokio::test]
+async fn final_guard_wait_rechecks_a_replaced_stable_lock() {
+    struct Guard {
+        calls: AtomicUsize,
+        entered: Notify,
+        resume: Notify,
+    }
+    impl crate::providers::ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    self.entered.notify_one();
+                    self.resume.notified().await;
+                }
+                Ok(())
+            })
+        }
+    }
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("auth");
+    let auth = manager(&path, script(Ok(token())));
+    seed(&auth, false).await;
+    let expected = identity();
+    let guard = Guard {
+        calls: AtomicUsize::new(0),
+        entered: Notify::new(),
+        resume: Notify::new(),
+    };
+    let mut ctx = context(&expected);
+    ctx.request_guard = Some(&guard);
+    let replace_and_logout = async {
+        guard.entered.notified().await;
+        // Simulate external replacement while authorize is suspended in its
+        // final guard. Logout now orders against a different lock inode.
+        let replacement = path.join("replacement.lock");
+        std::fs::write(&replacement, b"").unwrap();
+        std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(replacement, path.join("claude_oauth.lock")).unwrap();
+        auth.logout(Box::pin(std::future::pending())).await.unwrap();
+        guard.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(auth.authorize(ctx, None), replace_and_logout);
+    assert_eq!(
+        result.unwrap_err().kind,
+        ClaudeErrorKind::CredentialStorageError
+    );
+    assert_eq!(
+        auth.authorize(context(&expected), None)
+            .await
+            .unwrap_err()
+            .kind,
+        ClaudeErrorKind::LoginRequired
+    );
+}
+
+#[tokio::test]
 async fn permissions_symlinks_hardlinks_unknown_schema_and_marker_validation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().canonicalize().unwrap();
@@ -705,6 +819,67 @@ async fn failed_login_rejects_api_key_and_inconsistent_bootstrap_without_replace
             Some(original)
         );
         assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_ready_with_login_response_prevents_replacement() {
+    struct CancelOnResponse {
+        cancel: Notify,
+        bootstrap: bool,
+    }
+    #[async_trait]
+    impl OAuthTransport for CancelOnResponse {
+        async fn token(&self, _: TokenRequest<'_>) -> Result<Value, ClaudeError> {
+            let mut data = token();
+            if self.bootstrap {
+                data.as_object_mut().unwrap().remove("organization");
+            } else {
+                self.cancel.notify_one();
+            }
+            Ok(data)
+        }
+        async fn bootstrap(&self, _: &Secret) -> Result<Value, ClaudeError> {
+            self.cancel.notify_one();
+            Ok(
+                serde_json::json!({"oauth_account":{"account_uuid":identity().account_id,"organization_uuid":identity().organization_id}}),
+            )
+        }
+    }
+    for bootstrap in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let transport = Arc::new(CancelOnResponse {
+            cancel: Notify::new(),
+            bootstrap,
+        });
+        let auth = manager(&temp.path().join("auth"), transport.clone());
+        let original = seed(&auth, false).await;
+        let (input, receiver) = mpsc::channel(4);
+        let (events, mut event_rx) = mpsc::channel(32);
+        let ui = async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event, ClaudeLoginEvent::AuthorizationUrl { .. }) {
+                    input
+                        .send(ClaudeCallbackInput::new("SYNTHETIC_CODE".into()).unwrap())
+                        .await
+                        .unwrap();
+                }
+            }
+        };
+        let (result, _) = tokio::join!(
+            auth.login(receiver, events, Box::pin(transport.cancel.notified())),
+            ui
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.error.kind, ClaudeErrorKind::LoginCancelled);
+        assert_eq!(error.commit_outcome, Some(CommitOutcome::NotCommitted));
+        assert_eq!(
+            auth.local_snapshot(Box::pin(std::future::pending()))
+                .await
+                .unwrap()
+                .version,
+            Some(original)
+        );
     }
 }
 

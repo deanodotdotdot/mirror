@@ -9,7 +9,7 @@ review/fix pass. The manager alone merges into the integration branch.
 | --- | --- | --- |
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
 | 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after independent Astra review and manager Linux verification. One P2 regression was fixed. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
-| 3. Credential management | 2 | Implemented; pending new independent Astra review and manager merge. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
+| 3. Credential management | 2 | Implemented and independently reviewed by Astra; three P2 findings fixed. Pending manager verification and merge. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Not started. |
 | 5. Model discovery + usage | 3 | Not started. |
 | 6. Agent execution integration | 3 + 4 | Not started. |
@@ -106,3 +106,25 @@ timed out on macOS (`read -N4` is unsupported by `/bin/bash` there). No unrelate
 source was changed for these platform limits. The manager's reviewed-head Linux
 run remains required. No Task 3 live login, provider request or production
 A1–A11 acceptance was performed.
+
+Task 3 independent Astra review fixed three P2 findings. Login could replace a
+grant when cancellation became ready in the same poll as exchange/bootstrap,
+and authorization could publish a lease when the final guard made cancellation
+ready after a durable refresh. Mutations now check immediately before their
+synchronous write, and authorization checks again before returning a lease;
+an already committed rotation remains persisted. The private command now reads
+ready cancel/EOF/signals before polling an uncommitted operation, while a
+selected terminal result still wins subsequent cancellation. Finally, stable
+lock and record validation now follow the final asynchronous guard, preventing
+a replaced lock from permitting a stale lease after logout under its replacement.
+
+All three issues were reproduced before their fixes. Deterministic regressions
+cover exchange/bootstrap cancellation, cancellation after persisted refresh,
+lock replacement during a guard wait, preloaded cancel/EOF before process start,
+and late cancellation after a committed terminal result. The reviewer's local
+macOS authority suite passed 21 tests (the standalone subprocess helper is
+ignored and exercised by the process tests), the native private protocol suite
+passed five, and the binary suite passed three. No remaining P2-or-higher Task 3
+review findings. Workspace/all-target compilation including the Python binding,
+touched Rust formatting and diff checks passed. The manager still owns final
+reviewed-head Linux verification.

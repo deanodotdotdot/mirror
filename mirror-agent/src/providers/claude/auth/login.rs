@@ -243,6 +243,7 @@ impl ClaudeAuthManager {
         events: mpsc::Sender<ClaudeLoginEvent>,
         cancellation: BoxFuture<'_, ()>,
     ) -> Result<ClaudeAuthStatus, CommandError> {
+        let cancellation = cancellation.shared();
         let phase = Mutex::new(Phase::Preparing);
         let emit = |next, rejected| {
             *phase.lock().expect("phase mutex") = next;
@@ -425,6 +426,21 @@ impl ClaudeAuthManager {
                 let mut next = Record::tombstone(current.as_ref());
                 next.revision = 1;
                 next.credential = Some(credential);
+                // The exchange/bootstrap or lock can become ready in the same
+                // poll as cancellation. Recheck at the synchronous boundary;
+                // once write begins, its actual outcome wins later cancellation.
+                if cancellation.clone().now_or_never().is_some() {
+                    return Err(CommandError::new(
+                        ClaudeError::new(ClaudeErrorKind::LoginCancelled),
+                        Phase::Committing,
+                    ));
+                }
+                if Instant::now() >= pending.deadline {
+                    return Err(CommandError::new(
+                        ClaudeError::new(ClaudeErrorKind::LoginTimeout),
+                        Phase::Committing,
+                    ));
+                }
                 locked.write(&next)?;
                 Ok(snapshot(Some(&next)).status)
             };
@@ -438,7 +454,7 @@ impl ClaudeAuthManager {
                 })?
         };
         tokio::select! { biased;
-            _ = cancellation => Err(CommandError::new(ClaudeError::new(ClaudeErrorKind::LoginCancelled), *phase.lock().expect("phase mutex"))),
+            _ = cancellation.clone() => Err(CommandError::new(ClaudeError::new(ClaudeErrorKind::LoginCancelled), *phase.lock().expect("phase mutex"))),
             result = run => result,
         }
     }

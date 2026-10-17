@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::future::BoxFuture;
+use futures_util::{future::BoxFuture, FutureExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -270,12 +270,16 @@ impl ClaudeAuthManager {
         &self,
         cancellation: BoxFuture<'_, ()>,
     ) -> Result<ClaudeAuthStatus, CommandError> {
+        let cancellation = cancellation.shared();
         tokio::select! { biased;
-            _ = cancellation => Err(CommandError::new(cancelled(), Phase::Preparing)),
+            _ = cancellation.clone() => Err(CommandError::new(cancelled(), Phase::Preparing)),
             result = async {
                 let locked = self.store.lock(true).await.map_err(|error| CommandError::new(error, Phase::Preparing))?.ok_or_else(|| CommandError::new(storage_error(), Phase::Preparing))?;
                 let previous = locked.load().map_err(|error| CommandError::new(error, Phase::Preparing))?;
                 let next = Record::tombstone(previous.as_ref());
+                if cancellation.clone().now_or_never().is_some() {
+                    return Err(CommandError::new(cancelled(), Phase::Committing));
+                }
                 locked.write(&next)?;
                 Ok(snapshot(Some(&next)).status)
             } => result,
@@ -393,7 +397,16 @@ impl ClaudeAuthManager {
             record.last_refreshed_at = Some(refreshed_at);
             locked.write(&record).map_err(|error| error.error)?;
         }
-        // Reload persisted bytes; a failed/uncertain write never publishes a token.
+        if let Some(guard) = request_guard {
+            guard.verify().await.map_err(|error| match error {
+                crate::providers::LlmError::Claude(error) => error,
+                _ => cancelled(),
+            })?;
+        }
+        // Revalidate the stable lock and persisted bytes after the last await.
+        // A replaced lock must not authorize a stale lease after another process
+        // has already logged out under its replacement. Failed/uncertain writes
+        // likewise never publish a token.
         let current = locked
             .load()?
             .ok_or_else(|| ClaudeError::new(ClaudeErrorKind::LoginRequired))?;
@@ -405,12 +418,6 @@ impl ClaudeAuthManager {
             .as_ref()
             .ok_or_else(|| ClaudeError::new(ClaudeErrorKind::LoginRequired))?;
         check_identity(expected_identity, &credential.identity())?;
-        if let Some(guard) = request_guard {
-            guard.verify().await.map_err(|error| match error {
-                crate::providers::LlmError::Claude(error) => error,
-                _ => cancelled(),
-            })?;
-        }
         if credential.expires_at <= SystemTime::now() {
             return Err(temporary_error());
         }
@@ -485,9 +492,19 @@ impl ClaudeAuthorization for ClaudeAuthManager {
                 operation,
                 expected_identity,
                 request_guard,
-                cancellation,
+                mut cancellation,
             } = context;
-            tokio::select! { biased; _ = cancellation => Err(cancelled()), result = self.authorize_inner(operation, expected_identity, request_guard, rejected) => result }
+            let lease = tokio::select! { biased;
+                _ = &mut cancellation => Err(cancelled()),
+                result = self.authorize_inner(operation, expected_identity, request_guard, rejected) => result,
+            }?;
+            // A ready refresh/guard can make cancellation ready in the same
+            // poll after select checked it. Keep any completed durable rotation,
+            // but never hand that cancelled operation a dispatch lease.
+            if cancellation.now_or_never().is_some() {
+                return Err(cancelled());
+            }
+            Ok(lease)
         })
     }
     fn local_snapshot<'a>(

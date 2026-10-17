@@ -255,8 +255,29 @@ pub async fn run() -> ExitCode {
     let mut reading = true;
     loop {
         tokio::select! { biased;
-            // A durable commit completes synchronously before this future yields:
-            // its selected terminal result wins a simultaneous late EOF/signal.
+            // Observe already-ready controls before starting/resuming work.
+            // Polling the operation first could commit an unstarted logout
+            // even though cancel or EOF was already buffered after its request.
+            _ = interrupt.recv() => { reading = false; cancel.send_replace(true); },
+            _ = terminate.recv() => { reading = false; cancel.send_replace(true); },
+            line = input.line(), if reading => {
+                match line {
+                    Ok(None) => { reading = false; cancel.send_replace(true); },
+                    Ok(Some(line)) => {
+                        let valid = match serde_json::from_slice::<Control>(&line) {
+                            Ok(Control::Cancel { schema_version:1, request_id }) if request_id == request.request_id => { reading = false; cancel.send_replace(true); true },
+                            Ok(Control::Callback { schema_version:1, request_id, value }) if request_id == request.request_id && matches!(request.action, Action::Login) => {
+                                match ClaudeCallbackInput::new(value) { Ok(value) => { let _ = callbacks.try_send(value); true }, Err(_) => false }
+                            },
+                            _ => false,
+                        };
+                        if !valid { return failure(&output, Some(&request), &command_error(invalid(), Phase::Protocol)).await; }
+                    },
+                    Err(_) => return failure(&output, Some(&request), &command_error(invalid(), Phase::Protocol)).await,
+                }
+            },
+            // A commit returns its terminal result within this same poll.
+            // Once selected, output delivery never polls cancellation again.
             result = &mut operation => return match result {
                 Ok(status) => completed(&output, &request, status).await,
                 Err(error) => failure(&output, Some(&request), &error).await,
@@ -280,24 +301,6 @@ pub async fn run() -> ExitCode {
                     if output.write(&value).await.is_err() { cancel.send_replace(true); }
                 }
             },
-            line = input.line(), if reading => {
-                match line {
-                    Ok(None) => { reading = false; cancel.send_replace(true); },
-                    Ok(Some(line)) => {
-                        let valid = match serde_json::from_slice::<Control>(&line) {
-                            Ok(Control::Cancel { schema_version:1, request_id }) if request_id == request.request_id => { cancel.send_replace(true); true },
-                            Ok(Control::Callback { schema_version:1, request_id, value }) if request_id == request.request_id && matches!(request.action, Action::Login) => {
-                                match ClaudeCallbackInput::new(value) { Ok(value) => { let _ = callbacks.try_send(value); true }, Err(_) => false }
-                            },
-                            _ => false,
-                        };
-                        if !valid { return failure(&output, Some(&request), &command_error(invalid(), Phase::Protocol)).await; }
-                    },
-                    Err(_) => return failure(&output, Some(&request), &command_error(invalid(), Phase::Protocol)).await,
-                }
-            },
-            _ = interrupt.recv() => { cancel.send_replace(true); },
-            _ = terminate.recv() => { cancel.send_replace(true); },
         }
     }
 }
