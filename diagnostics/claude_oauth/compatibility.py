@@ -210,6 +210,11 @@ def request_body(model, messages, installation_id, account_id, session_id,
         if tool_choice.get("type") != "tool" or set(tool_choice) != {"type", "name"}:
             raise ProofError("invalid_tool_choice")
         body["tool_choice"] = {"type": "tool", "name": names.encode(tool_choice["name"])}
+        # Pinned OMP's disableThinkingIfToolChoiceForced removes both fields
+        # for these adaptive models and keeps the lowest output effort. Forced
+        # selection with explicit adaptive thinking is rejected upstream.
+        del body["thinking"]
+        del body["context_management"]
     encoded = json_bytes(body)
     # Compute the patch offset from the known structural prefix. Never search or
     # replace user text, even when it contains a byte-for-byte billing marker.

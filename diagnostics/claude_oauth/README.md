@@ -21,9 +21,13 @@ python3 -m unittest discover -s diagnostics/claude_oauth/tests -v
 
 All tests use synthetic credentials, in-memory transports, private temporary
 files, and loopback callbacks. They never contact Anthropic, invoke Claude Code,
-or read any existing login. The wire fixture covers Unicode, signed/redacted
+or read any existing login; unmocked HTTP and browser launches are blocked by
+the test harness. The wire fixture covers Unicode, signed/redacted
 reasoning, tool IDs and names, a preexisting tool prefix, forced tool selection,
 cache boundaries, and a literal `cch=00000` in user text that must remain intact.
+Forced tool selection follows OMP's omission of explicit thinking/context
+management while retaining low effort. Normal probes let the model select the
+tool and retain the adaptive thinking/replay profile.
 
 The fixture's CCH and SHA256 character-index seed were independently verified
 with Bun 1.4.3. Normal tests do not need Bun. To deliberately regenerate it:
@@ -47,7 +51,10 @@ on that terminal, and is never accepted through argv, environment, or chat.
 The default diagnostic directory is
 `~/.mirror/diagnostics/claude-oauth-phase0/`. Every new directory is created with
 mode `0700`; its grant and stable lock are `0600`, with owner/symlink checks,
-atomic replacement, file flush, and directory flush. It never opens Claude Code
+atomic replacement, file flush, and directory flush. Directory descriptors are
+checked while walking the path; ancestors must be owned by the user or root and
+cannot be group/world writable unless protected by a sticky bit (such as `/tmp`).
+Symlink path components are rejected. It never opens Claude Code
 or OMP storage and never creates an API key. It does not read API-key or bearer
 token environment variables. A conflicting `ANTHROPIC_BASE_URL` is rejected;
 proxy environment variables are ignored and HTTP redirects are disabled.
@@ -133,6 +140,11 @@ final callback URL or code into this host's hidden prompt. A code-plus-state
 format validates both that state and any URL state. Bare provider codes use the
 pending state and PKCE verifier; API keys/access tokens are rejected.
 
+Failures include a fixed recovery instruction and optional HTTP status. Keep
+the sanitized error for the manager; never obtain a raw provider payload to
+diagnose it. A timeout during token exchange/refresh remains an ambiguous
+remote outcome even though the local command exits within its budget.
+
 For Linux/SSH acceptance, run the same source on that Linux host and authenticate
 there with `--no-browser`; use a browser on a different machine. Do not copy a
 laptop grant there. A local `--no-browser` run or a Linux fixture test does not
@@ -166,8 +178,10 @@ OMP files at that revision; [LICENSE-OMP](LICENSE-OMP) preserves their notice:
 - `packages/ai/src/providers/anthropic-identity.ts`: JSON metadata shape. Device
   identity here uses a Mirror-specific hash domain and this helper's generated
   installation UUID; it never reads another app's installation identity.
-- `packages/catalog/src/compat/rules/classes/anthropic.kdl`: explicit candidate
-  reasoning map. The spike makes no context-limit or broader capability claims.
+- `packages/catalog/src/compat/rules/classes/anthropic.kdl` and
+  `packages/catalog/src/compat/resolve.ts` (`defaultSupportsDisplay`): explicit
+  candidate reasoning map and model-specific display support. The spike makes
+  no context-limit or broader capability claims.
 
 All URLs are fixed `https://claude.ai/oauth/authorize` or reviewed paths on
 `https://api.anthropic.com`: `/v1/oauth/token`, `/api/claude_cli/bootstrap`,
@@ -185,9 +199,12 @@ stdlib transport has no SDK decompression; that transport difference requires
 live observation. Cache anchors are the stable last tool and last system block;
 the spike omits OMP's moving message breakpoints. JSON/model payloads are capped
 at 2 MiB, model pages at 20, callbacks at 8 KiB, HTTP socket waits at 10 seconds
-(30 for streaming), discovery's checked budget at 10 seconds and streaming's at
-60. Socket I/O can finish one socket wait beyond a checked aggregate deadline;
-strict cancellable production deadlines are a Task 3/4 requirement.
+(30 for streaming), discovery's total budget at 10 seconds and each streamed
+request's at 60. A main-thread POSIX timer also bounds HTTP setup, headers and
+body reads against slow byte trickles; callbacks get a one-second connection
+budget within the five-minute login lifetime. The CLI is the supported entry
+point, not a background-thread library. Production async cancellation remains
+a Task 3/4 requirement.
 
 This profile is an interoperability hypothesis, not an official third-party API
 contract or Anthropic endorsement. A server rejection or a missing required

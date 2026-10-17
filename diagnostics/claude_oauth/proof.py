@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import secrets
 import selectors
+import signal
 import socket
 import stat
 import subprocess
@@ -34,6 +35,7 @@ from compatibility import (
 
 MAX_BODY = 2 * 1024 * 1024
 MAX_CALLBACK = 8192
+MAX_STORE = 16384
 STORE_SCHEMA = "mirror-claude-phase0-private-v1"
 
 
@@ -126,23 +128,39 @@ class Store:
 
     def __init__(self, directory):
         self.directory = Path(directory).expanduser().absolute()
-        if self.directory != self.directory.resolve():
+        if ".." in self.directory.parts:
             raise ProofError("credential_storage_error")
+        fd = None
         try:
-            # pathlib's parents=True only applies mode to the final directory.
-            # Create each missing ancestor privately without chmodding any parent.
-            for component in reversed((self.directory, *self.directory.parents)):
+            # Walk from an open root, validating the actual descriptors rather
+            # than lstat then reopening a swappable pathname. Never follow links.
+            fd = os.open(self.directory.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            for component in self.directory.parts[1:]:
+                self._check_directory(fd)
                 try:
-                    component.mkdir(mode=0o700)
+                    os.mkdir(component, mode=0o700, dir_fd=fd)
                 except FileExistsError:
-                    if not stat.S_ISDIR(component.lstat().st_mode):
-                        raise ProofError("credential_storage_error")
-            info = self.directory.lstat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise ProofError("credential_storage_error")
-            self.dir_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    pass
+                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            self._check_directory(fd, private=True)
+            self.dir_fd = fd
+            fd = None
         except OSError:
             raise ProofError("credential_storage_error") from None
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    @staticmethod
+    def _check_directory(fd, private=False):
+        info = os.fstat(fd)
+        mode = stat.S_IMODE(info.st_mode)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid())
+                or (mode & 0o022 and not info.st_mode & stat.S_ISVTX)
+                or (private and (info.st_uid != os.getuid() or mode != 0o700))):
+            raise ProofError("credential_storage_error")
 
     def close(self):
         os.close(self.dir_fd)
@@ -185,8 +203,8 @@ class Store:
                     "installation_id": str(uuid.uuid4()), "credential": None}
         try:
             with os.fdopen(fd, "rb") as handle:
-                raw = handle.read(16385)
-            if len(raw) > 16384:
+                raw = handle.read(MAX_STORE + 1)
+            if len(raw) > MAX_STORE:
                 raise ProofError("credential_storage_error")
             value = json.loads(raw)
             if not isinstance(value, dict) or value.get("schema") != STORE_SCHEMA:
@@ -220,13 +238,16 @@ class Store:
                      data["account_id"], data["organization_id"], data["scopes"], data["authorized_at"])
 
     def write(self, record):
+        encoded = json_bytes(record)
+        if len(encoded) > MAX_STORE:
+            raise ProofError("credential_storage_error")
         name = ".grant-" + secrets.token_hex(12)
         fd = None
         try:
             fd = self._open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "wb") as handle:
                 fd = None
-                handle.write(json_bytes(record))
+                handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
             # Do not silently replace an unexpected target (including a symlink).
@@ -254,6 +275,34 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+@contextlib.contextmanager
+def network_deadline(seconds, kind):
+    """Bound the CLI's main-thread HTTP work, including slow response headers.
+
+    Socket timeouts alone reset on every successful read. POSIX's real timer
+    also interrupts a provider that sends a byte before each socket timeout.
+    Restore any caller timer/handler on exit; this helper runs only on the CLI
+    main thread on its supported macOS/Linux platforms.
+    """
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    started = time.monotonic()
+
+    def expired(signum, frame):
+        raise ProofError(kind)
+
+    signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, max(0.001, seconds))
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            remaining = max(0.001, previous_timer[0] - (time.monotonic() - started))
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+
+
 def check_environment():
     override = os.environ.get("ANTHROPIC_BASE_URL")
     if override and override.rstrip("/") != API_ORIGIN:
@@ -269,7 +318,7 @@ class Transport:
 
     @contextlib.contextmanager
     def response(self, operation, token=None, body=None, session_id=None, model=None,
-                 after=None, timeout=10):
+                 after=None, timeout=10, budget=None):
         paths = {"exchange": "/v1/oauth/token", "refresh": "/v1/oauth/token",
                  "bootstrap": "/api/claude_cli/bootstrap?entrypoint=cli&model=claude-opus-4-8",
                  "models": "/v1/models?limit=100", "messages": "/v1/messages"}
@@ -289,8 +338,10 @@ class Transport:
                                          headers=headers(operation, token, session_id),
                                          method="POST" if body is not None else "GET")
         try:
-            with self.opener.open(request, timeout=timeout) as response:
-                yield response
+            kind = "partial_stream_error" if operation == "messages" else "transport_outcome_unknown"
+            with network_deadline(timeout if budget is None else budget, kind):
+                with self.opener.open(request, timeout=timeout) as response:
+                    yield response
         except urllib.error.HTTPError as error:
             # Do not read or interpolate an error body: providers can echo secrets
             # and request content. Detailed classifications belong in Phase 1/2.
@@ -367,7 +418,7 @@ class PendingLogin:
             if len(query.get("state", [])) != 1:
                 raise ProofError("invalid_callback")
             state_values.extend(query["state"])
-            if not secrets.compare_digest(query["state"][0], self.state.reveal()):
+            if not secrets.compare_digest(query["state"][0].encode(), self.state.reveal().encode()):
                 raise ProofError("callback_state_mismatch")
             if "error" in query:
                 raise ProofError("login_denied")
@@ -377,7 +428,7 @@ class PendingLogin:
         if "#" in text:
             text, supplied_state = text.split("#", 1)
             state_values.append(supplied_state)
-        if any(not secrets.compare_digest(s, self.state.reveal()) for s in state_values):
+        if any(not secrets.compare_digest(s.encode(), self.state.reveal().encode()) for s in state_values):
             raise ProofError("callback_state_mismatch")
         if not nonempty(text) or text.startswith("sk-ant-") or any(c.isspace() for c in text):
             raise ProofError("invalid_callback")
@@ -436,12 +487,16 @@ class Callbacks:
     def accept(self, listener, pending):
         connection, _ = listener.accept()
         with connection:
-            connection.settimeout(1)
+            deadline = min(time.monotonic() + 1, pending.deadline)
             success = False
             code = None
             try:
                 raw = bytearray()
                 while b"\r\n\r\n" not in raw and len(raw) <= MAX_CALLBACK:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ProofError("invalid_callback")
+                    connection.settimeout(remaining)
                     chunk = connection.recv(min(2048, MAX_CALLBACK + 1 - len(raw)))
                     if not chunk:
                         break
@@ -465,6 +520,7 @@ class Callbacks:
                 b"Referrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n"
                 + f"Content-Length: {len(message)}\r\n\r\n".encode() + message)
             try:
+                connection.settimeout(0.1)
                 connection.sendall(response)
             except OSError:
                 pass
@@ -710,9 +766,12 @@ def parse_stream(lines, names):
     if not ended or not blocks or reason not in ("end_turn", "tool_use"):
         raise ProofError("partial_stream_error")
     for block in blocks:
-        if block["type"] == "thinking" and (not nonempty(block.get("signature")) or not isinstance(block.get("thinking"), str)):
+        # Opaque signed/redacted reasoning can exceed the credential field cap.
+        # The entire SSE response is already bounded by MAX_BODY.
+        if block["type"] == "thinking" and (not isinstance(block.get("signature"), str)
+                or not block["signature"] or not isinstance(block.get("thinking"), str)):
             raise ProofError("unsigned_thinking")
-        if block["type"] == "redacted_thinking" and not nonempty(block.get("data")):
+        if block["type"] == "redacted_thinking" and (not isinstance(block.get("data"), str) or not block["data"]):
             raise ProofError("partial_stream_error")
     return blocks, reason
 
@@ -721,16 +780,29 @@ def complete(transport, grant, record, model, session_id, messages):
     if grant.expires_at - time.time() < 300:
         raise ProofError("refresh_required")
     body = request_body(model, messages, record["installation_id"], grant.account_id, session_id)
-    with transport.response("messages", grant.access, body, session_id=session_id, timeout=30) as response:
-        deadline = time.monotonic() + 60
-
+    deadline = time.monotonic() + 60
+    with transport.response("messages", grant.access, body, session_id=session_id, timeout=30, budget=60) as response:
         def lines():
-            while time.monotonic() < deadline:
-                line = response.readline(65537)
-                if not line:
+            buffered = bytearray()
+            total = 0
+            while True:
+                if time.monotonic() >= deadline:
+                    raise ProofError("partial_stream_error")
+                # readline may make arbitrarily many successful socket reads
+                # before a newline, defeating both socket and total timeouts.
+                chunk = response.read1(65536)
+                total += len(chunk)
+                if total > MAX_BODY:
+                    raise ProofError("partial_stream_error")
+                if not chunk:
                     return
-                yield line
-            raise ProofError("partial_stream_error")
+                buffered.extend(chunk)
+                while b"\n" in buffered:
+                    index = buffered.index(b"\n") + 1
+                    yield bytes(buffered[:index])
+                    del buffered[:index]
+                if len(buffered) > 65536:
+                    raise ProofError("partial_stream_error")
 
         return parse_stream(lines(), ToolNames(TOOLS))
 
@@ -743,6 +815,8 @@ def probe(store, transport, model):
         if model not in {row["id"] for row in catalog}:
             raise ProofError("model_unavailable")
         detail = model_summary(transport.json("models", grant.access, model=model))
+        if detail["id"] != model:
+            raise ProofError("invalid_model_response")
         session_id = str(uuid.uuid4())
         messages = [{"role": "user", "content": "For the Mirror protocol diagnostic, reply exactly MIRROR_PHASE0_TEXT_OK. Do not call a tool yet."}]
         first, reason = complete(transport, grant, record, model, session_id, messages)
@@ -808,6 +882,29 @@ class SafeParser(argparse.ArgumentParser):
         raise ProofError("invalid_command_line")
 
 
+def safe_error(error):
+    recovery = {
+        "invalid_command_line": "Run proof.py --help; never pass credentials or callback codes in arguments.",
+        "invalid_configuration": "Unset a conflicting ANTHROPIC_BASE_URL and use only this diagnostic's fixed endpoints.",
+        "credential_storage_error": "Use a fresh private diagnostic-only state directory; keep any existing grant private for manual recovery.",
+        "unknown_diagnostic_store_schema": "Use a fresh diagnostic-only state directory; do not point at another application's credentials.",
+        "credential_lock_timeout": "Let the other diagnostic operation finish, then retry this command.",
+        "login_required": "Run proof.py login yourself in a private terminal to establish a fresh Mirror-owned grant.",
+        "login_expired": "Run proof.py refresh once; if rejected, run proof.py login in a private terminal.",
+        "refresh_required": "Run proof.py refresh, then status, before another probe.",
+        "interactive_terminal_required": "Run proof.py login yourself in a private terminal, outside agent tools and recordings.",
+        "login_timeout": "Run proof.py login again in a private terminal and complete the new flow within five minutes.",
+        "login_cancelled": "The pending flow was cancelled; run login again when ready.",
+        "newer_login_or_logout_won": "A newer local login/logout won; inspect status before deciding whether to log in again.",
+        "account_changed": "Stop and ask the manager to review the identity change; do not dispatch a probe.",
+        "transport_outcome_unknown": "Do not automatically retry. A token exchange or refresh may have succeeded remotely; a fresh login may be required.",
+        "partial_stream_error": "The response was incomplete or invalid. No automatic replay occurred; ask the manager to review this sanitized failure.",
+        "provider_limited": "Stop this run and review the account's reported limit; do not switch accounts, models, or billing modes.",
+    }.get(error.kind, "Stop the live run and give the manager this sanitized error and compatibility revision; keep provider payloads and credentials private.")
+    return {"error": {"kind": error.kind, "http_status": error.status, "recovery": recovery},
+            "compatibility_revision": PROFILE}
+
+
 def main():
     parser = SafeParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path,
@@ -848,13 +945,12 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(json.dumps({"error": {"kind": "login_cancelled"}}), file=sys.stderr)
+        print(json.dumps(safe_error(ProofError("login_cancelled"))), file=sys.stderr)
         sys.exit(130)
     except ProofError as error:
-        print(json.dumps({"error": {"kind": error.kind, "http_status": error.status},
-                          "compatibility_revision": PROFILE}), file=sys.stderr)
+        print(json.dumps(safe_error(error)), file=sys.stderr)
         sys.exit(1)
     except Exception:
         # Network/parse/storage exceptions must never expose raw credential data.
-        print(json.dumps({"error": {"kind": "diagnostic_failed"}}), file=sys.stderr)
+        print(json.dumps(safe_error(ProofError("diagnostic_failed"))), file=sys.stderr)
         sys.exit(1)

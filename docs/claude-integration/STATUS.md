@@ -7,7 +7,7 @@ review/fix pass. The manager alone merges into the integration branch.
 
 | Task | Depends on | State |
 | --- | --- | --- |
-| 1. External proof | — | Diagnostic/fixtures prepared; review and live proof pending. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
+| 1. External proof | — | Diagnostic reviewed/fixed; live proof pending. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
 | 2. Shared contracts | 1 | Not started; blocked on actual live gate. |
 | 3. Credential management | 2 | Not started. |
 | 4. OAuth Messages transport | 2 | Not started. |

@@ -21,6 +21,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import compatibility as compat
 import proof
 
+
+def setUpModule():
+    # A newly introduced unmocked HTTP/browser path must fail before it can
+    # contact a provider or launch a browser. Raw loopback callback tests remain
+    # available; explicit instance mocks still exercise transport behavior.
+    global network_guard, browser_guard
+    network_guard = patch.object(urllib.request.OpenerDirector, "open", side_effect=AssertionError("Synthetic tests forbid live HTTP"))
+    browser_guard = patch.object(proof.webbrowser, "open", side_effect=AssertionError("Synthetic tests forbid browser launch"))
+    network_guard.start()
+    browser_guard.start()
+
+
+def tearDownModule():
+    browser_guard.stop()
+    network_guard.stop()
+
+
 ACCOUNT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 ORGANIZATION = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 INSTALLATION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -129,7 +146,7 @@ class CallbackTests(unittest.TestCase):
                   self.url(code="code#"), self.url() + "&state=" + valid,
                   self.url() + "&code=second", self.url().replace("localhost", "evil.test"),
                   self.url().replace("/callback", "/other"), "sk-ant-oat01-DO_NOT_IMPORT",
-                  self.pending.redirect_uri + "?code=code", "code#wrong", "x" * 8193]
+                  self.pending.redirect_uri + "?code=code", "code#wrong", "code#π", self.url(state="π"), "x" * 8193]
         for value in values:
             with self.subTest(value=value[:30]), self.assertRaises(compat.ProofError):
                 self.pending.parse(value)
@@ -190,6 +207,39 @@ class CallbackTests(unittest.TestCase):
             os.close(read_fd)
             os.close(write_fd)
 
+    def test_callback_trickle_cannot_extend_connection_budget(self):
+        class Trickle:
+            def __init__(self):
+                self.receives = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def settimeout(self, seconds):
+                pass
+
+            def recv(self, size):
+                self.receives += 1
+                return b"G"
+
+            def sendall(self, value):
+                self.response = value
+
+        connection = Trickle()
+        listener = unittest.mock.Mock()
+        listener.accept.return_value = (connection, ("127.0.0.1", 12345))
+        callbacks = proof.Callbacks(random_port=True)
+        try:
+            with patch.object(proof.time, "monotonic", side_effect=[0, 0.4, 0.8, 1.2]):
+                self.assertIsNone(callbacks.accept(listener, self.pending))
+            self.assertEqual(connection.receives, 2)
+            self.assertIn(b"400 Bad Request", connection.response)
+        finally:
+            callbacks.close()
+
     def test_browser_failure_preserves_manual_flow_and_terminal_echo(self):
         callbacks = proof.Callbacks(random_port=True)
         master, slave = pty.openpty()
@@ -246,6 +296,40 @@ class StoreTests(unittest.TestCase):
         finally:
             other.close()
 
+    def test_stable_lock_serializes_independent_process_across_replace(self):
+        old = record()
+        self.store.write(old)
+        script = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import proof
+store = proof.Store(sys.argv[2])
+try:
+    print('started', flush=True)
+    with store.locked():
+        print(store.load()['revision'], flush=True)
+finally:
+    store.close()
+"""
+        child = None
+        try:
+            with self.store.locked():
+                child = subprocess.Popen([sys.executable, "-u", "-c", script, str(Path(proof.__file__).parent), str(self.path)],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                with proof.selectors.DefaultSelector() as selector:
+                    selector.register(child.stdout, proof.selectors.EVENT_READ)
+                    self.assertTrue(selector.select(5), "child did not start")
+                    self.assertEqual(child.stdout.readline(), b"started\n")
+                    self.store.write({**old, "revision": 2})
+                    self.assertFalse(selector.select(0.1), "replacing grant must not replace/bypass the held lock")
+            stdout, stderr = child.communicate(timeout=5)
+            self.assertEqual(child.returncode, 0, stderr.decode())
+            self.assertEqual(stdout, b"2\n")
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.communicate()
+
     def test_unsafe_path_and_file_refused_without_chmod(self):
         (self.path / "grant.json").symlink_to(self.path / "other")
         with self.assertRaises((compat.ProofError, OSError)):
@@ -274,6 +358,38 @@ class StoreTests(unittest.TestCase):
         self.store.write({**old, "schema": "future"})
         with self.assertRaisesRegex(compat.ProofError, "unknown_diagnostic_store_schema"):
             self.store.load()
+
+    def test_unsafe_ancestor_and_swapped_directory_are_rejected(self):
+        unsafe = self.path.parent / "writable-parent"
+        unsafe.mkdir(mode=0o700)
+        unsafe.chmod(0o777)
+        try:
+            with self.assertRaisesRegex(compat.ProofError, "credential_storage_error"):
+                proof.Store(unsafe / "new-private")
+            self.assertFalse((unsafe / "new-private").exists())
+        finally:
+            unsafe.chmod(0o700)
+
+        target = self.path.parent / "target"
+        target.mkdir(mode=0o700)
+        actual_open = proof.os.open
+
+        def race(path, flags, *args, **kwargs):
+            if path == "target":
+                target.chmod(0o755)
+            return actual_open(path, flags, *args, **kwargs)
+
+        with patch.object(proof.os, "open", side_effect=race):
+            with self.assertRaisesRegex(compat.ProofError, "credential_storage_error"):
+                proof.Store(target)
+
+    def test_oversized_record_cannot_replace_reloadable_grant(self):
+        old = record()
+        self.store.write(old)
+        oversized = {**old, "extra": "x" * proof.MAX_STORE}
+        with self.assertRaisesRegex(compat.ProofError, "credential_storage_error"):
+            self.store.write(oversized)
+        self.assertEqual(self.store.load(), old)
 
     def test_real_refresh_request_profile_and_logout_tombstone(self):
         old = record()
@@ -372,6 +488,16 @@ class WireTests(unittest.TestCase):
         self.assertNotIn("anthropic-beta", compat.headers("exchange"))
         self.assertEqual(compat.headers("refresh")["anthropic-beta"], compat.OAUTH_BETA)
 
+    def test_forced_tool_matches_pinned_omp_thinking_rule(self):
+        for model in compat.MODELS:
+            body = json.loads(compat.request_body(model, [{"role": "user", "content": "Call the echo tool."}],
+                              INSTALLATION, ACCOUNT, SESSION,
+                              tool_choice={"type": "tool", "name": compat.ECHO_NAME}))
+            self.assertEqual(body["tool_choice"], {"type": "tool", "name": "_" + compat.ECHO_NAME})
+            self.assertNotIn("thinking", body)
+            self.assertNotIn("context_management", body)
+            self.assertEqual(body["output_config"], {"effort": "low"})
+
     def test_signed_reasoning_stream_and_exact_replay(self):
         events = [{"type": "message_start"},
                   {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
@@ -398,6 +524,44 @@ class WireTests(unittest.TestCase):
         for block, error in cases:
             with self.assertRaisesRegex(compat.ProofError, error):
                 proof.parse_stream(io.BytesIO(sse(response_events([block]))), compat.ToolNames(compat.TOOLS))
+
+    def test_long_opaque_reasoning_is_preserved_within_stream_limit(self):
+        originals = [{"type": "thinking", "thinking": "synthetic", "signature": "s" * 16384},
+                     {"type": "redacted_thinking", "data": "r" * 16384}]
+        blocks, reason = proof.parse_stream(io.BytesIO(sse(response_events(originals))), compat.ToolNames(compat.TOOLS))
+        body = json.loads(compat.request_body("claude-opus-4-8", [{"role": "user", "content": "first"},
+                              {"role": "assistant", "content": blocks}], INSTALLATION, ACCOUNT, SESSION))
+        self.assertEqual(body["messages"][1]["content"], originals)
+
+    def test_stream_trickle_obeys_budget_without_waiting_for_newline(self):
+        class Trickle:
+            def __init__(self):
+                self.reads = 0
+
+            def read1(self, size):
+                self.reads += 1
+                return b"d"
+
+        response = Trickle()
+        transport = unittest.mock.Mock()
+        transport.response.return_value = contextlib.nullcontext(response)
+        with patch.object(proof.time, "monotonic", side_effect=[0, 20, 40, 60]):
+            with self.assertRaisesRegex(compat.ProofError, "partial_stream_error"):
+                proof.complete(transport, grant(), record(), "claude-opus-4-8", SESSION, [{"role": "user", "content": "test"}])
+        self.assertEqual(response.reads, 2)
+
+    def test_model_detail_must_match_requested_model_before_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = proof.Store(Path(tmp).resolve())
+            try:
+                store.write(record())
+                transport = FakeTransport([{"data": [{"id": "claude-opus-4-8"}], "has_more": False},
+                                           {"id": "other-model"}])
+                with self.assertRaisesRegex(compat.ProofError, "invalid_model_response"):
+                    proof.probe(store, transport, "claude-opus-4-8")
+                self.assertEqual(len(transport.calls), 2)
+            finally:
+                store.close()
 
     def test_model_pagination_and_unknown_limits(self):
         transport = FakeTransport([{"data": [{"id": "first"}], "has_more": True, "last_id": "first"},
@@ -431,6 +595,19 @@ class WireTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_http_header_deadline_interrupts_and_restores_signal_handler(self):
+        transport = proof.Transport()
+        previous = proof.signal.getsignal(proof.signal.SIGALRM)
+        def stalled_headers(*args, **kwargs):
+            time.sleep(5)
+            self.fail("HTTP header budget failed to interrupt")
+        with patch.object(transport.opener, "open", side_effect=stalled_headers) as send:
+            with self.assertRaisesRegex(compat.ProofError, "transport_outcome_unknown"):
+                transport.json("models", proof.Secret(ACCESS), timeout=0.03)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(proof.signal.getsignal(proof.signal.SIGALRM), previous)
+        self.assertEqual(proof.signal.getitimer(proof.signal.ITIMER_REAL), (0, 0))
+
     def test_environment_endpoint_and_proxy_isolation(self):
         with patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "https://evil.test"}):
             with self.assertRaisesRegex(compat.ProofError, "invalid_configuration"):
@@ -463,6 +640,7 @@ class SafetyTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("SYNTHETIC_CODE_CANARY", result.stdout + result.stderr)
         self.assertIn("invalid_command_line", result.stderr)
+        self.assertIn("recovery", json.loads(result.stderr)["error"])
 
 
 if __name__ == "__main__":
