@@ -8,8 +8,8 @@ review/fix pass. The manager alone merges into the integration branch.
 | Task | Depends on | State |
 | --- | --- | --- |
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
-| 2. Shared contracts | 1 | Implemented and Astra reviewed; one P2 regression fixed, awaiting manager Linux verification/merge. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
-| 3. Credential management | 2 | Not started. |
+| 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after independent Astra review and manager Linux verification. One P2 regression was fixed. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
+| 3. Credential management | 2 | Implemented; pending new independent Astra review and manager merge. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Not started. |
 | 5. Model discovery + usage | 3 | Not started. |
 | 6. Agent execution integration | 3 + 4 | Not started. |
@@ -23,7 +23,7 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Task 1 is merged; seven production tasks (2–8)
+manual/random callback fields. Tasks 1–2 are merged; production tasks 3–8
 remain pending review, merge or implementation. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
@@ -50,7 +50,7 @@ tests passed and five skipped. The headless Linux `/dev/full` fixture was
 excluded on macOS; the existing microVM test remains ignored. An earlier full
 library run had 540 passes and one new test-helper assertion failure; that
 helper was corrected and its complete 77-test agent-service group passed.
-The manager runs final Linux verification against the reviewed commit.
+The manager completed final Linux verification against the reviewed commit before merging PR 2.
 
 Task 2 independent Astra review fixed a P2 regression in Codex credential-path
 resolution. Clearing provider-specific references correctly stopped carrying
@@ -68,5 +68,41 @@ two lease doctests, three binary tests, the excluded-HTTP subscription guard,
 43 diagnostic tests, and workspace/all-target compilation including eval all
 passed. Python packaging/typechecking and the launcher suite passed (64 tests,
 one existing installed-worker skip). Touched Rust formatting and `git diff
---check` passed. No remaining P2-or-higher review findings; final full Linux
-verification remains the manager's merge gate.
+--check` passed. No remaining P2-or-higher Task 2 review findings. Manager verification of the
+merged tree passed 596 Linux tests plus binding and launcher checks.
+
+Task 3 stores only Mirror-owned credentials in `~/.mirror/claude_oauth.json`,
+with a separate stable lock. Login/logout change generation; renewal increments
+revision, preserves original authorization time and commits before publishing
+an access lease. A validated renewal timestamp coordinates the fixed 60-second
+recovery grace across processes. A generation/revision-scoped reauthentication
+marker records only authoritative refresh revocation; endpoint failures cannot
+poison inference auth. Local snapshots order cache inspection without renewing
+or revealing tokens. The only nested lock order is metadata -> authority.
+
+The native `mirror-agent auth --stdio` path runs before worker setup and uses
+private bounded JSONL pipes, with Python owning browser launch and terminal input.
+Login, callbacks and PKCE remain in memory; EOF/signals/cancellation drop pending
+work and listeners. Atomic replacement errors distinguish an uncommitted write
+from uncertain post-rename durability. No production OAuth Messages provider,
+conversation binding, usage/model service or Python UI is connected by Task 3.
+These remain assigned to their later tasks; production A1–A11 remain unproven.
+
+
+Task 3 local macOS validation: the full agent library passed 558 tests with the
+synthetic subprocess helper ignored as a standalone test; the final affected
+auth suite passed 18 tests and exercises that helper in independent processes.
+Four native JSONL/terminal-security tests, ten worker tests, three binary tests,
+two lease doctests, 20 protocol tests, 44 sandbox tests, 43 Phase 0 synthetic
+tests, launcher help and workspace/all-target compilation including the eval
+binding passed. Python packaging/typechecking and `bash ci.sh` passed with 3,088
+tests and five skips. Touched Rust formatting and `git diff --check` passed.
+
+The full workspace attempt reached the known Linux-only `/dev/full` headless
+fixture on macOS: 36 other headless cases passed. The optional microVM test was
+ignored. Additional sandboxd checks need `SANDBOXD_BIN` and a canonical `TMPDIR`;
+with those supplied, 45 tests passed and one existing Linux-guest Bash fixture
+timed out on macOS (`read -N4` is unsupported by `/bin/bash` there). No unrelated
+source was changed for these platform limits. The manager's reviewed-head Linux
+run remains required. No Task 3 live login, provider request or production
+A1–A11 acceptance was performed.
