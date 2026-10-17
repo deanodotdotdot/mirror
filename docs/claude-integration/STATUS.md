@@ -2,15 +2,17 @@
 
 Accepted scope and release gates: [SPEC.md](../../SPEC.md).
 Integration branch: `dean/claude-integration` in `deanodotdotdot/mirror`.
-Each task has one PR: a `gpt-6.1-sol` xhigh implementer, then an Astra xhigh
-review/fix pass. The manager alone merges into the integration branch.
+Each task has one PR. Tasks 1–3 used `gpt-6.1-sol` xhigh implementation. The user
+switched all further implementation to Astra xhigh during Task 4; every task
+still receives a separate new Astra xhigh review/fix pass, followed by manager
+verification and merge into the integration branch.
 
 | Task | Depends on | State |
 | --- | --- | --- |
 | 1. External proof | — | Merged as [PR 1](https://github.com/deanodotdotdot/mirror/pull/1) at 2def7dd. Phase 0 gate passed on macOS and Linux/SSH, including manual/random callback, real refresh and Claude Code coexistence. See [evidence](../../diagnostics/claude_oauth/EVIDENCE.md). |
-| 2. Shared contracts | 1 | Implemented and Astra reviewed; one P2 regression fixed, awaiting manager Linux verification/merge. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
+| 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after Astra review and final Linux verification. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Not started. |
-| 4. OAuth Messages transport | 2 | Not started. |
+| 4. OAuth Messages transport | 2 | Implemented and locally validated; awaiting manager-arranged Astra review. Library-only OAuth adapter, frozen wire profile, strict streaming, normalized replay and bounded typed recovery. See [transport notes](TRANSPORT.md). |
 | 5. Model discovery + usage | 3 | Not started. |
 | 6. Agent execution integration | 3 + 4 | Not started. |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Not started. |
@@ -23,7 +25,7 @@ Ctrl-C cancels. This clarification follows the first live SSH attempt.
 
 Fixtures prove local behavior only. The independent macOS and Linux/SSH live
 sequences now satisfy the Phase 0 external gate, including directly recorded
-manual/random callback fields. Task 1 is merged; seven production tasks (2–8)
+manual/random callback fields. Task 1 is merged; six production tasks (3–8)
 remain pending review, merge or implementation. These checks do not establish production
 A1–A11. Sonnet 5 reasoning remains unverified; the two-model signed reasoning
 gate was met by Opus 4.8 and Sonnet 4.6.
@@ -68,5 +70,29 @@ two lease doctests, three binary tests, the excluded-HTTP subscription guard,
 43 diagnostic tests, and workspace/all-target compilation including eval all
 passed. Python packaging/typechecking and the launcher suite passed (64 tests,
 one existing installed-worker skip). Touched Rust formatting and `git diff
---check` passed. No remaining P2-or-higher review findings; final full Linux
-verification remains the manager's merge gate.
+--check` passed. No remaining P2-or-higher review findings. Manager final Linux
+verification passed (596 tests, binding and launcher), and Task 2 merged as PR 2.
+
+Task 4 local macOS validation: 115 provider tests (36 new OAuth tests), exact
+Bun golden bytes and full-seed hash vectors, 43 diagnostic cases, two lease
+doctests, workspace/all-target compilation including the Python/eval binding,
+and Python packaging/typechecking CI (3,088 passed, five skipped; zero pyright
+errors/warnings). An earlier local agent/protocol test run passed 579 library
+cases, three binary, 36 headless and ten worker cases, plus the two doctests.
+After the Astra continuation tightened the pre-output/partial-output boundary,
+all 115 provider tests and workspace/all-target compilation passed again.
+The unchanged long Unicode spill case passed in the earlier broad run
+and was excluded from the final repeat; the Linux-only /dev/full headless
+fixture was excluded on macOS. The existing opt-in microVM fixture stayed ignored.
+
+Extra broad workspace checks need SANDBOXD_BIN set to a built guest binary.
+With that configured and TMPDIR=/private/tmp to avoid Darwin's /var alias,
+45 sandboxd cases passed. Its unchanged egress auto-refresh case still uses
+read -N4 through /bin/bash, which macOS bash 3.2 rejects; the required Linux
+acceptance remains with the manager/Task 8. No unrelated sandbox code was changed.
+Task 4 used no real credentials, login or live inference. It enables no global
+OAuth runtime path; that remains Task 6. Production A1–A11 remain unproven.
+The OAuth decoder rejects thinking after text/tools and text after tools because
+Mirror's current canonical message cannot preserve those upstream orderings.
+Independent review and Task 8's two-model live gate must check this profile
+limitation; rejected streams expose no successful final or executable tools.
