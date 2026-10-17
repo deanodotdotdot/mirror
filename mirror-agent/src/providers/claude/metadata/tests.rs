@@ -55,6 +55,15 @@ impl Authority {
     fn calls(&self) -> usize {
         self.state.lock().unwrap().calls.len()
     }
+    fn snapshot_now(&self) -> ClaudeLocalAuthSnapshot {
+        let s = self.state.lock().unwrap();
+        let mut status = ClaudeAuthStatus::new(s.state);
+        status.identity = Some(s.identity.clone());
+        ClaudeLocalAuthSnapshot {
+            status,
+            version: Some(s.version),
+        }
+    }
 }
 impl ClaudeAuthorization for Authority {
     fn authorize<'a>(
@@ -103,13 +112,21 @@ impl ClaudeAuthorization for Authority {
             if self.hold_snapshot.load(Ordering::SeqCst) {
                 std::future::pending::<()>().await;
             }
-            let s = self.state.lock().unwrap();
-            let mut status = ClaudeAuthStatus::new(s.state);
-            status.identity = Some(s.identity.clone());
-            Ok(ClaudeLocalAuthSnapshot {
-                status,
-                version: Some(s.version),
-            })
+            Ok(self.snapshot_now())
+        }
+        .boxed()
+    }
+    fn local_snapshot_guarded<'a>(
+        &'a self,
+        guard: &'a dyn ModelRequestGuard,
+        _: BoxFuture<'a, ()>,
+    ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+        async move {
+            if self.hold_snapshot.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            guard.verify().await.map_err(|_| cancelled())?;
+            Ok(self.snapshot_now())
         }
         .boxed()
     }
@@ -360,6 +377,57 @@ async fn context_precedence_is_exact_validated_and_never_borrows_or_infers_one_m
         ClaudeErrorKind::ModelUnavailable
     );
 }
+#[tokio::test]
+async fn detail_without_context_cannot_hide_exact_catalog_context() {
+    let transport = Script::new(vec![
+        Ok(json!({"id":"selected","max_tokens":128000})),
+        Ok(page(json!([{"id":"selected","max_input_tokens":123456}]))),
+        Err(temporary()),
+        Ok(json!({"id":"selected","max_tokens":128000})),
+    ]);
+    let auth = Authority::new();
+    let (_temp, service) = service(auth.clone(), transport);
+    let detail = service
+        .model_context(&identity(), "selected", None, None, pending())
+        .await
+        .unwrap();
+    assert_eq!(detail.provenance, ContextProvenance::ConservativeFallback);
+    let catalog = service.models(None, None, pending()).await.unwrap();
+    let selected = service
+        .model_context(&identity(), "selected", None, None, pending())
+        .await
+        .unwrap();
+    assert_eq!(selected.context_window, 123456);
+    assert_eq!(selected.provenance, ContextProvenance::ModelMetadata);
+    assert_eq!(selected.info.fetched_at, catalog.info.fetched_at);
+    assert_eq!(auth.calls(), 2);
+
+    age_cache(&service, 600).await;
+    let stale = service
+        .model_context(&identity(), "selected", None, None, pending())
+        .await
+        .unwrap();
+    assert_eq!(stale.context_window, 123456);
+    assert_eq!(stale.provenance, ContextProvenance::ModelMetadata);
+    assert_eq!(stale.info.state, MetadataState::Stale);
+    assert!(stale.info.age_seconds.unwrap() >= 600);
+    assert!(stale.info.error.is_some());
+    clear_cooldown(&service).await;
+    for _ in 0..2 {
+        let omitted = service
+            .model_context(&identity(), "selected", None, None, pending())
+            .await
+            .unwrap();
+        assert_eq!(omitted.context_window, 123456);
+        assert_eq!(omitted.provenance, ContextProvenance::ModelMetadata);
+        assert_eq!(omitted.info.state, MetadataState::Stale);
+        assert_eq!(omitted.info.fetched_at, stale.info.fetched_at);
+        assert!(omitted.info.age_seconds.unwrap() >= 600);
+        assert!(omitted.info.error.is_none());
+    }
+    assert_eq!(auth.calls(), 4);
+}
+
 #[tokio::test]
 async fn stale_catalog_and_usage_preserve_original_age_and_429_cooldown() {
     let auth = Authority::new();
@@ -1066,6 +1134,114 @@ fn unknown_monetary_units_and_invalid_scales_remain_unknown() {
     assert_eq!(used.decimal_places, None);
 }
 
+#[tokio::test]
+async fn final_snapshot_wait_cannot_hide_a_revoked_request_guard() {
+    struct Guard(Arc<AtomicBool>);
+    impl ModelRequestGuard for Guard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            async {
+                if self.0.load(Ordering::SeqCst) {
+                    Err(crate::providers::LlmError::Claude(cancelled()))
+                } else {
+                    Ok(())
+                }
+            }
+            .boxed()
+        }
+    }
+    struct SnapshotWait {
+        inner: Arc<Authority>,
+        calls: AtomicUsize,
+        revoke_on: usize,
+        revoked: Arc<AtomicBool>,
+    }
+    impl SnapshotWait {
+        async fn wait(&self) {
+            if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.revoke_on {
+                // A credential-lock wait can outlive the request guard.
+                tokio::task::yield_now().await;
+                self.revoked.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    impl ClaudeAuthorization for SnapshotWait {
+        fn authorize<'a>(
+            &'a self,
+            context: ClaudeAuthorizationContext<'a>,
+            rejected: Option<ClaudeTokenVersion>,
+        ) -> BoxFuture<'a, Result<ClaudeAccessLease, ClaudeError>> {
+            self.inner.authorize(context, rejected)
+        }
+        fn local_snapshot<'a>(
+            &'a self,
+            cancellation: BoxFuture<'a, ()>,
+        ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+            async move {
+                self.wait().await;
+                self.inner.local_snapshot(cancellation).await
+            }
+            .boxed()
+        }
+        fn local_snapshot_guarded<'a>(
+            &'a self,
+            guard: &'a dyn ModelRequestGuard,
+            cancellation: BoxFuture<'a, ()>,
+        ) -> BoxFuture<'a, Result<ClaudeLocalAuthSnapshot, ClaudeError>> {
+            async move {
+                self.wait().await;
+                self.inner.local_snapshot_guarded(guard, cancellation).await
+            }
+            .boxed()
+        }
+    }
+    for action in ["models", "context", "usage", "explicit"] {
+        let auth = Authority::new();
+        let (_temp, mut service) = service(
+            auth.clone(),
+            Script::new(vec![
+                Ok(page(json!([{"id":"selected","max_input_tokens":123456}]))),
+                Ok(usage_value()),
+            ]),
+        );
+        service.models(None, None, pending()).await.unwrap();
+        service.usage(None, None, pending()).await.unwrap();
+        let revoked = Arc::new(AtomicBool::new(false));
+        let guard = Guard(revoked.clone());
+        service.authority = Arc::new(SnapshotWait {
+            inner: auth.clone(),
+            calls: AtomicUsize::new(0),
+            revoke_on: if action == "explicit" { 2 } else { 3 },
+            revoked,
+        });
+        let result = match action {
+            "models" => service
+                .models(None, Some(&guard), pending())
+                .await
+                .map(|_| ()),
+            "usage" => service
+                .usage(None, Some(&guard), pending())
+                .await
+                .map(|_| ()),
+            _ => service
+                .model_context(
+                    &identity(),
+                    "selected",
+                    (action == "explicit").then_some(123456),
+                    Some(&guard),
+                    pending(),
+                )
+                .await
+                .map(|_| ()),
+        };
+        assert_eq!(
+            result.unwrap_err().kind,
+            ClaudeErrorKind::RequestCancelled,
+            "{action}"
+        );
+        assert_eq!(auth.calls(), 2, "cached/explicit lookup must remain local");
+    }
+}
+
 struct Stalled;
 #[async_trait]
 impl Transport for Stalled {
@@ -1185,7 +1361,7 @@ async fn reserved_interval_auth_guard_and_cancellation_fail_closed() {
                         "revoked" => {
                             self.auth.state.lock().unwrap().state = ClaudeAuthState::LoginRequired
                         }
-                        "lock" => self.auth.hold_snapshot.store(true, Ordering::SeqCst),
+                        "guard_timeout" => std::future::pending::<()>().await,
                         _ => unreachable!(),
                     }
                 }
@@ -1194,7 +1370,7 @@ async fn reserved_interval_auth_guard_and_cancellation_fail_closed() {
             .boxed()
         }
     }
-    for mode in ["guard", "cancel", "revoked", "lock"] {
+    for mode in ["guard", "cancel", "revoked", "guard_timeout"] {
         let auth = Authority::new();
         let (temp, s) = service(auth.clone(), Arc::new(Stalled));
         let (send, mut recv) = tokio::sync::watch::channel(false);
@@ -1219,7 +1395,7 @@ async fn reserved_interval_auth_guard_and_cancellation_fail_closed() {
             error.kind,
             match mode {
                 "revoked" => ClaudeErrorKind::LoginRequired,
-                "lock" => ClaudeErrorKind::AuthTemporarilyUnavailable,
+                "guard_timeout" => ClaudeErrorKind::AuthTemporarilyUnavailable,
                 _ => ClaudeErrorKind::RequestCancelled,
             }
         );

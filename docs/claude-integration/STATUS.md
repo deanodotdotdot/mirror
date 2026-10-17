@@ -15,7 +15,7 @@ checks run locally.
 | 2. Shared contracts | 1 | Merged as [PR 2](https://github.com/deanodotdotdot/mirror/pull/2) at 09c1dc9 after independent Astra review and manager Linux verification. One P2 regression was fixed. Nonsecret contracts, single-attempt authorization plus local snapshot interface, frozen profile, additive protocol support and explicit unsupported/configuration guards. Local validation is recorded below. |
 | 3. Credential management | 2 | Merged as [PR 3](https://github.com/deanodotdotdot/mirror/pull/3) at 52f8fdbea79e97695a071b5067a5d0cbed088bab after independent Astra review and manager Linux verification; three P2 findings fixed. Rust private-file authority, transactional renewal, PKCE login, local snapshot/status/logout and dedicated native JSONL transport. See [native protocol](AUTH-PROTOCOL.md). |
 | 4. OAuth Messages transport | 2 | Merged as [PR 4](https://github.com/deanodotdotdot/mirror/pull/4) at 962fed4361ee79e2af2364267f0627267c543f1a after independent Astra review and manager verification of integrated head 1b9615a1cb375294e01124fd18f73e6ea965b449. Manager Linux checks passed 661 tests with two intentional ignores, plus binding and launcher checks. |
-| 5. Model discovery + usage | 3 | Implemented by Astra from exact Task 3 merge 52f8fdb; pending independent NEW Astra review and manager verification/merge. Native catalog/context/usage service and typed private command actions; no execution or Python UI wiring. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
+| 5. Model discovery + usage | 3 | Implemented by Astra, integrated with Task 4 at 72a609e, and independently reviewed by NEW Astra; two P2 findings fixed. Pending manager verification/merge. Native catalog/context/usage service and typed private command actions; no execution or Python UI wiring. See [protocol](AUTH-PROTOCOL.md) and [service](../../mirror-agent/src/providers/claude/metadata/README.md). |
 | 6. Agent execution integration | 3 + 4 | Active Astra implementation after Tasks 3 and 4 merged. |
 | 7. CLI / interactive UX | 2 for initial work; 3 + 5 + 6 to finish | Remaining work active under Astra, preserving the earlier Sol CLI checkpoint. Final integration waits for Tasks 5 and 6. |
 | 8. Acceptance + packaging + docs | All preceding tasks | Prepared; pending Tasks 5–7. Production A1–A11 remain unproven. |
@@ -229,3 +229,35 @@ serialization failure or immediate retries. Production A1–A11 remain unproven.
 Manager integrated Task 4 before Task 5 independent review, retaining both
 module exports, OMP attributions and validation evidence. Runtime wiring remains
 Task 6. The combined Task 5 head awaits independent review and Linux validation.
+
+
+Task 5 independent Astra review of manager-integrated head `72a609e` against
+Task 4 merge `962fed4` reproduced and fixed two P2 findings. A cached/explicit
+metadata result could outlive its request guard while waiting for a later
+credential snapshot. The additive `local_snapshot_guarded` authority operation
+now acquires the credential lock, awaits the guard, synchronously revalidates
+the lock/current record, and checks same-poll cancellation before publication.
+Its default fails closed; authority wrappers must forward it explicitly.
+Ordinary status/local snapshots remain unchanged and no renewal, token exposure
+or network request is added. Real-authority regressions cover a revoked guard
+during the lock wait, lock replacement during the guard wait, same-poll
+cancellation and a near-expiry grant remaining byte-for-byte unchanged.
+
+The second finding let a cached detail without an input context limit hide a
+validated limit from the exact catalog model. Valid context now outranks empty
+detail metadata on cache hits and after fetches/outages. The selected source's
+original timestamp and stale label survive a successful detail response that
+still omits the limit and subsequent cache reuse. Both failures were reproduced
+before their fixes; public service/result schemas and the ten-second budget
+remain unchanged.
+
+Reviewer final focused macOS validation passed 101 Claude tests, with two
+subprocess helpers ignored standalone and exercised by parent tests. This covers
+the integrated Messages transport, authority, shared contracts and 27 metadata
+tests. Eight native JSONL tests, three binary tests, workspace/all-target
+compilation including the eval binding, touched Rust formatting and diff checks
+also passed. Manager initial Linux verification of pre-fix head `72a609e` passed 689
+tests, with three intentional ignores, plus binding and launcher checks. Final
+reviewed-head manager Linux verification is still required before merging.
+No remaining P2-or-higher findings; no real credentials or live provider calls
+were used. Production A1–A11 remain unproven.

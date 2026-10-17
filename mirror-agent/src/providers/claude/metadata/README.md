@@ -47,7 +47,10 @@ carry only closed error kinds/provider codes, HTTP status and parsed retry time.
 
 Context precedence is validated explicit value, exact selected-model metadata,
 reviewed exact-ID fallback, then visible conservative 200,000. Cached catalog
-context is used when present; otherwise selected detail is requested. Stale
+context is used when present; otherwise selected detail is requested. A detail
+without an input limit cannot mask a validated exact catalog limit. When an
+older catalog supplies the value after a successful detail omits it, the result
+retains that catalog's timestamp and stale label, including on later cache hits. Stale
 exact-model metadata may survive a temporary outage, with original collection
 time and a stale/error label. `max_input_tokens` is preferred over existing
 Mirror context aliases; output-token fields never supply context. The only
@@ -78,10 +81,17 @@ The only nested order is **metadata -> authority**. A local snapshot is checked
 before creating the metadata store, after waiting for its lock, and after work
 before cache publication/return. Snapshot reads are local/read-only and contain
 no tokens or renewal. Login/logout never acquire the metadata lock. Reconnect
-needs no cache mutation: identity/generation/profile fencing suffices. The
-request guard is verified before cache return and passed into every fresh
-HTTP authorization. The stable metadata lock is revalidated after the final
-asynchronous authority/guard await.
+needs no cache mutation: identity/generation/profile fencing suffices.
+
+With a request guard, `local_snapshot_guarded(guard, cancellation)` acquires the
+credential lock before awaiting the guard and synchronously revalidates the
+lock/current record afterward. This prevents a credential-lock wait from
+outliving a guard check. It remains local, read-only and token-free; ordinary
+status and `local_snapshot` keep their existing behavior. Authority wrappers
+must forward guarded inspection explicitly; its default fails closed with
+`invalid_configuration`/`not_implemented`. The guard is also passed into every
+fresh HTTP authorization. The stable metadata lock is revalidated after the
+final asynchronous authority/guard await.
 
 A fresh authorization lease is obtained immediately before every HTTP attempt,
 including every catalog page and the single coordinated 401 recovery. Leases

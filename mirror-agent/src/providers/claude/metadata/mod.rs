@@ -205,16 +205,32 @@ impl ClaudeMetadataService {
         expected: Option<&ClaudeIdentityBinding>,
         cancellation: &Cancellation<'_>,
     ) -> Result<Key, ClaudeError> {
+        self.key_guarded(expected, None, cancellation).await
+    }
+    async fn key_guarded(
+        &self,
+        expected: Option<&ClaudeIdentityBinding>,
+        guard: Option<&dyn ModelRequestGuard>,
+        cancellation: &Cancellation<'_>,
+    ) -> Result<Key, ClaudeError> {
         check_cancel(cancellation)?;
         if expected.is_some_and(|id| id.account_id.is_nil() || id.organization_id.is_nil()) {
             return Err(ClaudeError::configuration(
                 ClaudeConfigurationError::InvalidIdentity,
             ));
         }
-        let snapshot = self
-            .authority
-            .local_snapshot(cancellation.clone().boxed())
-            .await?;
+        let snapshot = match guard {
+            Some(guard) => {
+                self.authority
+                    .local_snapshot_guarded(guard, cancellation.clone().boxed())
+                    .await?
+            }
+            None => {
+                self.authority
+                    .local_snapshot(cancellation.clone().boxed())
+                    .await?
+            }
+        };
         check_cancel(cancellation)?;
         if !matches!(
             snapshot.status.state,
@@ -255,13 +271,9 @@ impl ClaudeMetadataService {
         guard: Option<&dyn ModelRequestGuard>,
         cancellation: &Cancellation<'_>,
     ) -> Result<(), ClaudeError> {
-        if let Some(guard) = guard {
-            guard.verify().await.map_err(|e| match e {
-                crate::providers::LlmError::Claude(e) => e,
-                _ => cancelled(),
-            })?;
-        }
-        let current = self.key(Some(&key.identity), cancellation).await?;
+        let current = self
+            .key_guarded(Some(&key.identity), guard, cancellation)
+            .await?;
         if &current != key {
             return Err(temporary());
         }
@@ -508,22 +520,26 @@ impl ClaudeMetadataService {
                 .as_ref()
                 .filter(|f| f.blocks_fallback));
             if known_failure.is_none() {
-                let cached = record
-                    .contexts
-                    .get(model)
-                    .filter(|c| c.fresh(CATALOG_TTL))
+                let detail = record.contexts.get(model).filter(|c| c.fresh(CATALOG_TTL));
+                let cached = detail
+                    .filter(|c| c.data.context_window.is_some())
                     .map(|c| (&c.data, c.fetched_at))
                     .or_else(|| {
                         record
                             .catalog
                             .as_ref()
-                            .filter(|c| c.fresh(CATALOG_TTL))
+                            .filter(|c| c.fresh(CATALOG_TTL) || detail.is_some())
                             .and_then(|c| {
                                 c.data
                                     .iter()
                                     .find(|m| m.id == model && m.context_window.is_some())
                                     .map(|m| (m, c.fetched_at))
                             })
+                    })
+                    .or_else(|| {
+                        // A detail with no input limit can cache a fallback,
+                        // but cannot hide validated context from the catalog.
+                        detail.map(|c| (&c.data, c.fetched_at))
                     });
                 if let Some((data, fetched_at)) = cached {
                     let (context_window, provenance) = data
@@ -535,7 +551,11 @@ impl ClaudeMetadataService {
                     return Ok(ClaudeModelContextResult {
                         info: MetadataInfo::new(
                             &record.key,
-                            MetadataState::Cached,
+                            if cache::fresh(fetched_at, CATALOG_TTL) {
+                                MetadataState::Cached
+                            } else {
+                                MetadataState::Stale
+                            },
                             fetched_at,
                             None,
                         ),
@@ -619,6 +639,7 @@ impl ClaudeMetadataService {
             let data = record
                 .contexts
                 .get(model)
+                .filter(|c| c.data.context_window.is_some())
                 .map(|c| (&c.data, c.fetched_at))
                 .or_else(|| {
                     record.catalog.as_ref().and_then(|c| {
@@ -627,7 +648,8 @@ impl ClaudeMetadataService {
                             .find(|m| m.id == model && m.context_window.is_some())
                             .map(|m| (m, c.fetched_at))
                     })
-                });
+                })
+                .or_else(|| record.contexts.get(model).map(|c| (&c.data, c.fetched_at)));
             let (context_window, provenance) = data
                 .and_then(|(model, _)| model.context_window)
                 .map(|n| (n, ContextProvenance::ModelMetadata))
@@ -638,6 +660,10 @@ impl ClaudeMetadataService {
                 } else {
                     MetadataState::Offline
                 }
+            } else if data.is_some_and(|(_, fetched)| !cache::fresh(fetched, CATALOG_TTL)) {
+                // A successful detail may omit the input limit. If an older
+                // catalog supplies it, preserve that source's actual age.
+                MetadataState::Stale
             } else {
                 MetadataState::Fresh
             };

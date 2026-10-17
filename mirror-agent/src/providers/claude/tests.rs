@@ -302,6 +302,26 @@ impl ClaudeAuthorization for MockAuthority {
 }
 
 #[tokio::test]
+async fn guarded_snapshot_requires_an_explicit_authority_implementation() {
+    struct NeverGuard;
+    impl crate::providers::ModelRequestGuard for NeverGuard {
+        fn verify(&self) -> BoxFuture<'_, Result<(), crate::providers::LlmError>> {
+            Box::pin(async { panic!("unsupported guarded snapshots must fail before work") })
+        }
+    }
+    let authority: Arc<dyn ClaudeAuthorization> = Arc::new(MockAuthority);
+    let error = authority
+        .local_snapshot_guarded(&NeverGuard, Box::pin(std::future::pending()))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ClaudeErrorKind::InvalidConfiguration);
+    assert_eq!(
+        error.details.configuration,
+        Some(ClaudeConfigurationError::NotImplemented)
+    );
+}
+
+#[tokio::test]
 async fn authority_is_object_safe_and_cancellation_can_interrupt_a_pending_wait() {
     let authority: Arc<dyn ClaudeAuthorization> = Arc::new(MockAuthority);
     let identity = identity();

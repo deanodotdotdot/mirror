@@ -50,10 +50,13 @@ impl<T> Timed<T> {
         }
     }
     pub fn fresh(&self, seconds: u64) -> bool {
-        self.fetched_at
-            .and_then(|t| SystemTime::now().duration_since(t).ok())
-            .is_some_and(|age| age < Duration::from_secs(seconds))
+        fresh(self.fetched_at, seconds)
     }
+}
+pub(super) fn fresh(fetched_at: Option<SystemTime>, seconds: u64) -> bool {
+    fetched_at
+        .and_then(|t| SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age < Duration::from_secs(seconds))
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
