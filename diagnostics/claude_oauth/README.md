@@ -10,6 +10,9 @@ The [evidence ledger](EVIDENCE.md) distinguishes fixtures from live observations
 **Passing tests does not pass the live gate.** Do not start later implementation
 until the manager resolves that gate. The manager arranges review before real
 credentials are used, coordinates the consenting user, and alone merges PRs.
+The controlled macOS and Linux/SSH Phase 0 observations are now recorded in the
+evidence ledger; manager final review/merge is pending. Production A1–A11 remain
+unproven by this diagnostic.
 
 ## Synthetic verification
 
@@ -158,8 +161,13 @@ diagnose it. A timeout during token exchange/refresh remains an ambiguous
 remote outcome even though the local command exits within its budget.
 
 For Linux/SSH acceptance, run the same source on that Linux host and authenticate
-there with `--no-browser`; use a browser on a different machine. Do not copy a
-laptop grant there. A local `--no-browser` run or a Linux fixture test does not
+there with `--no-browser`; use a browser on a different machine. Leave the SSH
+login command running. The browser may show a localhost connection error because
+its localhost is the browser's machine; this is expected in the headless flow.
+Copy the final callback address from the browser's address bar, paste it into
+the waiting SSH terminal, and press Enter. The hidden input shows no pasted
+characters. Ctrl-C cancels the pending login. Do not copy a laptop grant there.
+A local `--no-browser` run or a Linux fixture test does not
 prove the SSH acceptance gate. Each additional login needs its own observed
 outcome. Preserve only sanitized JSON results, and fill in the evidence table
 with revision, profile, platform, model IDs, times and outcomes. Never paste
