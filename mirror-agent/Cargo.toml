@@ -28,6 +28,7 @@ eventsource-stream = "0.2"
 futures-core = "0.3"
 futures-util = "0.3"
 globset = "0.4"
+httpdate = "1"
 mirror-protocol = { version = "0.1.0", path = "../protocols/mirror_agent" }
 mirror-sandbox = { path = "../mirror-sandbox" }
 mirror-sandbox-microsandbox = { path = "../mirror-sandbox/providers/microsandbox" }
